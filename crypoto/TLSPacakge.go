@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	// 假设你有对方的公钥字节数组 peerPublicKeyBytes
 )
 
@@ -34,6 +35,30 @@ func (t *TLSCrypto) Decrypt(Payload []byte) ([]byte, error) {
 		return nil, err
 	}
 	return decrypt, nil
+}
+
+func slatGenorate() (string, error) {
+	// 1. 定义盐的长度：256位 = 32字节
+	saltLength := 32
+
+	// 2. 创建一个字节切片来存储随机数
+	salt := make([]byte, saltLength)
+
+	// 3. 使用 crypto/rand.Read 填充切片
+	// rand.Read 会返回读取的字节数和可能的错误
+	_, err := rand.Read(salt)
+	if err != nil {
+		return "", err
+	}
+
+	// 4. 将二进制盐值转换为十六进制字符串 (方便存入数据库)
+	// 32字节的二进制数据会变成 64个字符的十六进制字符串
+	saltStr := hex.EncodeToString(salt)
+	return saltStr, nil
+}
+func getHashHex(data string) string {
+	hash := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(hash[:])
 }
 
 // NewTLSCrypto 创建 TLSCrypto 实例 : 发生在Client和中继节点建立连接之后，需要建立和真正Target之间的通信，第一条消息必须由Client端发送
@@ -72,15 +97,40 @@ func NewTLSCrypto(targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) 
 	if err != nil {
 		return nil, err
 	}
+	// 1.双方随机生成Slat值，用于生成 AES 密钥
+	salt, err := slatGenorate()
+	if err != nil {
+		return nil, err
+	}
+	signData := getHashHex(salt + pubKeyStr)
+	// 2.交换Salt值
+	targetStream.SendMessage(context.Background(), &network.Message{
+		Header:  MessageHeader,
+		Payload: []byte(fmt.Sprintf("%s|%s", salt, signData)),
+	})
+	// 3. 接收对方发来的Salt值
+	message, err = targetStream.NextMessage()
+	if err != nil {
+		return nil, err
+	}
+	SaltData := message.Payload
+	SlatSign := strings.Split(string(SaltData), "|")
+	targetPubKeyStr := GetPubKeyStr(targetPublicKey)
+	slatDataSign := getHashHex(SlatSign[0] + targetPubKeyStr)
+	if slatDataSign != SlatSign[1] {
 
+		return nil, fmt.Errorf("wrong Salt,need Slat %s,but get %s", SlatSign[1], slatDataSign)
+	}
+	targetSlat := SlatSign[0]
+	finalSlat := min(targetSlat, salt) + max(targetSlat, salt)
 	sharedSecret, err := nodePrivateKey.ECDH(targetPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("ECDH 计算失败: %v", err)
 	}
-
+	finalKeyOrignal := append(sharedSecret, []byte(finalSlat)...)
 	// 4. 派生 AES 密钥
 	// sharedSecret 已经是 []byte 类型，直接使用
-	aesKey := sha256.Sum256(sharedSecret)
+	aesKey := sha256.Sum256(finalKeyOrignal)
 	return &TLSCrypto{
 		publicKey:        nodePrivateKey.PublicKey(),
 		targetPublicKey:  targetPublicKey,

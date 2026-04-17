@@ -41,6 +41,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		} else {
 			t.lock.RLock()
 			group := t.StreamGroup[message.Header.NodeId]
+			stream.SendMessage(context.Background(), message)
 			if group != nil {
 				err := group.StreamOn(stream, message)
 				if err != nil {
