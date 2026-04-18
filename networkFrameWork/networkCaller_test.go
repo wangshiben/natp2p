@@ -3,11 +3,11 @@ package networkFrameWork
 import (
 	"bnfs_p2p/crypoto"
 	"bnfs_p2p/network"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net"
+	"fmt"
+	"github.com/xtaci/kcp-go/v5"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +15,7 @@ import (
 
 func RelayClientTest(t *testing.T) string {
 	pair, err := crypoto.MakeKeyPair()
+	time.Sleep(1 * time.Second)
 	if err != nil {
 		t.Fatalf("生成密钥对失败: %v", err)
 		return ""
@@ -54,25 +55,29 @@ func RelayClientTest(t *testing.T) string {
 		}
 		t.Log("RelayClientTest NewTLSCrypto success")
 		defer ClientStream.Close()
+		t.Log("I'm waiting for Message")
 		message, err = ClientStream.NextMessage()
+		marshal, _ := json.Marshal(message)
+		t.Logf("I'm got a Message %s,\n %v", marshal, err)
 		if err != nil {
+			t.Errorf("NextMessage err: %v", err)
 			ClientStream.Close()
 			return
 		}
-		t.Logf("[系统] 收到消息: %s\n", message.Payload)
+		t.Logf("[系统] 收到消息: %v\n", message.Payload)
 		decrypt, err := crypto.Decrypt(message.Payload)
 		if err != nil {
 
 			return
 		}
-		t.Logf("[系统] 收到消息: %s\n", decrypt)
+		t.Logf("[系统] 收到消息: %s \n", decrypt)
 
 	}()
 	return originalNodeId
 }
 
 func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
-	time.Sleep(1 * time.Second)
+	time.Sleep(2 * time.Second)
 	pair, err := crypoto.MakeKeyPair()
 	if err != nil {
 		t.Fatalf("生成密钥对失败: %v", err)
@@ -85,19 +90,19 @@ func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	header := &network.Header{
-		RouteName:     "",
-		NodeId:        RelayNodeId,
-		NodeIdVersion: 1,
-		PayLoadLength: 0,
-		ConnectionId:  connectionId,
-		OriginData:    nil,
-	}
-	body := &network.Message{
-		Header:  header,
-		Payload: []byte(pubKeyStr),
-	}
-	stream.SendMessage(context.Background(), body)
+	//header := &network.Header{
+	//	RouteName:     "",
+	//	NodeId:        RelayNodeId,
+	//	NodeIdVersion: 1,
+	//	PayLoadLength: 0,
+	//	ConnectionId:  connectionId,
+	//	OriginData:    nil,
+	//}
+	//body := &network.Message{
+	//	Header:  header,
+	//	Payload: []byte(pubKeyStr),
+	//}
+	//stream.SendMessage(context.Background(), body)
 
 	go func() {
 		crypto, err := crypoto.NewTLSCrypto(stream, pair)
@@ -121,8 +126,11 @@ func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
 			},
 			Payload: encrypt,
 		}
+		t.Log("Try send Message to relayStream")
 		err = stream.SendMessage(t.Context(), &Message)
+		t.Log("Success send Message to relayStream")
 		if err != nil {
+			t.Errorf("发送消息失败: %v", err)
 			return
 		}
 
@@ -132,7 +140,8 @@ func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
 
 func TestNewTLSCrypto(t *testing.T) {
 	t.Log("=== 测试 NewTLSCrypto ===")
-	listen, err := net.Listen("tcp", ":9000") // 模拟中转服务器
+	listen, err := kcp.Listen(":9000") // 模拟中转服务器
+
 	if err != nil {
 		return
 	}
@@ -163,4 +172,24 @@ func TestNewTLSCrypto(t *testing.T) {
 	}
 	time.Sleep(10 * time.Second)
 
+}
+
+type TestData struct {
+	Data []byte `json:"data"`
+}
+
+func TestTryConnectTCPStream(t *testing.T) {
+	jsonStr := "{\"Data\":\"4GFwsR9XFRkyb/9Hn14zNpQRFE4V/f1hLIDlnff6LLPR/EvRmSW6ma6PHZiamB4mDeynjRYfVsfipg==\"}"
+	message := &TestData{}
+	err := json.Unmarshal([]byte(jsonStr), message)
+	if err != nil {
+		panic(err)
+	}
+	result := message.Data
+	t.Logf("%v", result)
+	t.Log(string(result))
+	sprintf := fmt.Sprintf("%s", result)
+	t.Log(sprintf)
+	t.Logf("bad base64: %s", result)
+	t.Log("test done")
 }

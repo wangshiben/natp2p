@@ -73,7 +73,6 @@ func (s *StreamGroup) StreamOn(stream network.Stream, FirstMessage *network.Mess
 					s.CloseTargetConnection(connectionId)
 					return
 				}
-
 				err = s.relayStream.SendMessage(ctx, message)
 				if err != nil {
 					s.CloseTargetConnection(connectionId)
