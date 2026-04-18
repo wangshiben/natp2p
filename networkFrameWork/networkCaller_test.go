@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/xtaci/kcp-go/v5"
 	"sync"
 	"testing"
 	"time"
@@ -140,12 +139,9 @@ func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
 
 func TestNewTLSCrypto(t *testing.T) {
 	t.Log("=== 测试 NewTLSCrypto ===")
-	listen, err := kcp.Listen(":9000") // 模拟中转服务器
 
-	if err != nil {
-		return
-	}
-	cover := NewTransportCover()
+	starter := NewRelayStarter(":9000")
+
 	go func() {
 		time.Sleep(1 * time.Second)
 		RelayId := RelayClientTest(t)
@@ -158,19 +154,11 @@ func TestNewTLSCrypto(t *testing.T) {
 		}
 		t.Logf("客户端连接成功 本次连接的连接ID为 %s 节点ID 为 %s", connectionId, ClientId)
 	}()
-	for i := 0; i <= 1; i++ {
-		accept, err := listen.Accept()
-		if err != nil {
-			return
-		}
-		err = cover.ListenTCPConnection(accept)
-		if err != nil {
-			accept.Close()
-			t.Errorf("ListenTCPConnection err: %v", err)
-			continue
-		}
-	}
-	time.Sleep(10 * time.Second)
+	go func() {
+		time.Sleep(10 * time.Second)
+		starter.Close()
+	}()
+	starter.StartListen()
 
 }
 

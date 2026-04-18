@@ -3,6 +3,8 @@ package networkFrameWork
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -20,6 +22,31 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 	defer cancelFunc()
 	errChan := make(chan error)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// 将任意类型的 panic 值转换为 error
+				var err error
+				switch v := r.(type) {
+				case error:
+					err = v
+				case string:
+					err = fmt.Errorf("panic: %s", v)
+				default:
+					err = fmt.Errorf("panic: %v", v)
+				}
+				select {
+				case errChan <- err:
+				default:
+					// 如果 channel 已满或无法发送，记录日志或其他 fallback 处理
+					log.Printf("failed to send panic error to channel: %v", err)
+				}
+				// 确保连接被关闭（可加 sync.Once 防止重复关闭）
+				if connection != nil {
+					connection.Close()
+				}
+
+			}
+		}()
 		message, err := tryReadMessageFromConnection(connection)
 		if err != nil {
 			connection.Close()
