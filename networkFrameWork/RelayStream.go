@@ -19,6 +19,7 @@ type RelayStream struct {
 	publicKey    *ecdh.PublicKey
 	isClosed     bool
 	connectionId string
+	crypto       network.EncrypSuite
 }
 
 func (r *RelayStream) Close() error {
@@ -80,6 +81,9 @@ func (r *RelayStream) NodeId() string {
 }
 func (r *RelayStream) ConnectionId() string {
 	return ""
+}
+func (r *RelayStream) SetCryptoSuite(suite network.EncrypSuite) {
+	r.crypto = suite
 }
 
 func TrySetupRelayStream(conn net.Conn, message *network.Message) (network.Stream, error) {

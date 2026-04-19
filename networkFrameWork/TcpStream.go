@@ -11,22 +11,46 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
+// TcpStream : 可完全到达的流对象
 type TcpStream struct {
 	nodeId       string
 	connection   net.Conn
 	lock         sync.Mutex
 	connectionId string
+	crypto       network.EncrypSuite // 加密套件
 }
 
 const (
 	tcpMode = "tcp"
 	udpMode = "udp"
 )
+const KeepAliveRoute = "/ping"
 
 func (t *TcpStream) Close() error {
 	return t.connection.Close()
+}
+
+func (t *TcpStream) keepLive() {
+	header := &network.Header{
+		RouteName:     KeepAliveRoute,
+		NodeId:        t.nodeId,
+		NodeIdVersion: 1,
+		PayLoadLength: 0,
+		ConnectionId:  "",
+		OriginData:    nil,
+	}
+	message := &network.Message{
+		Header:  header,
+		Payload: nil,
+	}
+	for {
+		time.Sleep(5 * time.Second)
+		t.SendMessage(context.Background(), message)
+	}
+
 }
 
 func (t *TcpStream) NextMessage() (*network.Message, error) {
@@ -44,12 +68,26 @@ func (t *TcpStream) NextMessage() (*network.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+	if t.crypto != nil {
+		decrypt, err := t.crypto.Decrypt(payLoad)
+		if err != nil {
+			return nil, err
+		}
+		payLoad = decrypt
+	}
 	return &network.Message{Header: header, Payload: payLoad}, nil
 }
 
 func (t *TcpStream) SendMessage(ctx context.Context, message *network.Message) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
+	if t.crypto != nil {
+		decrypt, err := t.crypto.Encrypt(message.Payload)
+		if err != nil {
+			return err
+		}
+		message.Payload = decrypt
+	}
 	bytes, err := message.ParseToBytes()
 	if err != nil {
 		return err
@@ -64,6 +102,10 @@ func (t *TcpStream) NodeId() string {
 func (t *TcpStream) ConnectionId() string {
 	return t.connectionId
 }
+func (t *TcpStream) SetCryptoSuite(suite network.EncrypSuite) {
+	t.crypto = suite
+}
+
 func TryConnectTCPStream(addr, targetNodeId, originalPubkeyHex string) (network.Stream, string, error) {
 	connectionId := uuid.New().String()
 	header := &network.Header{
@@ -172,10 +214,12 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId string,
 		conn.Close()
 		return nil, err
 	}
-	return &TcpStream{
+	res := &TcpStream{
 		nodeId:     originalNodeId,
 		connection: conn,
-	}, nil
+	}
+	res.keepLive()
+	return res, nil
 }
 
 func kcpStream(FirstMessage *network.Message, tcpAddr, originalNodeId string) (network.Stream, error) {
@@ -193,8 +237,10 @@ func kcpStream(FirstMessage *network.Message, tcpAddr, originalNodeId string) (n
 		conn.Close()
 		return nil, err
 	}
-	return &TcpStream{
+	res := &TcpStream{
 		nodeId:     originalNodeId,
 		connection: conn,
-	}, nil
+	}
+	res.keepLive()
+	return res, nil
 }

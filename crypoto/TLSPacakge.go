@@ -23,6 +23,9 @@ type TLSCrypto struct {
 }
 
 func (t *TLSCrypto) Encrypt(Payload []byte) ([]byte, error) {
+	if len(Payload) == 0 {
+		return Payload, nil
+	}
 	encrypt, err := aesGCMEncrypt(Payload, t.aesGCMEncryptKey)
 	if err != nil {
 		return nil, err
@@ -30,6 +33,9 @@ func (t *TLSCrypto) Encrypt(Payload []byte) ([]byte, error) {
 	return encrypt, nil
 }
 func (t *TLSCrypto) Decrypt(Payload []byte) ([]byte, error) {
+	if len(Payload) == 0 {
+		return Payload, nil
+	}
 	decrypt, err := aesGCMDecrypt(Payload, t.aesGCMEncryptKey)
 	if err != nil {
 		return nil, err
