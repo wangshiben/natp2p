@@ -43,6 +43,7 @@ func (s *StreamClient) NextMessage() (*network.Message, error) {
 }
 
 func (s *StreamClient) SendMessage(ctx context.Context, message *network.Message) error {
+	message.Header.ConnectionId = s.stream.ConnectionId()
 	err := s.stream.SendMessage(ctx, message)
 	if err != nil {
 		return err
@@ -63,10 +64,13 @@ func (s *StreamClient) SetCryptoSuite(suite network.EncrypSuite) {
 }
 
 // ConnectNodeWithTargetRelay :用户实际连接指定Node的函数
+//
 // 输入参数：
+//
 // nodeId:目标Node的id
 // relayAddr: 通过指定Relay地址连接
 // keyPair: 用户的密钥对(只做读取，结构体内不保存)
+//
 // 返回值：
 // StreamClient:用户实际使用的Stream
 // error:错误信息
@@ -82,9 +86,10 @@ func ConnectNodeWithTargetRelay(nodeId, relayAddr string, keyPair *ecdh.PrivateK
 	if err != nil {
 		return nil, "", err
 	}
-	stream.SetCryptoSuite(crypto)
-	return &StreamClient{
+	res := &StreamClient{
 		stream: stream,
 		exit:   make(chan interface{}),
-	}, ConnectionId, nil
+	}
+	res.SetCryptoSuite(crypto)
+	return res, ConnectionId, nil
 }
