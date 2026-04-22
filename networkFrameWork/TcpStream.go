@@ -23,6 +23,16 @@ type TcpStream struct {
 	crypto       network.EncrypSuite // 加密套件
 }
 
+func NewTCPStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
+	return &TcpStream{
+		nodeId:       nodeId,
+		connection:   conn,
+		connectionId: connectionId,
+		lock:         sync.Mutex{},
+		crypto:       nil,
+	}
+}
+
 const (
 	tcpMode = "tcp"
 	udpMode = "udp"
@@ -51,6 +61,9 @@ func (t *TcpStream) keepLive() {
 		t.SendMessage(context.Background(), message)
 	}
 
+}
+func (t *TcpStream) Connection() net.Conn {
+	return t.connection
 }
 
 func (t *TcpStream) NextMessage() (*network.Message, error) {
@@ -218,7 +231,7 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId string,
 		nodeId:     originalNodeId,
 		connection: conn,
 	}
-	res.keepLive()
+	go res.keepLive()
 	return res, nil
 }
 
@@ -241,6 +254,6 @@ func kcpStream(FirstMessage *network.Message, tcpAddr, originalNodeId string) (n
 		nodeId:     originalNodeId,
 		connection: conn,
 	}
-	res.keepLive()
+	go res.keepLive()
 	return res, nil
 }
