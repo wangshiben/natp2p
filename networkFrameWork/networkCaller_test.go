@@ -55,21 +55,23 @@ func RelayClientTest(t *testing.T) string {
 		t.Log("RelayClientTest NewTLSCrypto success")
 		defer ClientStream.Close()
 		t.Log("I'm waiting for Message")
-		message, err = ClientStream.NextMessage()
-		marshal, _ := json.Marshal(message)
-		t.Logf("I'm got a Message %s,\n %v", marshal, err)
-		if err != nil {
-			t.Errorf("NextMessage err: %v", err)
-			ClientStream.Close()
-			return
-		}
-		t.Logf("[系统] 收到消息: %v\n", message.Payload)
-		decrypt, err := crypto.Decrypt(message.Payload)
-		if err != nil {
+		for i := 1; i <= 3; i++ {
+			message, err = ClientStream.NextMessage()
+			marshal, _ := json.Marshal(message)
+			t.Logf("I'm got a Message %s,\n %v", marshal, err)
+			if err != nil {
+				t.Errorf("NextMessage err: %v", err)
+				ClientStream.Close()
+				return
+			}
+			t.Logf("[系统] 收到消息: %v\n", message.Payload)
+			decrypt, err := crypto.Decrypt(message.Payload)
+			if err != nil {
 
-			return
+				return
+			}
+			t.Logf("[系统] 收到消息: %s \n", decrypt)
 		}
-		t.Logf("[系统] 收到消息: %s \n", decrypt)
 
 	}()
 	return originalNodeId
@@ -106,27 +108,43 @@ func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
 	go func() {
 		crypto, err := crypoto.NewTLSCrypto(stream, pair)
 		t.Log("ClientTest NewTLSCrypto success")
+		stream.SetCryptoSuite(crypto)
 		defer stream.Close()
 		if err != nil {
 			t.Errorf("NewTLSCrypto err: %v", err)
 			return
 		}
-		encrypt, err := crypto.Encrypt([]byte("这是来自客户端的消息"))
-		if err != nil {
-			t.Errorf("加密失败: %v", err)
-			return
-		}
-		Message := network.Message{
+
+		t.Log("Try send Message to relayStream")
+		err = stream.SendMessage(t.Context(), &network.Message{
 			Header: &network.Header{
 				ConnectionId:  connectionId,
 				NodeId:        RelayNodeId,
 				NodeIdVersion: 1,
 				RouteName:     "route1",
 			},
-			Payload: encrypt,
-		}
-		t.Log("Try send Message to relayStream")
-		err = stream.SendMessage(t.Context(), &Message)
+			Payload: []byte("这是来自客户端的消息"),
+		})
+		t.Log("Success send Message to relayStream")
+		err = stream.SendMessage(t.Context(), &network.Message{
+			Header: &network.Header{
+				ConnectionId:  connectionId,
+				NodeId:        RelayNodeId,
+				NodeIdVersion: 1,
+				RouteName:     "route1",
+			},
+			Payload: []byte("这是来自客户端的消息"),
+		})
+		t.Log("Success send Message to relayStream")
+		err = stream.SendMessage(t.Context(), &network.Message{
+			Header: &network.Header{
+				ConnectionId:  connectionId,
+				NodeId:        RelayNodeId,
+				NodeIdVersion: 1,
+				RouteName:     "route1",
+			},
+			Payload: []byte("这是来自客户端的消息"),
+		})
 		t.Log("Success send Message to relayStream")
 		if err != nil {
 			t.Errorf("发送消息失败: %v", err)

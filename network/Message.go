@@ -21,7 +21,7 @@ type Message struct {
 }
 
 const MagicHeader = "bnfs-data"
-const HeaderLength = 512
+const HeaderLength = 254
 const (
 	version1           = 1
 	NodeIdHexLength    = 64 // SHA256 Hex 字符串长度为 64
