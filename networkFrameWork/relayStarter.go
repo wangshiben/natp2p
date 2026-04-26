@@ -1,6 +1,7 @@
 package networkFrameWork
 
 import (
+	"fmt"
 	"github.com/xtaci/kcp-go/v5"
 	"log"
 	"net"
@@ -18,7 +19,14 @@ func (r *RelayStarter) StartListen() {
 	if err != nil {
 		return
 	}
-	kcplistener, err := kcp.Listen(r.addr)
+	// 1. 通过密码和盐生成密钥
+	//key := pbkdf2.Key([]byte("wangshibenbens"), []byte("your_salt"), 1024, 32, sha1.New)
+	//crypt, err := kcp.NewAESBlockCrypt(key)
+	//if err != nil {
+	//	panic(err)
+	//	return
+	//}
+	kcplistener, err := kcp.ListenWithOptions(r.addr, nil, 1, 1)
 	if err != nil {
 		return
 	}
@@ -35,6 +43,15 @@ func (r *RelayStarter) StartListen() {
 	go func() {
 		for {
 			kcpConn, err := kcplistener.Accept()
+			session, ok := kcpConn.(*kcp.UDPSession)
+
+			if !ok {
+				continue
+			}
+			session.SetNoDelay(1, 10, 2, 1)
+			session.SetMtu(1000)
+			session.SetWriteBuffer(4 * 1024 * 1024)
+			session.SetWindowSize(128, 512)
 			err = r.netGroup.ListenTCPConnection(kcpConn)
 			if err != nil {
 				log.Println("ListenKCPConnection error:", err)
@@ -42,6 +59,7 @@ func (r *RelayStarter) StartListen() {
 			}
 		}
 	}()
+	fmt.Println("RelayStarter Start AT " + r.addr)
 	select {
 	case <-r.close:
 		tcpListener.Close()

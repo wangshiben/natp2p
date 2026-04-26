@@ -4,6 +4,7 @@ import (
 	"bnfs_p2p/network"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -62,13 +63,21 @@ func (s *StreamGroup) StreamOn(stream network.Stream, FirstMessage *network.Mess
 		s.CloseTargetConnection(connectionId)
 	}
 	go func(c *connectionResource, connectionId string, ctx context.Context) {
+		defer func() {
+			err := recover()
+			if err != nil {
+				fmt.Printf("%v", err)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 				message, err := c.ListenStream()
-
+				if message.Header.RouteName == KeepAliveRoute {
+					continue
+				}
 				if err != nil {
 					s.CloseTargetConnection(connectionId)
 					return
@@ -95,6 +104,15 @@ func (s *StreamGroup) StartListen() {
 
 				return
 			}
+			if message.Header.RouteName == KeepAliveRoute {
+				continue
+			}
+			//marshal, err := json.Marshal(message)
+			//if err != nil {
+			//	panic(err)
+			//	return
+			//}
+			//fmt.Printf("receive message from relay to client: %s\n", string(marshal))
 
 			resource := s.connectionMap[message.Header.ConnectionId]
 			if resource == nil {

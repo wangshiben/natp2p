@@ -236,10 +236,20 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId string,
 }
 
 func kcpStream(FirstMessage *network.Message, tcpAddr, originalNodeId string) (network.Stream, error) {
-	conn, err := kcp.Dial(tcpAddr)
+	//key := pbkdf2.Key([]byte("wangshibenbens"), []byte("your_salt"), 1024, 32, sha1.New)
+	//crypt, err := kcp.NewAESBlockCrypt(key)
+	//if err != nil {
+	//	panic(err)
+	//}
+	conn, err := kcp.DialWithOptions(tcpAddr, nil, 1, 1)
 	if err != nil {
 		return nil, err
 	}
+	conn.SetNoDelay(1, 10, 2, 1)
+	conn.SetMtu(1000)
+	conn.SetWriteBuffer(4 * 1024 * 1024)
+	conn.SetWindowSize(128, 512)
+
 	bytes, err := FirstMessage.ParseToBytes()
 	if err != nil {
 		conn.Close()
