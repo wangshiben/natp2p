@@ -10,6 +10,7 @@ import (
 	"github.com/xtaci/kcp-go/v5"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -53,8 +54,9 @@ type TcpStream struct {
 	// 在进入正常重组路径前，会非阻塞地复制一份投递到这里，供 FrameRelayEndpoint 消费。
 	// frameTapMu 保护 frameTap 字段本身的并发读写（安装 / 卸载 / 读取）。
 	// 通道缓冲满则丢弃，不会阻塞 readLoop 主流程。
-	frameTapMu sync.RWMutex
-	frameTap   chan *network.Frame
+	frameTapMu     sync.RWMutex
+	frameTap       chan *network.Frame
+	frameRelayMode atomic.Bool
 
 	fatalMu   sync.Mutex
 	fatalErr  error
@@ -329,6 +331,10 @@ func (t *TcpStream) SetFrameTap(ch chan *network.Frame) {
 	t.frameTapMu.Unlock()
 }
 
+func (t *TcpStream) SetFrameRelayMode(enabled bool) {
+	t.frameRelayMode.Store(enabled)
+}
+
 func (t *TcpStream) getFrameTap() chan *network.Frame {
 	t.frameTapMu.RLock()
 	ch := t.frameTap
@@ -505,6 +511,9 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 				return err
 			}
 			msg.Payload = decrypted
+		}
+		if t.frameRelayMode.Load() {
+			return nil
 		}
 		select {
 		case t.inboxCh <- msg:
