@@ -91,7 +91,7 @@ func NewTLSCrypto(targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) 
 	if err != nil {
 		return nil, err
 	}
-	message, err := targetStream.NextMessage()
+	message, err := targetStream.NextMessage(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func NewTLSCrypto(targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) 
 		Payload: []byte(fmt.Sprintf("%s|%s", salt, signData)),
 	})
 	// 3. 接收对方发来的Salt值
-	message, err = targetStream.NextMessage()
+	message, err = targetStream.NextMessage(context.Background())
 	if err != nil {
 		return nil, err
 	}

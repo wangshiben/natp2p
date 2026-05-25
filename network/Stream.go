@@ -7,7 +7,7 @@ import (
 type Stream interface {
 	Close() error
 
-	NextMessage() (*Message, error)
+	NextMessage(ctx context.Context) (*Message, error)
 	SendMessage(ctx context.Context, message *Message) error
 	NodeId() string
 	ConnectionId() string

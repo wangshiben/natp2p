@@ -8,12 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
 	"math/rand"
 	"net"
 	"sync"
 	"testing"
-	"time"
 )
 
 func NodeEstablish(address, originalNodeIdSource string, t *testing.T, wg *sync.WaitGroup, continueEstablish bool) (Id string) {
@@ -36,7 +34,7 @@ func NodeEstablish(address, originalNodeIdSource string, t *testing.T, wg *sync.
 		}
 		for {
 			// 接下来接收响应 写入
-			ClientFirstMessage, _ := stream.NextMessage()
+			ClientFirstMessage, _ := stream.NextMessage(context.Background())
 			marshal, err := json.Marshal(ClientFirstMessage)
 			if err != nil {
 				return
@@ -76,7 +74,7 @@ func ClientTestWithStream(clientSteam network.Stream, connectionId, targetNodeId
 		Payload: []byte("hello server"),
 	}
 	clientSteam.SendMessage(context.Background(), body)
-	ClientFirstMessage, _ := clientSteam.NextMessage()
+	ClientFirstMessage, _ := clientSteam.NextMessage(context.Background())
 
 	t.Log("RelayServerFirstMessage:", string(ClientFirstMessage.Payload))
 }
@@ -97,11 +95,6 @@ func RelayServerWithStream(relayServerAddr string, t *testing.T, wg *sync.WaitGr
 }
 
 func ClientSendTestMessage(TargetNodeId, RelayServerAddr, originalNodeIdSource string, t *testing.T, wg *sync.WaitGroup) string {
-	dial, err := net.Dial("tcp", RelayServerAddr)
-	if err != nil {
-		return ""
-	}
-	//originalNodeIdSource := "test-node-id1-source-string"
 	pair, err := crypoto.MakeKeyPair()
 	if err != nil {
 		t.Fatalf("Failed to make key pair: %v", err)
@@ -113,36 +106,18 @@ func ClientSendTestMessage(TargetNodeId, RelayServerAddr, originalNodeIdSource s
 
 	go func() {
 		defer wg.Done()
-		//time.Sleep(1 * time.Second)
-		connectionId := uuid.New().String()
-		header := &network.Header{
-			RouteName:     "",
-			NodeId:        TargetNodeId,
-			NodeIdVersion: 1,
-			PayLoadLength: 0,
-			ConnectionId:  connectionId,
-			OriginData:    nil,
-		}
-		body := &network.Message{
-			Header:  header,
-			Payload: []byte(pairId),
-		}
-		bytes, err := body.ParseToBytes()
+		stream, _, err := TryConnectTCPStream(RelayServerAddr, TargetNodeId, pairId)
 		if err != nil {
 			t.Error("ERROR:" + err.Error())
 			return
 		}
-		// 第一次建立连接
-		_, err = dial.Write(bytes)
+		defer stream.Close()
+		ClientFirstMessage, err := stream.NextMessage(context.Background())
 		if err != nil {
 			t.Error("ERROR:" + err.Error())
 			return
 		}
-		time.Sleep(2 * time.Second)
-		dial.Write(bytes)
-		ClientFirstMessage, _ := tryReadMessageFromConnection(dial)
 		t.Log("RelayServerFirstMessage:", string(ClientFirstMessage.Payload))
-		dial.Close()
 	}()
 	return originalNodeId
 }
@@ -167,8 +142,7 @@ func TestNewStreamGroup(t *testing.T) {
 		}
 		if index%2 == 0 {
 
-			firstMessage, _ := tryReadMessageFromConnection(accept)
-			stream, err := TrySetupRelayStream(accept, firstMessage)
+			stream, _, err := AcceptTcpStream(accept)
 			if err != nil {
 				t.Logf("Failed to setup relay stream: %v", err)
 				return
@@ -178,8 +152,7 @@ func TestNewStreamGroup(t *testing.T) {
 				group.StartListen()
 			}()
 		} else {
-			firstMessage, _ := tryReadMessageFromConnection(accept)
-			stream, err := TrySetupRelayStream(accept, firstMessage)
+			stream, firstMessage, err := AcceptTcpStream(accept)
 			if err != nil {
 				t.Logf("Failed to setup relay stream: %v", err)
 				return

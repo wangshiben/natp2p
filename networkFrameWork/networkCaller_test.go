@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 )
@@ -27,7 +26,7 @@ func RelayClientTest(t *testing.T) string {
 		return ""
 	}
 	go func() {
-		message, err := stream.NextMessage()
+		message, err := stream.NextMessage(t.Context())
 		if err != nil {
 			return
 		}
@@ -39,12 +38,7 @@ func RelayClientTest(t *testing.T) string {
 		tcpStream := stream.(*TcpStream)
 		hash := sha256.Sum256(message.Payload)
 		originalNodeId := hex.EncodeToString(hash[:])
-		ClientStream := &TcpStream{
-			nodeId:       originalNodeId,
-			connection:   tcpStream.connection,
-			lock:         sync.Mutex{},
-			connectionId: message.Header.ConnectionId,
-		}
+		ClientStream := startTcpStream(originalNodeId, message.Header.ConnectionId, tcpStream.connection)
 
 		crypto, err := crypoto.NewTLSCrypto(ClientStream, pair)
 
@@ -56,7 +50,7 @@ func RelayClientTest(t *testing.T) string {
 		defer ClientStream.Close()
 		t.Log("I'm waiting for Message")
 		for i := 1; i <= 3; i++ {
-			message, err = ClientStream.NextMessage()
+			message, err = ClientStream.NextMessage(t.Context())
 			marshal, _ := json.Marshal(message)
 			t.Logf("I'm got a Message %s,\n %v", marshal, err)
 			if err != nil {
