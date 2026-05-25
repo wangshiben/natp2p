@@ -193,6 +193,60 @@ func (m *Message) ParseToBytes() ([]byte, error) {
 	}
 	return append(headerBytes, m.Payload...), nil
 }
+
+// ToFrames 使用默认帧大小 DefaultMaxFramePayload 将 Message 切分为帧序列。
+// 帧大小后续如需动态调整，请改用 SplitToFrames 显式传参。
+func (m *Message) ToFrames(messageId uint64) ([]*Frame, error) {
+	return m.SplitToFrames(messageId, DefaultMaxFramePayload)
+}
+
+// SplitToFrames 将一个 Message 序列化后按 maxPayload 切分为多个数据帧。
+//
+// maxPayload <= 0 时使用 DefaultMaxFramePayload。
+// messageId 由调用方提供，通常通过 FrameIdGenerator 生成。
+// 切分得到的每个 Frame 携带相同的 MessageId 与 TotalFrames，SeqId 从 0 递增。
+func (m *Message) SplitToFrames(messageId uint64, maxPayload int) ([]*Frame, error) {
+	if maxPayload <= 0 {
+		maxPayload = DefaultMaxFramePayload
+	}
+	body, err := m.ParseToBytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return []*Frame{{
+			MessageId:   messageId,
+			SeqId:       0,
+			TotalFrames: 1,
+			FrameType:   FrameTypeData,
+			Payload:     nil,
+		}}, nil
+	}
+
+	totalFrames := (len(body) + maxPayload - 1) / maxPayload
+	if totalFrames > int(^uint32(0)) {
+		return nil, errors.New("message too large to fit into frames")
+	}
+
+	frames := make([]*Frame, 0, totalFrames)
+	for i := 0; i < totalFrames; i++ {
+		start := i * maxPayload
+		end := start + maxPayload
+		if end > len(body) {
+			end = len(body)
+		}
+		chunk := make([]byte, end-start)
+		copy(chunk, body[start:end])
+		frames = append(frames, &Frame{
+			MessageId:   messageId,
+			SeqId:       uint32(i),
+			TotalFrames: uint32(totalFrames),
+			FrameType:   FrameTypeData,
+			Payload:     chunk,
+		})
+	}
+	return frames, nil
+}
 func ParseMessage(messageBytes []byte) (*Message, error) {
 	header, err := ParseHeader(messageBytes[:HeaderLength])
 	if err != nil {

@@ -20,11 +20,10 @@ type TransportCover struct {
 func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 	timeout, cancelFunc := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancelFunc()
-	errChan := make(chan error)
+	errChan := make(chan error, 1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				// 将任意类型的 panic 值转换为 error
 				var err error
 				switch v := r.(type) {
 				case error:
@@ -37,29 +36,21 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 				select {
 				case errChan <- err:
 				default:
-					// 如果 channel 已满或无法发送，记录日志或其他 fallback 处理
 					log.Printf("failed to send panic error to channel: %v", err)
 				}
-				// 确保连接被关闭（可加 sync.Once 防止重复关闭）
 				if connection != nil {
 					connection.Close()
 				}
-
 			}
 		}()
-		message, err := tryReadMessageFromConnection(connection)
+		stream, message, err := AcceptTcpStream(connection)
 		if err != nil {
 			connection.Close()
 			errChan <- err
-		}
-		stream, err := TrySetupRelayStream(connection, message)
-		if err != nil {
-			connection.Close()
-			errChan <- err
+			return
 		}
 		// 此时是注册为relayStream
 		if len(message.Header.ConnectionId) == 0 {
-
 			group := NewStreamGroup(stream, defaultHookfunc)
 			t.lock.Lock()
 			t.StreamGroup[stream.NodeId()] = group
@@ -68,32 +59,33 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		} else {
 			t.lock.RLock()
 			group := t.StreamGroup[message.Header.NodeId]
-			group.relayStream.SendMessage(context.Background(), message)
-			if group != nil {
-				err := group.StreamOn(stream, message)
-				if err != nil {
-					stream.Close()
-					errChan <- err
-				}
-			}
 			t.lock.RUnlock()
+			if group == nil {
+				stream.Close()
+				errChan <- errors.New("relay group not found for nodeId " + message.Header.NodeId)
+				return
+			}
+			if err := group.StreamOn(stream, message); err != nil {
+				stream.Close()
+				errChan <- err
+				return
+			}
+			if err := group.relayStream.SendMessage(context.Background(), message); err != nil {
+				stream.Close()
+				errChan <- err
+				return
+			}
 		}
 		errChan <- nil
 	}()
 
 	select {
 	case <-timeout.Done():
-
 		connection.Close()
 		return errors.New("timeout: connection closed")
-
 	case err := <-errChan:
-		if err != nil {
-			return err
-		}
-		return nil
+		return err
 	}
-
 }
 
 func NewTransportCover() *TransportCover {

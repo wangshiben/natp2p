@@ -24,13 +24,15 @@ func (s *StreamClient) Close() error {
 	return nil
 }
 
-func (s *StreamClient) NextMessage() (*network.Message, error) {
+func (s *StreamClient) NextMessage(ctx context.Context) (*network.Message, error) {
 	for {
 		select {
 		case <-s.exit:
 			return nil, errors.New("stream closed")
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		default:
-			message, err := s.stream.NextMessage()
+			message, err := s.stream.NextMessage(ctx)
 			if err != nil {
 				return nil, err
 			}
