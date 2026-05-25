@@ -80,6 +80,7 @@ func NewTcpFrameAdapter(stream *TcpStream) *TcpFrameAdapter {
 	}
 	ch := make(chan *network.Frame, 64)
 	stream.SetFrameTap(ch)
+	stream.SetFrameRelayMode(true)
 	return &TcpFrameAdapter{stream: stream, frames: ch}
 }
 
