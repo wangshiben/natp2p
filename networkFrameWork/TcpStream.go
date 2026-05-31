@@ -21,7 +21,17 @@ const (
 	recvAckIdleTimeout    = time.Second
 	recvAckTickInterval   = 250 * time.Millisecond
 	inboxBufferSize       = 64
+
+	maxReconnectAttempts    = 10
+	initialReconnectBackoff = 200 * time.Millisecond
+	maxReconnectBackoff     = 5 * time.Second
+	dialHandshakeTimeout    = 1500 * time.Millisecond
+	e2eDeliveredCacheLimit  = 65536
 )
+
+// streamReconnectDialer 在某条协议 leg 失效后被 DualStream 用来重新建立一条同协议的底层流。
+// 实现需要响应 ctx 取消并在失败时清理资源，不需要自己实现退避。
+type streamReconnectDialer func(ctx context.Context) (network.Stream, error)
 
 var errAckTimeout = errors.New("ack timeout")
 
@@ -49,14 +59,25 @@ type TcpStream struct {
 	deliveredMu sync.Mutex
 	delivered   map[uint64]bool
 
-	// frameTap 是 relay 数据面的"帧旁路通道"。
-	// 当 relay 通过 SetFrameTap 安装一个通道后，readLoop 收到的每一帧 Data/Retransmit
-	// 在进入正常重组路径前，会非阻塞地复制一份投递到这里，供 FrameRelayEndpoint 消费。
-	// frameTapMu 保护 frameTap 字段本身的并发读写（安装 / 卸载 / 读取）。
-	// 通道缓冲满则丢弃，不会阻塞 readLoop 主流程。
-	frameTapMu     sync.RWMutex
-	frameTap       chan *network.Frame
+	e2eDeliveredMu    sync.Mutex
+	e2eDelivered      map[string]struct{}
+	e2eDeliveredOrder []string
+
+	// frameTapMu / frameTap：本流的「帧旁路通道」。
+	//   非 nil 时，readLoop 收到的每一帧（数据帧 + 在 pure forwarder 模式下也包括 ACK 帧）
+	//   都会复制一份送进 tap，供 relay frame pump 消费。
+	//   普通模式下 tap 仅作观察用途，会非阻塞丢弃；relay/pure 模式下保证可靠投递。
+	frameTapMu sync.RWMutex
+	frameTap   chan *network.Frame
+
+	// frameRelayMode：把本流的「完整 Message 重组结果」从 inboxCh 旁路出去（不再投到业务层），
+	//   仅作为 frame 的来源被 relay 使用。它单独控制 inbox 行为，不改变 ACK / 组包 / 重传。
 	frameRelayMode atomic.Bool
+
+	// pureForwarder：把本流彻底变成 frame router。详见 SetPureForwarder 注释。
+	//   只有挂在 relay DualFrameRelayEndpoint 上的 leg 才会开启它；
+	//   应用端的 client / relayServer 流始终保持 false，仍跑完整的 ACK / 重传 / 组包逻辑。
+	pureForwarder atomic.Bool
 
 	fatalMu   sync.Mutex
 	fatalErr  error
@@ -120,6 +141,642 @@ type recvTracker struct {
 	lastFrameTime  time.Time
 }
 
+type streamTransport string
+
+const (
+	streamTransportUnknown streamTransport = ""
+	streamTransportTCP     streamTransport = "tcp"
+	streamTransportKCP     streamTransport = "kcp"
+)
+
+type identitySetter interface {
+	SetIdentity(nodeId, connectionId string)
+}
+
+type tcpStreamAccessor interface {
+	TCPStream() *TcpStream
+}
+
+type messageIDSender interface {
+	sendMessageWithMessageID(ctx context.Context, message *network.Message, messageID []byte) error
+}
+
+// DualStream 把同一逻辑连接下的 KCP/TCP 两条底层流聚合成一个 network.Stream。
+// SendMessage 默认优先走 KCP，KCP 发送失败后切换到 TCP；NextMessage 汇聚两条底层流的入站消息。
+// 该结构体也被 relay 侧复用，用来把同一逻辑会话的多条 leg 收拢成一个逻辑流。
+type DualStream struct {
+	mu             sync.RWMutex
+	preferred      streamTransport
+	nodeId         string
+	connectionId   string
+	crypto         network.EncrypSuite
+	collectInbound bool
+
+	kcp network.Stream
+	tcp network.Stream
+
+	ctx       context.Context
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	inbox     chan *network.Message
+
+	frameEndpoint *DualFrameRelayEndpoint
+
+	reconnectMu       sync.Mutex
+	reconnectDialers  map[streamTransport]streamReconnectDialer
+	reconnectActive   map[streamTransport]bool
+	reconnectDisabled map[streamTransport]bool
+}
+
+func newDualStream(nodeId, connectionId string) *DualStream {
+	return newDualStreamWithPump(nodeId, connectionId, true)
+}
+
+func newDualStreamWithPump(nodeId, connectionId string, collectInbound bool) *DualStream {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &DualStream{
+		preferred:         streamTransportUnknown,
+		nodeId:            nodeId,
+		connectionId:      connectionId,
+		collectInbound:    collectInbound,
+		ctx:               ctx,
+		cancel:            cancel,
+		inbox:             make(chan *network.Message, inboxBufferSize),
+		reconnectDialers:  make(map[streamTransport]streamReconnectDialer),
+		reconnectActive:   make(map[streamTransport]bool),
+		reconnectDisabled: make(map[streamTransport]bool),
+	}
+}
+
+func newDualStreamFromStreams(nodeId, connectionId string, kcpStream, tcpStream network.Stream) *DualStream {
+	res := newDualStream(nodeId, connectionId)
+	if kcpStream != nil {
+		_ = res.attach(streamTransportKCP, kcpStream)
+	}
+	if tcpStream != nil {
+		_ = res.attach(streamTransportTCP, tcpStream)
+	}
+	if kcpStream == nil {
+		res.preferred = streamTransportTCP
+	}
+	return res
+}
+
+func (d *DualStream) Close() error {
+	d.closeOnce.Do(func() {
+		d.cancel()
+		d.mu.Lock()
+		kcpStream := d.kcp
+		tcpStream := d.tcp
+		d.kcp = nil
+		d.tcp = nil
+		d.mu.Unlock()
+		if kcpStream != nil {
+			_ = kcpStream.Close()
+		}
+		if tcpStream != nil && tcpStream != kcpStream {
+			_ = tcpStream.Close()
+		}
+	})
+	return nil
+}
+
+func (d *DualStream) NextMessage(ctx context.Context) (*network.Message, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-d.ctx.Done():
+		return nil, errors.New("stream closed")
+	case msg := <-d.inbox:
+		return msg, nil
+	}
+}
+
+// SendMessage 选定 primary/backup 后发送。任一方向写失败会立刻关闭并 detach 失败 leg、
+// 调度该协议重连，然后用同一条消息在 backup 上重发，实现实时切换。
+// 若两条 leg 都失败或都不存在，关闭整个逻辑流并返回错误。
+func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) error {
+	primaryKind, primary, backupKind, backup := d.sendOrder()
+	if primary == nil && backup == nil {
+		return errors.New("stream closed")
+	}
+	if primary == nil {
+		primaryKind, primary = backupKind, backup
+		backupKind, backup = streamTransportUnknown, nil
+	}
+
+	messageID := d.newOutgoingMessageID()
+	if err := sendMessageWithIdentity(ctx, primary, cloneMessage(message), messageID); err == nil {
+		return nil
+	} else {
+		if ctx.Err() != nil {
+			return err
+		}
+		d.handleLegFailure(primaryKind, primary)
+		if backup == nil {
+			return err
+		}
+		if retryErr := sendMessageWithIdentity(ctx, backup, cloneMessage(message), messageID); retryErr != nil {
+			if ctx.Err() == nil {
+				d.handleLegFailure(backupKind, backup)
+			}
+			return retryErr
+		}
+		d.setPreferred(backupKind)
+		return nil
+	}
+}
+
+func (d *DualStream) newOutgoingMessageID() []byte {
+	d.mu.RLock()
+	crypto := d.crypto
+	d.mu.RUnlock()
+	if suite, ok := crypto.(network.MessageIdentitySuite); ok {
+		return suite.NewMessageID()
+	}
+	return nil
+}
+
+func sendMessageWithIdentity(ctx context.Context, stream network.Stream, message *network.Message, messageID []byte) error {
+	if sender, ok := stream.(messageIDSender); ok {
+		return sender.sendMessageWithMessageID(ctx, message, messageID)
+	}
+	return stream.SendMessage(ctx, message)
+}
+
+func (d *DualStream) NodeId() string {
+	d.mu.RLock()
+	if d.nodeId != "" {
+		defer d.mu.RUnlock()
+		return d.nodeId
+	}
+	kcpStream := d.kcp
+	tcpStream := d.tcp
+	d.mu.RUnlock()
+	if kcpStream != nil && kcpStream.NodeId() != "" {
+		return kcpStream.NodeId()
+	}
+	if tcpStream != nil {
+		return tcpStream.NodeId()
+	}
+	return ""
+}
+
+func (d *DualStream) ConnectionId() string {
+	d.mu.RLock()
+	if d.connectionId != "" {
+		defer d.mu.RUnlock()
+		return d.connectionId
+	}
+	kcpStream := d.kcp
+	tcpStream := d.tcp
+	d.mu.RUnlock()
+	if kcpStream != nil && kcpStream.ConnectionId() != "" {
+		return kcpStream.ConnectionId()
+	}
+	if tcpStream != nil {
+		return tcpStream.ConnectionId()
+	}
+	return ""
+}
+
+func (d *DualStream) SetCryptoSuite(suite network.EncrypSuite) {
+	d.mu.Lock()
+	d.crypto = suite
+	kcpStream := d.kcp
+	tcpStream := d.tcp
+	d.mu.Unlock()
+	if kcpStream != nil {
+		kcpStream.SetCryptoSuite(suite)
+	}
+	if tcpStream != nil {
+		tcpStream.SetCryptoSuite(suite)
+	}
+}
+
+func (d *DualStream) SetIdentity(nodeId, connectionId string) {
+	d.mu.Lock()
+	d.nodeId = nodeId
+	d.connectionId = connectionId
+	kcpStream := d.kcp
+	tcpStream := d.tcp
+	d.mu.Unlock()
+	applyIdentity(kcpStream, nodeId, connectionId)
+	applyIdentity(tcpStream, nodeId, connectionId)
+}
+
+func (d *DualStream) TCPStream() *TcpStream {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return tcpStreamFromStream(d.tcp)
+}
+
+func (d *DualStream) preferredTransport() streamTransport {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.preferred
+}
+
+func (d *DualStream) EnableFrameRelay() *DualFrameRelayEndpoint {
+	d.mu.Lock()
+	if d.frameEndpoint != nil {
+		endpoint := d.frameEndpoint
+		d.mu.Unlock()
+		return endpoint
+	}
+	endpoint := NewDualFrameRelayEndpoint(d)
+	d.frameEndpoint = endpoint
+	kcpStream := d.kcp
+	tcpStream := d.tcp
+	d.mu.Unlock()
+
+	attached := false
+	if kcpStream != nil && endpoint.AttachStream(streamTransportKCP, kcpStream) == nil {
+		attached = true
+	}
+	if tcpStream != nil && endpoint.AttachStream(streamTransportTCP, tcpStream) == nil {
+		attached = true
+	}
+	if !attached {
+		return nil
+	}
+	return endpoint
+}
+
+func (d *DualStream) AttachStream(stream network.Stream) error {
+	return d.attach(detectStreamTransport(stream), stream)
+}
+
+func (d *DualStream) HasStream(kind streamTransport) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.streamLocked(kind) != nil
+}
+
+func (d *DualStream) attach(kind streamTransport, stream network.Stream) error {
+	if stream == nil {
+		return errors.New("stream is nil")
+	}
+	if kind == streamTransportUnknown {
+		return errors.New("unknown stream transport")
+	}
+
+	d.mu.Lock()
+	var old network.Stream
+	switch kind {
+	case streamTransportKCP:
+		old = d.kcp
+		d.kcp = stream
+	case streamTransportTCP:
+		old = d.tcp
+		d.tcp = stream
+	}
+	if d.crypto != nil {
+		stream.SetCryptoSuite(d.crypto)
+	}
+	nodeId := d.nodeId
+	connectionId := d.connectionId
+	frameEndpoint := d.frameEndpoint
+	if d.preferred == streamTransportUnknown {
+		d.preferred = kind
+	}
+	d.mu.Unlock()
+
+	applyIdentity(stream, nodeId, connectionId)
+	if frameEndpoint != nil {
+		_ = frameEndpoint.AttachStream(kind, stream)
+	}
+	if d.collectInbound {
+		d.startPump(kind, stream)
+	}
+	if old != nil && old != stream {
+		_ = old.Close()
+	}
+	return nil
+}
+
+func (d *DualStream) startPump(kind streamTransport, stream network.Stream) {
+	go func() {
+		for {
+			msg, err := stream.NextMessage(d.ctx)
+			if err != nil {
+				if d.ctx.Err() != nil || isContextError(err) {
+					return
+				}
+				d.handleLegFailure(kind, stream)
+				return
+			}
+			select {
+			case <-d.ctx.Done():
+				return
+			case d.inbox <- msg:
+			}
+		}
+	}()
+}
+
+func (d *DualStream) detach(kind streamTransport, stream network.Stream) {
+	d.mu.Lock()
+	switch kind {
+	case streamTransportKCP:
+		if d.kcp == stream {
+			d.kcp = nil
+			if d.preferred == streamTransportKCP {
+				d.preferred = streamTransportTCP
+			}
+		}
+	case streamTransportTCP:
+		if d.tcp == stream {
+			d.tcp = nil
+			if d.preferred == streamTransportTCP {
+				d.preferred = streamTransportKCP
+			}
+		}
+	}
+	empty := d.kcp == nil && d.tcp == nil
+	d.mu.Unlock()
+	if empty {
+		d.Close()
+	}
+}
+
+// handleLegFailure 在发送写失败时被调用：关闭并 detach 失败 leg，并尝试调度该协议的重连。
+func (d *DualStream) handleLegFailure(kind streamTransport, stream network.Stream) {
+	if stream == nil {
+		return
+	}
+	_ = stream.Close()
+	d.detach(kind, stream)
+	d.scheduleReconnect(kind)
+}
+
+func isContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// SetReconnectDialer 为某一种协议设置重连工厂。dialer 必须能从零拉起一条新的同协议底层流，
+// 包括首包发送；DualStream 负责按指数退避调用并把成功结果 attach 到自己。
+func (d *DualStream) SetReconnectDialer(kind streamTransport, dial streamReconnectDialer) {
+	if kind == streamTransportUnknown {
+		return
+	}
+	d.reconnectMu.Lock()
+	defer d.reconnectMu.Unlock()
+	if dial == nil {
+		delete(d.reconnectDialers, kind)
+		return
+	}
+	d.reconnectDialers[kind] = dial
+	d.reconnectDisabled[kind] = false
+}
+
+func (d *DualStream) hasReconnectChance() bool {
+	d.reconnectMu.Lock()
+	defer d.reconnectMu.Unlock()
+	for kind, dial := range d.reconnectDialers {
+		if dial == nil {
+			continue
+		}
+		if d.reconnectDisabled[kind] {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// scheduleReconnect 按需启动一个 goroutine，对失败协议按指数退避重新拨号最多 10 次。
+// 若 DualStream 已关闭、没有 dialer、该协议已被标记永久失败或已有重连在进行，则不重复启动。
+func (d *DualStream) scheduleReconnect(kind streamTransport) {
+	if kind == streamTransportUnknown {
+		return
+	}
+	select {
+	case <-d.ctx.Done():
+		return
+	default:
+	}
+	d.reconnectMu.Lock()
+	dial := d.reconnectDialers[kind]
+	if dial == nil || d.reconnectDisabled[kind] || d.reconnectActive[kind] {
+		d.reconnectMu.Unlock()
+		return
+	}
+	d.reconnectActive[kind] = true
+	d.reconnectMu.Unlock()
+
+	go d.runReconnect(kind, dial)
+}
+
+func (d *DualStream) runReconnect(kind streamTransport, dial streamReconnectDialer) {
+	defer func() {
+		d.reconnectMu.Lock()
+		d.reconnectActive[kind] = false
+		d.reconnectMu.Unlock()
+	}()
+
+	backoff := initialReconnectBackoff
+	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		if d.HasStream(kind) {
+			return
+		}
+
+		stream, err := dial(d.ctx)
+		if err == nil && stream != nil {
+			if attachErr := d.attach(kind, stream); attachErr == nil {
+				return
+			}
+			_ = stream.Close()
+		}
+
+		backoff *= 2
+		if backoff > maxReconnectBackoff {
+			backoff = maxReconnectBackoff
+		}
+	}
+
+	d.reconnectMu.Lock()
+	d.reconnectDisabled[kind] = true
+	d.reconnectMu.Unlock()
+
+	d.mu.RLock()
+	empty := d.kcp == nil && d.tcp == nil
+	d.mu.RUnlock()
+	if empty {
+		d.Close()
+	}
+}
+
+// sendOrder 选出 primary/backup 两条 leg。两条协议是对称的：
+// preferred 决定 primary；另一条若存在则作为 backup。
+// 若 preferred 对应的 leg 当前不存在，会自动用另一条作为 primary。
+func (d *DualStream) sendOrder() (streamTransport, network.Stream, streamTransport, network.Stream) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	switch d.preferred {
+	case streamTransportTCP:
+		if d.tcp != nil {
+			return streamTransportTCP, d.tcp, streamTransportKCP, d.kcp
+		}
+		if d.kcp != nil {
+			return streamTransportKCP, d.kcp, streamTransportUnknown, nil
+		}
+	case streamTransportKCP:
+		if d.kcp != nil {
+			return streamTransportKCP, d.kcp, streamTransportTCP, d.tcp
+		}
+		if d.tcp != nil {
+			return streamTransportTCP, d.tcp, streamTransportUnknown, nil
+		}
+	default:
+		if d.kcp != nil {
+			return streamTransportKCP, d.kcp, streamTransportTCP, d.tcp
+		}
+		if d.tcp != nil {
+			return streamTransportTCP, d.tcp, streamTransportUnknown, nil
+		}
+	}
+	return streamTransportUnknown, nil, streamTransportUnknown, nil
+}
+
+func (d *DualStream) setPreferred(kind streamTransport) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.streamLocked(kind) != nil {
+		d.preferred = kind
+	}
+}
+
+func (d *DualStream) streamLocked(kind streamTransport) network.Stream {
+	switch kind {
+	case streamTransportKCP:
+		return d.kcp
+	case streamTransportTCP:
+		return d.tcp
+	default:
+		return nil
+	}
+}
+
+func applyIdentity(stream network.Stream, nodeId, connectionId string) bool {
+	if stream == nil {
+		return false
+	}
+	if setter, ok := stream.(identitySetter); ok {
+		setter.SetIdentity(nodeId, connectionId)
+		return true
+	}
+	return false
+}
+
+func SetStreamIdentity(stream network.Stream, nodeId, connectionId string) bool {
+	return applyIdentity(stream, nodeId, connectionId)
+}
+
+func (d *DualStream) PreferTCP() {
+	d.setPreferred(streamTransportTCP)
+}
+
+func PreferTCPStream(stream network.Stream) bool {
+	dual, ok := stream.(*DualStream)
+	if !ok {
+		return false
+	}
+	dual.PreferTCP()
+	return true
+}
+
+func ensureDualStream(stream network.Stream) *DualStream {
+	if stream == nil {
+		return newDualStream("", "")
+	}
+	if dual, ok := stream.(*DualStream); ok {
+		return dual
+	}
+	dual := newDualStream(stream.NodeId(), stream.ConnectionId())
+	_ = dual.attach(detectStreamTransport(stream), stream)
+	return dual
+}
+
+func detectStreamTransport(stream network.Stream) streamTransport {
+	if dual, ok := stream.(*DualStream); ok {
+		if dual.HasStream(streamTransportKCP) {
+			return streamTransportKCP
+		}
+		if dual.HasStream(streamTransportTCP) {
+			return streamTransportTCP
+		}
+		return streamTransportUnknown
+	}
+	carrier, ok := stream.(interface{ Connection() net.Conn })
+	if !ok {
+		return streamTransportUnknown
+	}
+	if _, ok := carrier.Connection().(*kcp.UDPSession); ok {
+		return streamTransportKCP
+	}
+	return streamTransportTCP
+}
+
+func tcpStreamFromStream(stream network.Stream) *TcpStream {
+	if stream == nil {
+		return nil
+	}
+	if accessor, ok := stream.(tcpStreamAccessor); ok {
+		return accessor.TCPStream()
+	}
+	if tcpStream, ok := stream.(*TcpStream); ok {
+		return tcpStream
+	}
+	return nil
+}
+
+func TCPStreamOf(stream network.Stream) *TcpStream {
+	return tcpStreamFromStream(stream)
+}
+
+func cloneMessage(message *network.Message) *network.Message {
+	if message == nil {
+		return nil
+	}
+	clone := &network.Message{
+		Payload: append([]byte(nil), message.Payload...),
+	}
+	if message.Header != nil {
+		header := *message.Header
+		header.OriginData = append([]byte(nil), message.Header.OriginData...)
+		clone.Header = &header
+	}
+	return clone
+}
+
+func (t *TcpStream) seenOrRecordE2EMessage(messageID []byte) bool {
+	if len(messageID) == 0 {
+		return false
+	}
+	key := string(messageID)
+	t.e2eDeliveredMu.Lock()
+	defer t.e2eDeliveredMu.Unlock()
+	if _, ok := t.e2eDelivered[key]; ok {
+		return true
+	}
+	t.e2eDelivered[key] = struct{}{}
+	t.e2eDeliveredOrder = append(t.e2eDeliveredOrder, key)
+	if len(t.e2eDeliveredOrder) > e2eDeliveredCacheLimit {
+		oldest := t.e2eDeliveredOrder[0]
+		copy(t.e2eDeliveredOrder, t.e2eDeliveredOrder[1:])
+		t.e2eDeliveredOrder = t.e2eDeliveredOrder[:len(t.e2eDeliveredOrder)-1]
+		delete(t.e2eDelivered, oldest)
+	}
+	return false
+}
+
 func startTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &TcpStream{
@@ -133,6 +790,7 @@ func startTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		pending:      make(map[uint64]*ackTracker),
 		recvTrackers: make(map[uint64]*recvTracker),
 		delivered:    make(map[uint64]bool),
+		e2eDelivered: make(map[string]struct{}),
 	}
 	go t.readLoop()
 	go t.recvAckTimer()
@@ -175,19 +833,28 @@ func (t *TcpStream) Connection() net.Conn {
 }
 
 func (t *TcpStream) keepLive() {
-	header := &network.Header{
-		RouteName:     KeepAliveRoute,
-		NodeId:        t.nodeId,
-		NodeIdVersion: 1,
-		ConnectionId:  "",
-	}
-	message := &network.Message{Header: header}
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-t.streamCtx.Done():
 			return
-		case <-time.After(5 * time.Second):
-			_ = t.SendMessage(context.Background(), message)
+		case <-ticker.C:
+			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, 3*time.Second)
+			err := t.SendMessage(heartbeatCtx, &network.Message{
+				Header: &network.Header{
+					RouteName:     KeepAliveRoute,
+					NodeId:        t.nodeId,
+					NodeIdVersion: 1,
+					ConnectionId:  t.connectionId,
+				},
+			})
+			cancel()
+			if err != nil && t.streamCtx.Err() == nil && !isContextError(err) {
+				t.failAndClose(err)
+				return
+			}
 		}
 	}
 }
@@ -207,20 +874,37 @@ func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
 // 总共最多 maxRetransmitAttempts 次。在等待期间响应 ctx 取消、stream 关闭、
 // 收到坏帧的连接级错误。
 func (t *TcpStream) SendMessage(ctx context.Context, message *network.Message) error {
+	return t.sendMessageWithMessageID(ctx, message, nil)
+}
+
+func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *network.Message, messageID []byte) error {
 	if err := t.fatal(); err != nil {
 		return err
 	}
 	if t.crypto != nil {
-		encrypted, err := t.crypto.Encrypt(message.Payload)
-		if err != nil {
-			return err
+		if suite, ok := t.crypto.(network.MessageIdentitySuite); ok {
+			encrypted, _, err := suite.EncryptWithMessageID(message.Payload, messageID)
+			if err != nil {
+				return err
+			}
+			message.Payload = encrypted
+		} else {
+			encrypted, err := t.crypto.Encrypt(message.Payload)
+			if err != nil {
+				return err
+			}
+			message.Payload = encrypted
 		}
-		message.Payload = encrypted
 	}
 	messageId := t.frameIdGen.Next()
 	frames, err := message.ToFrames(messageId)
 	if err != nil {
 		return err
+	}
+	if t.pureForwarder.Load() {
+		// pure forwarder leg：写完帧就返回。不建 pending、不等 ACK、不重传，
+		// 因为 ACK 由对端真正的接收者直接回到原始发送者，跟本 leg 无关。
+		return t.writeFrames(frames)
 	}
 	total := uint32(len(frames))
 	tracker := newAckTracker(total)
@@ -294,6 +978,7 @@ func (t *TcpStream) writeFrames(frames []*network.Frame) error {
 			return err
 		}
 		if _, err := t.connection.Write(bs); err != nil {
+			t.failAndClose(err)
 			return err
 		}
 	}
@@ -307,8 +992,11 @@ func (t *TcpStream) writeFrame(f *network.Frame) error {
 	}
 	t.sendLock.Lock()
 	defer t.sendLock.Unlock()
-	_, err = t.connection.Write(bs)
-	return err
+	if _, err := t.connection.Write(bs); err != nil {
+		t.failAndClose(err)
+		return err
+	}
+	return nil
 }
 
 func (t *TcpStream) NodeId() string       { return t.nodeId }
@@ -333,6 +1021,20 @@ func (t *TcpStream) SetFrameTap(ch chan *network.Frame) {
 
 func (t *TcpStream) SetFrameRelayMode(enabled bool) {
 	t.frameRelayMode.Store(enabled)
+}
+
+// SetPureForwarder 把本流切成「纯转发器」。
+//
+// 仅 relay 内部的 leg 会开启它。开启后该 leg 在协议上彻底变成一个 frame router：
+//   - handleData：只把原始数据帧投到 frameTap，不组包、不维护 recvTrackers/delivered、不发 ACK；
+//   - handleAck：不在本地消费 ACK，而是把 ACK 帧也投到 frameTap，交给 relay pump 透传给对端；
+//   - recvAckTimer：直接退出，不再补发 ACK；
+//   - SendMessage：写完帧就返回，不建 pending、不等 ACK、不重传。
+//
+// 这样 client 与 relayServer 之间是真正的端到端 ACK，relay 不再代替任何一方应答，
+// 避免「relay 抢先 ACK 导致发送端虚高、背压压在 relay 内部缓冲」的问题。
+func (t *TcpStream) SetPureForwarder(enabled bool) {
+	t.pureForwarder.Store(enabled)
 }
 
 func (t *TcpStream) getFrameTap() chan *network.Frame {
@@ -450,6 +1152,18 @@ func (t *TcpStream) handleFrame(f *network.Frame) error {
 }
 
 func (t *TcpStream) handleAck(f *network.Frame) error {
+	// pure forwarder：本 leg 不消费 ACK，把整帧透传到 frameTap，
+	// 让 relay frame pump 把它送回真正的发送方。
+	if t.pureForwarder.Load() {
+		if tap := t.getFrameTap(); tap != nil {
+			select {
+			case tap <- f:
+			case <-t.streamCtx.Done():
+				return t.streamErr()
+			}
+		}
+		return nil
+	}
 	ranges, err := network.DecodeAckRanges(f.Payload)
 	if err != nil {
 		return err
@@ -464,12 +1178,42 @@ func (t *TcpStream) handleAck(f *network.Frame) error {
 	return nil
 }
 
+func isKeepAliveFrame(f *network.Frame) bool {
+	if f == nil || f.SeqId != 0 || len(f.Payload) < network.HeaderLength {
+		return false
+	}
+	h, err := network.ParseHeader(f.Payload[:network.HeaderLength])
+	if err != nil {
+		return false
+	}
+	return h.RouteName == KeepAliveRoute
+}
+
 func (t *TcpStream) handleData(f *network.Frame) error {
-	if tap := t.getFrameTap(); tap != nil {
-		select {
-		case tap <- f:
-		default:
+	localKeepAlive := t.pureForwarder.Load() && isKeepAliveFrame(f)
+	// frameTap 投递：
+	//   - relay 模式 / pure forwarder 模式：必须可靠投递（阻塞等容量），不能丢帧，否则 relay 会断流；
+	//   - 但 pure forwarder 上的 KeepAliveRoute 仍是链路本地保活，不进 frameTap、由本 leg 自己 ACK；
+	//   - 普通模式：只是给观察者用的旁路，可以非阻塞丢弃。
+	if tap := t.getFrameTap(); tap != nil && !localKeepAlive {
+		if t.frameRelayMode.Load() || t.pureForwarder.Load() {
+			select {
+			case tap <- f:
+			case <-t.streamCtx.Done():
+				return t.streamErr()
+			}
+		} else {
+			select {
+			case tap <- f:
+			default:
+			}
 		}
+	}
+
+	// pure forwarder：业务数据帧不组包、不维护接收追踪、不发 ACK；
+	// 但链路本地 KeepAliveRoute 仍要留在本 leg 内部消费，否则对端 keepalive 永远收不到 ACK。
+	if t.pureForwarder.Load() && !localKeepAlive {
+		return nil
 	}
 
 	t.deliveredMu.Lock()
@@ -506,11 +1250,22 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 			return err
 		}
 		if t.crypto != nil {
-			decrypted, err := t.crypto.Decrypt(msg.Payload)
-			if err != nil {
-				return err
+			if identitySuite, ok := t.crypto.(network.MessageIdentitySuite); ok {
+				decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
+				if err != nil {
+					return err
+				}
+				msg.Payload = decrypted
+				if hasMessageID && t.seenOrRecordE2EMessage(messageID) {
+					return nil
+				}
+			} else {
+				decrypted, err := t.crypto.Decrypt(msg.Payload)
+				if err != nil {
+					return err
+				}
+				msg.Payload = decrypted
 			}
-			msg.Payload = decrypted
 		}
 		if t.frameRelayMode.Load() {
 			return nil
@@ -547,6 +1302,11 @@ func (t *TcpStream) recvAckTimer() {
 		case <-t.streamCtx.Done():
 			return
 		case now := <-ticker.C:
+			// pure forwarder leg 不组包、也不维护 recvTrackers，
+			// idle 补 ACK 这件事完全没有意义，直接退出 timer goroutine。
+			if t.pureForwarder.Load() {
+				return
+			}
 			var due []uint64
 			t.recvMu.Lock()
 			for id, rt := range t.recvTrackers {
@@ -697,20 +1457,63 @@ func TryRegisterStream(addr, originalPubkeyHex, targetNodeId, streamMode string)
 }
 
 func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string, isDefault bool) (network.Stream, error) {
-	if isDefault {
-		stream, err := kcpStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
-		if err == nil {
-			return stream, err
-		}
+	if !isDefault {
+		return tcpClientStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
 	}
 
-	conn, err := net.Dial("tcp4", tcpAddr)
+	dual := newDualStream(originalNodeId, connectionId)
+	template := cloneMessage(FirstMessage)
+	var kcpErr error
+	var tcpErr error
+
+	kcpClient, err := kcpStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
+	if err != nil {
+		kcpErr = err
+	} else if err := dual.attach(streamTransportKCP, kcpClient); err != nil {
+		_ = kcpClient.Close()
+		kcpErr = err
+	}
+
+	tcpClient, err := tcpClientStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
+	if err != nil {
+		tcpErr = err
+	} else if err := dual.attach(streamTransportTCP, tcpClient); err != nil {
+		_ = tcpClient.Close()
+		tcpErr = err
+	}
+
+	if !dual.HasStream(streamTransportKCP) && !dual.HasStream(streamTransportTCP) {
+		if tcpErr != nil {
+			return nil, tcpErr
+		}
+		return nil, kcpErr
+	}
+
+	dual.SetReconnectDialer(streamTransportKCP, func(ctx context.Context) (network.Stream, error) {
+		return kcpStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
+	})
+	dual.SetReconnectDialer(streamTransportTCP, func(ctx context.Context) (network.Stream, error) {
+		return tcpClientStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
+	})
+	return dual, nil
+}
+
+func tcpClientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string) (network.Stream, error) {
+	return tcpClientStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId)
+}
+
+func tcpClientStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string) (network.Stream, error) {
+	handshakeCtx, cancel := context.WithTimeout(ctx, dialHandshakeTimeout)
+	defer cancel()
+
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(handshakeCtx, "tcp4", tcpAddr)
 	if err != nil {
 		return nil, err
 	}
 	res := startTcpStream(originalNodeId, connectionId, conn)
-	if err := res.SendMessage(context.Background(), FirstMessage); err != nil {
-		conn.Close()
+	if err := res.SendMessage(handshakeCtx, cloneMessage(FirstMessage)); err != nil {
+		res.Close()
 		return nil, err
 	}
 	go res.keepLive()
@@ -718,6 +1521,13 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 }
 
 func kcpStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string) (network.Stream, error) {
+	return kcpStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId)
+}
+
+func kcpStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string) (network.Stream, error) {
+	handshakeCtx, cancel := context.WithTimeout(ctx, dialHandshakeTimeout)
+	defer cancel()
+
 	conn, err := kcp.DialWithOptions(tcpAddr, nil, 1, 1)
 	if err != nil {
 		return nil, err
@@ -728,8 +1538,8 @@ func kcpStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connectio
 	conn.SetWindowSize(128, 512)
 
 	res := startTcpStream(originalNodeId, connectionId, conn)
-	if err := res.SendMessage(context.Background(), FirstMessage); err != nil {
-		conn.Close()
+	if err := res.SendMessage(handshakeCtx, cloneMessage(FirstMessage)); err != nil {
+		res.Close()
 		return nil, err
 	}
 	go res.keepLive()

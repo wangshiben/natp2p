@@ -25,8 +25,13 @@ func NodeEstablish(address, originalNodeIdSource string, t *testing.T, wg *sync.
 	hash := sha256.Sum256([]byte(pairId))
 	originalNodeId := hex.EncodeToString(hash[:])
 
+	if !continueEstablish {
+		wg.Add(1)
+	}
 	go func() {
-		defer wg.Done()
+		if !continueEstablish {
+			defer wg.Done()
+		}
 		stream, err := TryRegisterRelayStream(pairId, address)
 		if err != nil {
 			t.Fatalf("Failed to register relay stream: %v", err.Error())
@@ -51,6 +56,9 @@ func NodeEstablish(address, originalNodeIdSource string, t *testing.T, wg *sync.
 			if err != nil {
 				stream.Close()
 				t.Error("ERROR:" + err.Error())
+				return
+			}
+			if !continueEstablish {
 				return
 			}
 		}
@@ -104,6 +112,7 @@ func ClientSendTestMessage(TargetNodeId, RelayServerAddr, originalNodeIdSource s
 	hash := sha256.Sum256([]byte(pairId))
 	originalNodeId := hex.EncodeToString(hash[:])
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		stream, _, err := TryConnectTCPStream(RelayServerAddr, TargetNodeId, pairId)
@@ -123,62 +132,81 @@ func ClientSendTestMessage(TargetNodeId, RelayServerAddr, originalNodeIdSource s
 }
 
 func TestNewStreamGroup(t *testing.T) {
-	tcpListener, err := net.Listen("tcp", ":9000")
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to start relay server: %v", err)
 	}
-	t.Log("Relay Server started on :9000")
+	defer tcpListener.Close()
+	relayAddr := tcpListener.Addr().String()
+	t.Log("Relay Server started on " + relayAddr)
 	var group *StreamGroup
+	var pendingStream network.Stream
+	var pendingMessage *network.Message
 	wg := &sync.WaitGroup{}
-	index := 0
-	establishId := NodeEstablish("127.0.0.1:9000", "test-node-id-source-string", t, wg, false)
+	establishId := NodeEstablish(relayAddr, "test-node-id-source-string", t, wg, false)
 	t.Log("establishId:", establishId)
-	ClientSendTestMessage(establishId, "127.0.0.1:9000", "test-node-id1-source-string", t, wg)
-	for index <= 1 {
+	ClientSendTestMessage(establishId, relayAddr, "test-node-id1-source-string", t, wg)
+	for accepted := 0; accepted < 2; accepted++ {
 		accept, err := tcpListener.Accept()
 		if err != nil {
 			t.Logf("Failed to accept connection: %v", err)
 			return
 		}
-		if index%2 == 0 {
-
-			stream, _, err := AcceptTcpStream(accept)
-			if err != nil {
-				t.Logf("Failed to setup relay stream: %v", err)
-				return
-			}
+		stream, firstMessage, err := AcceptTcpStream(accept)
+		if err != nil {
+			t.Logf("Failed to setup relay stream: %v", err)
+			return
+		}
+		if firstMessage.Header.ConnectionId == "" {
 			group = NewStreamGroup(stream, defaultHookfunc)
 			go func() {
 				group.StartListen()
 			}()
-		} else {
-			stream, firstMessage, err := AcceptTcpStream(accept)
-			if err != nil {
-				t.Logf("Failed to setup relay stream: %v", err)
-				return
+			if pendingStream != nil {
+				forwardFirstMessage, err := group.StreamOn(pendingStream, pendingMessage)
+				if err != nil {
+					t.Error("ERROR:" + err.Error())
+					return
+				}
+				if forwardFirstMessage {
+					if err := group.relayStream.SendMessage(context.Background(), pendingMessage); err != nil {
+						t.Error("ERROR:" + err.Error())
+					}
+				}
 			}
-			go func(index int) {
-				t.Logf("StreamOn: %d", index)
-				group.StreamOn(stream, firstMessage)
-
-			}(index)
+			continue
 		}
-		index++
-		wg.Add(1)
+		if group == nil {
+			pendingStream = stream
+			pendingMessage = firstMessage
+			continue
+		}
+		forwardFirstMessage, err := group.StreamOn(stream, firstMessage)
+		if err != nil {
+			t.Error("ERROR:" + err.Error())
+			return
+		}
+		if forwardFirstMessage {
+			if err := group.relayStream.SendMessage(context.Background(), firstMessage); err != nil {
+				t.Error("ERROR:" + err.Error())
+			}
+		}
 	}
 	wg.Wait()
 
 }
 
 func TestNewTransportCover(t *testing.T) {
-	tcpListener, err := net.Listen("tcp", ":9000")
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to start relay server: %v", err)
 	}
+	defer tcpListener.Close()
+	relayAddr := tcpListener.Addr().String()
 	wg := &sync.WaitGroup{}
 
 	transport := NewTransportCover()
-	establishId := NodeEstablish("127.0.0.1:9000", "test-node-id-source-string", t, wg, true)
+	establishId := NodeEstablish(relayAddr, "test-node-id-source-string", t, wg, true)
 	//wg.Add(1)
 	// 开始注册一个relay Connection
 	accept, err := tcpListener.Accept()
@@ -192,8 +220,7 @@ func TestNewTransportCover(t *testing.T) {
 		return
 	}
 	for i := 0; i < 9; i++ {
-		wg.Add(1)
-		ClientId := ClientSendTestMessage(establishId, "127.0.0.1:9000", fmt.Sprintf("test-node-id%d-source-string", i), t, wg)
+		ClientId := ClientSendTestMessage(establishId, relayAddr, fmt.Sprintf("test-node-id%d-source-string", i), t, wg)
 		t.Logf("ClientId: %s ,Client Index: %d ", ClientId, i)
 		accept, err = tcpListener.Accept()
 		t.Logf("accept: %v", i)
@@ -212,11 +239,12 @@ func TestNewTransportCover(t *testing.T) {
 }
 
 func TestRandomRelayClientInteraction(t *testing.T) {
-	tcpListener, err := net.Listen("tcp", ":9000")
+	tcpListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Failed to start relay server: %v", err)
 	}
-	defer tcpListener.Close() // 确保测试结束后关闭监听器
+	defer tcpListener.Close()
+	relayAddr := tcpListener.Addr().String()
 
 	wg := &sync.WaitGroup{}
 	transport := NewTransportCover()
@@ -232,7 +260,7 @@ func TestRandomRelayClientInteraction(t *testing.T) {
 	for i := 0; i < baseRelayCount; i++ {
 		// 每个 Relay 使用不同的 NodeID Source 以区分
 		relayNodeIdSource := fmt.Sprintf("relay-node-id-source-%d", i)
-		establishId := NodeEstablish("127.0.0.1:9000", relayNodeIdSource, t, wg, true)
+		establishId := NodeEstablish(relayAddr, relayNodeIdSource, t, wg, true)
 		t.Logf("Relay %d established with ID: %s", i, establishId)
 
 		// 将建立的 Relay ID 存入列表
@@ -275,7 +303,7 @@ func TestRandomRelayClientInteraction(t *testing.T) {
 		hash := sha256.Sum256([]byte(pubKeyStr))
 		originalNodeId := hex.EncodeToString(hash[:])
 		go func() {
-			stream, connectionId, err := TryConnectTCPStream("127.0.0.1:9000", targetRelayId, pubKeyStr)
+			stream, connectionId, err := TryConnectTCPStream(relayAddr, targetRelayId, pubKeyStr)
 			if err != nil {
 				t.Logf("Failed to connect to relay: %v", err)
 				return
