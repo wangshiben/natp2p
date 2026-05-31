@@ -51,11 +51,21 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		}
 		// 此时是注册为relayStream
 		if len(message.Header.ConnectionId) == 0 {
-			group := NewStreamGroup(stream, defaultHookfunc)
 			t.lock.Lock()
-			t.StreamGroup[stream.NodeId()] = group
-			t.lock.Unlock()
-			go group.StartListen()
+			group := t.StreamGroup[stream.NodeId()]
+			if group == nil {
+				group = NewStreamGroup(stream, defaultHookfunc)
+				t.StreamGroup[stream.NodeId()] = group
+				t.lock.Unlock()
+				go group.StartListen()
+			} else {
+				t.lock.Unlock()
+				if err := group.AttachRelayStream(stream); err != nil {
+					stream.Close()
+					errChan <- err
+					return
+				}
+			}
 		} else {
 			t.lock.RLock()
 			group := t.StreamGroup[message.Header.NodeId]
@@ -65,15 +75,18 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 				errChan <- errors.New("relay group not found for nodeId " + message.Header.NodeId)
 				return
 			}
-			if err := group.StreamOn(stream, message); err != nil {
+			forwardFirstMessage, err := group.StreamOn(stream, message)
+			if err != nil {
 				stream.Close()
 				errChan <- err
 				return
 			}
-			if err := group.relayStream.SendMessage(context.Background(), message); err != nil {
-				stream.Close()
-				errChan <- err
-				return
+			if forwardFirstMessage {
+				if err := group.relayStream.SendMessage(context.Background(), message); err != nil {
+					stream.Close()
+					errChan <- err
+					return
+				}
 			}
 		}
 		errChan <- nil

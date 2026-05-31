@@ -7,11 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 )
 
-func RelayClientTest(t *testing.T) string {
+func RelayClientTest(t *testing.T, relayAddr string) string {
 	pair, err := crypoto.MakeKeyPair()
 	time.Sleep(1 * time.Second)
 	if err != nil {
@@ -21,7 +22,7 @@ func RelayClientTest(t *testing.T) string {
 	pubKeyStr := crypoto.GetPubKeyStr(pair.PublicKey())
 	hash := sha256.Sum256([]byte(pubKeyStr))
 	originalNodeId := hex.EncodeToString(hash[:])
-	stream, err := TryRegisterRelayStream(pubKeyStr, "127.0.0.1:9000")
+	stream, err := TryRegisterRelayStream(pubKeyStr, relayAddr)
 	if err != nil {
 		return ""
 	}
@@ -35,27 +36,29 @@ func RelayClientTest(t *testing.T) string {
 			return
 		}
 		t.Logf("[系统] 收到消息: %s\n", data)
-		tcpStream := stream.(*TcpStream)
 		hash := sha256.Sum256(message.Payload)
 		originalNodeId := hex.EncodeToString(hash[:])
-		ClientStream := startTcpStream(originalNodeId, message.Header.ConnectionId, tcpStream.connection)
+		if !SetStreamIdentity(stream, originalNodeId, message.Header.ConnectionId) {
+			t.Errorf("SetStreamIdentity failed")
+			return
+		}
 
-		crypto, err := crypoto.NewTLSCrypto(ClientStream, pair)
+		crypto, err := crypoto.NewTLSCrypto(stream, pair)
 
 		if err != nil {
 			t.Errorf("NewTLSCrypto err: %v", err)
 			return
 		}
 		t.Log("RelayClientTest NewTLSCrypto success")
-		defer ClientStream.Close()
+		defer stream.Close()
 		t.Log("I'm waiting for Message")
 		for i := 1; i <= 3; i++ {
-			message, err = ClientStream.NextMessage(t.Context())
+			message, err = stream.NextMessage(t.Context())
 			marshal, _ := json.Marshal(message)
 			t.Logf("I'm got a Message %s,\n %v", marshal, err)
 			if err != nil {
 				t.Errorf("NextMessage err: %v", err)
-				ClientStream.Close()
+				stream.Close()
 				return
 			}
 			t.Logf("[系统] 收到消息: %v\n", message.Payload)
@@ -71,7 +74,7 @@ func RelayClientTest(t *testing.T) string {
 	return originalNodeId
 }
 
-func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
+func ClientTest(RelayNodeId string, t *testing.T, relayAddr string) (string, string, error) {
 	time.Sleep(2 * time.Second)
 	pair, err := crypoto.MakeKeyPair()
 	if err != nil {
@@ -81,7 +84,7 @@ func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
 	pubKeyStr := crypoto.GetPubKeyStr(pair.PublicKey())
 	hash := sha256.Sum256([]byte(pubKeyStr))
 	originalNodeId := hex.EncodeToString(hash[:])
-	stream, connectionId, err := TryConnectTCPStream("127.0.0.1:9000", RelayNodeId, pubKeyStr)
+	stream, connectionId, err := TryConnectTCPStream(relayAddr, RelayNodeId, pubKeyStr)
 	if err != nil {
 		return "", "", err
 	}
@@ -152,14 +155,20 @@ func ClientTest(RelayNodeId string, t *testing.T) (string, string, error) {
 func TestNewTLSCrypto(t *testing.T) {
 	t.Log("=== 测试 NewTLSCrypto ===")
 
-	starter := NewRelayStarter(":9000")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to reserve relay address: %v", err)
+	}
+	relayAddr := listener.Addr().String()
+	listener.Close()
+	starter := NewRelayStarter(relayAddr)
 
 	go func() {
 		time.Sleep(1 * time.Second)
-		RelayId := RelayClientTest(t)
-		t.Logf("[系统] 中转服务器启动成功，监听端口 %d", 9000)
+		RelayId := RelayClientTest(t, relayAddr)
+		t.Logf("[系统] 中转服务器启动成功，监听地址 %s", relayAddr)
 		t.Logf("[系统] 目标节点ID为 %s", RelayId)
-		ClientId, connectionId, err := ClientTest(RelayId, t)
+		ClientId, connectionId, err := ClientTest(RelayId, t, relayAddr)
 		if err != nil {
 			t.Errorf("ClientTest err: %v", err)
 			return

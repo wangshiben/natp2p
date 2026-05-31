@@ -33,6 +33,12 @@ func (r *RelayStarter) StartListen() {
 	go func() {
 		for {
 			tcpConn, err := tcpListener.Accept()
+			if err != nil {
+				return
+			}
+			if tcpConn == nil {
+				continue
+			}
 			err = r.netGroup.ListenTCPConnection(tcpConn)
 			if err != nil {
 				log.Println("ListenTCPConnection error:", err)
@@ -43,9 +49,14 @@ func (r *RelayStarter) StartListen() {
 	go func() {
 		for {
 			kcpConn, err := kcplistener.Accept()
+			if err != nil {
+				return
+			}
+			if kcpConn == nil {
+				continue
+			}
 			session, ok := kcpConn.(*kcp.UDPSession)
-
-			if !ok {
+			if !ok || session == nil {
 				continue
 			}
 			session.SetNoDelay(1, 10, 2, 1)

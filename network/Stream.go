@@ -17,3 +17,10 @@ type EncrypSuite interface {
 	Encrypt(Payload []byte) ([]byte, error)
 	Decrypt(Payload []byte) ([]byte, error)
 }
+
+type MessageIdentitySuite interface {
+	EncrypSuite
+	NewMessageID() []byte
+	EncryptWithMessageID(Payload []byte, messageID []byte) (ciphertext []byte, id []byte, err error)
+	DecryptWithMessageID(Payload []byte) (plaintext []byte, messageID []byte, ok bool, err error)
+}

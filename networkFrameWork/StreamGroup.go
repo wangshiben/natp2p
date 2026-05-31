@@ -25,26 +25,25 @@ import (
 //	ctx / cancelFunc      group 生命周期，组关闭时所有 frame pump 立即返回。
 //	nodeId                该 group 代表的对端 NodeId（即设备1）。
 type StreamGroup struct {
-	// 负责处理node的连接等信息
-	relayStream          network.Stream
-	relayFrame           FrameRelayEndpoint
-	connectionMap        map[string]*connectionResource // 此Stream目前保持会话的所有clientStream
-	beforeConnectionHook BeforeStreamOnHook
-	lock                 sync.Mutex
-	cancelFunc           context.CancelFunc
-	ctx                  context.Context
-	nodeId               string
+	relayStream           network.Stream
+	relayFrame            FrameRelayEndpoint
+	relayFramePumpStarted bool
+	connectionMap         map[string]*connectionResource
+	frameRoutes           *frameRouteRegistry
+	beforeConnectionHook  BeforeStreamOnHook
+	lock                  sync.Mutex
+	cancelFunc            context.CancelFunc
+	ctx                   context.Context
+	nodeId                string
 }
 
-// connectionResource 表示挂在某个 StreamGroup 上的"一条 client leg"。
-//
-//	stream  client 端的应用层 Stream（用于控制面消息，如握手首包、keepalive）。
-//	frame   仅在 stream 是 *TcpStream 时存在，是 relay 数据面 frame pump 的端点。
-//	flag    取消该 leg 上后台 goroutine（消息循环 / frame pump）的钩子。
 type connectionResource struct {
-	stream network.Stream
-	frame  FrameRelayEndpoint
-	flag   context.CancelFunc
+	stream             network.Stream
+	frame              FrameRelayEndpoint
+	ctx                context.Context
+	flag               context.CancelFunc
+	messageLoopStarted bool
+	framePumpStarted   bool
 }
 
 func (c *connectionResource) Close() {
@@ -77,6 +76,65 @@ type frameRouteEntry struct {
 	dstID uint64
 }
 
+// clientRouteKey 是 client 侧路由表的复合 key。
+// 之所以要带 connectionID：同一个 StreamGroup 下挂着多个 client leg，
+// 每个 client 的 MessageId 都从小数开始，单看 MessageId 会互相撞车，
+// 必须用「哪个 client + 它的 MessageId」才能唯一定位一条路由。
+type clientRouteKey struct {
+	connectionID string
+	messageID    uint64
+}
+
+// frameRouteRegistry 是「一个 StreamGroup 内、relay 与所有 client leg 之间」的双向路由表。
+//
+// pumpRelayToClients（relay->client）与 pumpClientToRelay（client->relay）共享同一份 registry，
+// 这样一个方向建立的映射，反方向的 ACK 帧能复用，不会被当成新消息另起炉灶：
+//
+//	relaySide   key = relay leg 上的 MessageId        -> 转发到某个 client leg 的 entry
+//	clientSide  key = {client connectionID, MessageId} -> 转发到 relay leg 的 entry
+//
+// 举例（client 发数据、relayServer 回 ACK）：
+//   - client->relay：在 clientSide 记 {connID, srcMsgId}->relay(dstID)，
+//     同时在 relaySide 记 dstID->client(srcMsgId) 作为反向回程。
+//   - relayServer 的 ACK 经 relay leg 进来时，pumpRelayToClients 用 relaySide[ackMsgId]
+//     就能直接查到「该回哪个 client、用哪个原始 MessageId」。
+type frameRouteRegistry struct {
+	mu         sync.Mutex
+	relaySide  map[uint64]*frameRouteEntry
+	clientSide map[clientRouteKey]*frameRouteEntry
+}
+
+func newFrameRouteRegistry() *frameRouteRegistry {
+	return &frameRouteRegistry{
+		relaySide:  make(map[uint64]*frameRouteEntry),
+		clientSide: make(map[clientRouteKey]*frameRouteEntry),
+	}
+}
+
+func (r *frameRouteRegistry) relayGet(messageID uint64) *frameRouteEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.relaySide[messageID]
+}
+
+func (r *frameRouteRegistry) relaySet(messageID uint64, entry *frameRouteEntry) {
+	r.mu.Lock()
+	r.relaySide[messageID] = entry
+	r.mu.Unlock()
+}
+
+func (r *frameRouteRegistry) clientGet(connectionID string, messageID uint64) *frameRouteEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.clientSide[clientRouteKey{connectionID: connectionID, messageID: messageID}]
+}
+
+func (r *frameRouteRegistry) clientSet(connectionID string, messageID uint64, entry *frameRouteEntry) {
+	r.mu.Lock()
+	r.clientSide[clientRouteKey{connectionID: connectionID, messageID: messageID}] = entry
+	r.mu.Unlock()
+}
+
 // newFrameRouteEntry 在第一次见到某个新 srcMessageId 时调用。
 // 立即在目标 leg 上 AllocMessageId，使整条消息后续所有帧都映射到这个新 ID。
 func newFrameRouteEntry(dest FrameRelayEndpoint) *frameRouteEntry {
@@ -106,170 +164,182 @@ func parseFrameHeader(f *network.Frame) (*network.Header, bool) {
 	return h, true
 }
 
-// pumpRelayToClients 是 relay→client 方向的 frame pump。
+// pumpRelayToClients 是 relay->client 方向的 frame pump。
 //
-// 场景：公网 relay 收到了来自"被中继节点"（设备1）的一帧，需要根据帧内业务头里的
-// ConnectionId 决定要发给哪一个挂在本 group 上的 client leg（设备2 / 设备3 / ...）。
+// 帧来源：relay leg（设备1 那侧）。帧去向：根据业务 ConnectionId 找到对应 client leg。
+// 在 pure forwarder 模式下，这里搬运的既有数据帧，也有「设备1 回给 client 的 ACK 帧」。
 //
-// 参数：
+// 路由复用 routes（与 pumpClientToRelay 共享）：
+//   - relayGet(f.MessageId) 命中：说明这条 relay 侧 MessageId 已经有目标 client leg
+//     （要么是设备1 主动发的数据流首帧建立的，要么是 client->relay 方向登记的反向回程）。
+//   - 未命中：必须是数据流首帧（SeqId==0 且能解析出 Header），用 Header.ConnectionId
+//     找到目标 client leg，分配 dstID 建正向映射，并登记反向回程（client 的 ACK 用得上）。
 //
-//	ctx     pump 生命周期；group 关闭或 relay leg 被关闭时取消，循环立即返回。
-//	relay   relay leg 的 FrameRelayEndpoint（由 *TcpStream 适配而来），即帧的来源。
-//	lookup  动态查询函数：传入业务 ConnectionId，返回对应 client leg 的 FrameRelayEndpoint；
-//	        若未找到（client 还没连上来 / 已断开），返回 nil 表示"丢弃这一帧"。
-//	        必须由调用方负责加锁保护 connectionMap 的并发访问。
-//
-// 行为：
-//  1. 死循环 NextFrame，直到 ctx 取消或底层流出错。
-//  2. 维护 srcMessageId -> frameRouteEntry 的映射 entries：
-//     - 第一次见到某个 srcMessageId 时，要求当前帧是首帧（SeqId == 0）且能解析出 Header；
-//     用 Header.ConnectionId 经 lookup 找到目标 leg；目标 leg 不存在则丢弃整帧。
-//     - 找到后通过 newFrameRouteEntry 在目标 leg 上 AllocMessageId，建立映射。
-//  3. 复制一份 frame，把 MessageId 改写为 entry.dstID，调用目标 leg 的 HandleFrame。
-//  4. 若目标 leg 写入失败，删掉该映射并退出 pump（通常意味着目标连接已断）。
-//
-// mu 保护 entries map 的并发访问；当前实现是单 goroutine 循环，但写入失败分支会
-// 在持锁后立即退出，留出锁是为了未来可能的并发扩展。
-func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint) {
-	var mu sync.Mutex
-	entries := make(map[uint64]*frameRouteEntry)
-
+// 找不到目标 client（还没连上 / 已断开）就丢弃该帧。写失败则退出 pump。
+func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry) {
 	for {
 		f, err := relay.NextFrame(ctx)
 		if err != nil {
 			return
 		}
 
-		mu.Lock()
-		entry, ok := entries[f.MessageId]
-		if !ok {
+		entry := routes.relayGet(f.MessageId)
+		if entry == nil {
+			// relay 侧第一次见到这个 MessageId：只接受能解析出业务 Header 的数据首帧。
 			h, ok := parseFrameHeader(f)
 			if !ok {
-				mu.Unlock()
 				continue
 			}
 			dst := lookup(h.ConnectionId)
 			if dst == nil {
-				mu.Unlock()
 				continue
 			}
 			entry = newFrameRouteEntry(dst)
-			entries[f.MessageId] = entry
+			// 正向：relay 的这个 MessageId -> 目标 client(dstID)。
+			routes.relaySet(f.MessageId, entry)
+			// 反向回程：client 用 dstID 回的 ACK -> 写回 relay leg 的原始 MessageId。
+			routes.clientSet(dst.ConnectionId(), entry.dstID, &frameRouteEntry{dest: relay, dstID: f.MessageId})
 		}
-		mu.Unlock()
 
 		out := *f
 		out.MessageId = entry.dstID
 		if err := entry.dest.HandleFrame(ctx, &out); err != nil {
-			mu.Lock()
-			delete(entries, f.MessageId)
-			mu.Unlock()
 			return
 		}
 	}
 }
 
-// pumpClientToRelay 是 client→relay 方向的 frame pump。
+// pumpClientToRelay 是 client->relay 方向的 frame pump。
 //
-// 场景：公网 relay 收到了某个 client leg（设备2）发来的一帧，要转发给该 group
-// 对应的"被中继节点"（设备1）的 relay leg。
+// 帧来源：某条 client leg（设备2）。帧去向：固定为本 group 的 relay leg（设备1）。
+// pure forwarder 模式下，这里既转发 client 发的数据帧，也转发「client 回给设备1 的 ACK 帧」。
 //
-// 与 pumpRelayToClients 的差别：
-//   - 目标是固定的（就是 group.relayFrame），不需要 lookup。
-//   - 不需要解析业务 Header；只要见到新的 srcMessageId 且当前帧是首帧（SeqId == 0），
-//     就在 relay leg 上 AllocMessageId 建立映射，后续帧跟随。
-//   - 非首帧但又没建立映射的，直接丢弃（属于不完整 / 乱序进来的尾帧）。
+// 路由复用 routes（与 pumpRelayToClients 共享，用 connectionID 区分不同 client）：
+//   - clientGet({connID, f.MessageId}) 命中：复用已有映射（含 relay->client 方向登记的反向回程）。
+//   - 未命中：必须是数据首帧（SeqId==0），在 relay leg 上分配 dstID 建正向映射，
+//     并登记反向回程（relayServer 的 ACK 用 dstID 回来时，能查回这个 client）。
 //
-// 参数：
-//
-//	ctx     pump 生命周期，client leg 关闭或 group ctx 取消时退出。
-//	client  client leg 的 FrameRelayEndpoint（帧来源）。
-//	relay   relay leg 的 FrameRelayEndpoint（帧去向，固定）。
-func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint) {
-	var mu sync.Mutex
-	entries := make(map[uint64]*frameRouteEntry)
-
+// 写失败则退出 pump。
+func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry) {
 	for {
 		f, err := client.NextFrame(ctx)
 		if err != nil {
 			return
 		}
 
-		mu.Lock()
-		entry, ok := entries[f.MessageId]
-		if !ok {
+		entry := routes.clientGet(client.ConnectionId(), f.MessageId)
+		if entry == nil {
 			if f.SeqId != 0 {
-				mu.Unlock()
 				continue
 			}
 			entry = newFrameRouteEntry(relay)
-			entries[f.MessageId] = entry
+			// 正向：client 的这个 MessageId -> relay leg(dstID)。
+			routes.clientSet(client.ConnectionId(), f.MessageId, entry)
+			// 反向回程：relay 用 dstID 回的 ACK -> 写回该 client 的原始 MessageId。
+			routes.relaySet(entry.dstID, &frameRouteEntry{dest: client, dstID: f.MessageId})
 		}
-		mu.Unlock()
 
 		out := *f
 		out.MessageId = entry.dstID
 		if err := entry.dest.HandleFrame(ctx, &out); err != nil {
-			mu.Lock()
-			delete(entries, f.MessageId)
-			mu.Unlock()
 			return
 		}
 	}
 }
 
-// StreamOn 当有一个新 client Stream 要挂到本 group 上时调用。
-//
-// 调用方：通常是 TransportCover.ListenTCPConnection — 它读到一个非空 ConnectionId 的
-// 首条消息（来自设备2）后，找到对应 group（设备1 的 group），把这条 client 流挂进来。
-//
-// 参数：
-//
-//	stream         新接入的 client leg；其底层若是 *TcpStream，会被包装成 FrameRelayEndpoint。
-//	FirstMessage   client 发来的首条业务消息；必须携带 ConnectionId（一般 Payload 为空，
-//	               用作业务连接握手），ConnectionId 为空则直接返回错误。
-//
-// 行为：
-//  1. 用 FirstMessage.Header.ConnectionId 作为 key，把 client leg 注册到 connectionMap。
-//  2. 调用 beforeConnectionHook（预留给 SSL/TLS 等握手）。失败则关闭这条 client leg，
-//     但首条消息的转发仍按原逻辑执行（保持兼容）。
-//  3. 如果 stream 与 relayStream 都是 *TcpStream，构造 client leg 的 FrameRelayEndpoint，
-//     启动 client→relay 方向的 frame pump（pumpClientToRelay），后续数据面全部走帧桥接。
-//  4. 否则降级回旧的 message-loop 路径：起一个 goroutine 循环 NextMessage，过滤心跳，
-//     把消息整包转发到 relayStream。出错时清理本 leg。
-func (s *StreamGroup) StreamOn(stream network.Stream, FirstMessage *network.Message) error {
+func (s *StreamGroup) AttachRelayStream(stream network.Stream) error {
 	s.lock.Lock()
-	connectionId := FirstMessage.Header.ConnectionId
-	ctx, cancelFunc := context.WithCancel(context.Background())
-	c := &connectionResource{
-		stream: stream,
-		flag:   cancelFunc,
-	}
-	if len(connectionId) == 0 {
-		s.lock.Unlock()
-		return errors.New("connectionId is empty")
-	}
-	s.connectionMap[connectionId] = c
-	s.lock.Unlock()
-
-	err := s.beforeConnectionHook(stream, s.relayStream, FirstMessage)
-	if err != nil {
-		s.CloseTargetConnection(connectionId)
-	}
-
-	if t, ok := stream.(*TcpStream); ok {
-		c.frame = NewTcpFrameAdapter(t)
-	}
-
-	if c.frame != nil && s.relayFrame != nil {
-		go pumpClientToRelay(ctx, c.frame, s.relayFrame)
+	defer s.lock.Unlock()
+	dual := ensureDualStream(s.relayStream)
+	s.relayStream = dual
+	if err := dual.AttachStream(stream); err != nil {
 		return err
 	}
+	if s.relayFrame == nil {
+		s.relayFrame = dual.EnableFrameRelay()
+	}
+	return nil
+}
+
+// StreamOn 把新接入的 client leg 挂到指定 ConnectionId 对应的逻辑流上。
+// 返回值 forwardFirstMessage 表示这是不是该逻辑连接的第一条底层 leg；
+// 只有第一条 leg 的首包需要继续转发给 relay 端，后续 leg 只做挂载，不重复转发首包。
+func (s *StreamGroup) StreamOn(stream network.Stream, FirstMessage *network.Message) (forwardFirstMessage bool, err error) {
+	connectionId := FirstMessage.Header.ConnectionId
+	if len(connectionId) == 0 {
+		return false, errors.New("connectionId is empty")
+	}
+
+	s.lock.Lock()
+	resource := s.connectionMap[connectionId]
+	if resource != nil {
+		dual := ensureDualStream(resource.stream)
+		resource.stream = dual
+		s.lock.Unlock()
+		if err := dual.AttachStream(stream); err != nil {
+			return false, err
+		}
+		if resource.frame == nil {
+			resource.frame = dual.EnableFrameRelay()
+		}
+		return false, nil
+	}
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	logicalStream := ensureDualStream(stream)
+	resource = &connectionResource{
+		stream: logicalStream,
+		ctx:    ctx,
+		flag:   cancelFunc,
+		frame:  logicalStream.EnableFrameRelay(),
+	}
+	s.connectionMap[connectionId] = resource
+	s.lock.Unlock()
+
+	err = s.beforeConnectionHook(logicalStream, s.relayStream, FirstMessage)
+	if err != nil {
+		s.CloseTargetConnection(connectionId)
+		return true, err
+	}
+
+	if resource.frame != nil && s.relayFrame != nil {
+		s.startFramePump(connectionId, resource)
+	} else {
+		s.startConnectionLoop(connectionId, resource)
+	}
+	return true, nil
+}
+
+func (s *StreamGroup) startFramePump(connectionId string, resource *connectionResource) {
+	s.lock.Lock()
+	if resource.framePumpStarted {
+		s.lock.Unlock()
+		return
+	}
+	resource.framePumpStarted = true
+	ctx := resource.ctx
+	frame := resource.frame
+	relayFrame := s.relayFrame
+	s.lock.Unlock()
+	if frame == nil || relayFrame == nil {
+		return
+	}
+	go pumpClientToRelay(ctx, frame, relayFrame, s.frameRoutes)
+}
+
+func (s *StreamGroup) startConnectionLoop(connectionId string, resource *connectionResource) {
+	s.lock.Lock()
+	if resource.messageLoopStarted {
+		s.lock.Unlock()
+		return
+	}
+	resource.messageLoopStarted = true
+	ctx := resource.ctx
+	s.lock.Unlock()
 
 	go func(c *connectionResource, connectionId string, ctx context.Context) {
 		defer func() {
-			err := recover()
-			if err != nil {
+			if err := recover(); err != nil {
 				fmt.Printf("%v", err)
 			}
 		}()
@@ -286,41 +356,26 @@ func (s *StreamGroup) StreamOn(stream network.Stream, FirstMessage *network.Mess
 				if message.Header.RouteName == KeepAliveRoute {
 					continue
 				}
-				err = s.relayStream.SendMessage(ctx, message)
-				if err != nil {
+				if err := s.relayStream.SendMessage(ctx, message); err != nil {
 					s.CloseTargetConnection(connectionId)
+					return
 				}
 			}
 		}
-	}(c, FirstMessage.Header.ConnectionId, ctx)
-	return err
+	}(resource, connectionId, ctx)
 }
 
-// StartListen 启动该 group 的 relay 侧消费循环。
-//
-// 两种模式（互斥）：
-//
-//  1. frame 模式（relayFrame != nil，即 relay 底层是 *TcpStream）：
-//     启动 pumpRelayToClients，把来自设备1 的所有原始帧按 ConnectionId 分发到对应 client leg。
-//     lookup 闭包在持锁状态下从 connectionMap 取出对应 client 的 frame 适配器；
-//     未找到则返回 nil，pump 会丢弃该帧。
-//
-//  2. message 模式（兜底，例如未来 KCP/UDP 不实现 FrameRelayEndpoint 时）：
-//     循环 NextMessage，过滤心跳，按 ConnectionId 找到 client 流后整条 SendMessage 转发。
-//     这条路径在帧桥接生效后基本不会被走到，仅作兼容。
-//
-// 调用方一般是 RelayStarter 在 group 注册成功后立即起一个 goroutine 跑这个函数。
 func (s *StreamGroup) StartListen() {
 	if s.relayFrame != nil {
 		pumpRelayToClients(s.ctx, s.relayFrame, func(connID string) FrameRelayEndpoint {
 			s.lock.Lock()
 			defer s.lock.Unlock()
-			res := s.connectionMap[connID]
-			if res == nil {
+			resource := s.connectionMap[connID]
+			if resource == nil {
 				return nil
 			}
-			return res.frame
-		})
+			return resource.frame
+		}, s.frameRoutes)
 		return
 	}
 
@@ -342,33 +397,26 @@ func (s *StreamGroup) StartListen() {
 			if resource == nil {
 				continue
 			}
-			resource.stream.SendMessage(s.ctx, message)
+			if err := resource.stream.SendMessage(s.ctx, message); err != nil {
+				s.CloseTargetConnection(message.Header.ConnectionId)
+			}
 		}
 	}
 }
 
-// NewStreamGroup 构造一个 StreamGroup。
-//
-// 参数：
-//
-//	relayStream           已经握手成功的"被中继节点"那条注册流（设备1 ↔ 公网 relay）。
-//	                      若其底层是 *TcpStream，会立即包装成 FrameRelayEndpoint，
-//	                      启用 frame 模式数据面；否则降级为 message-loop 模式。
-//	beforeConnectionHook  每个 client leg 挂上来时的握手钩子（预留给 SSL 套件）。
-//	                      传 nil 是非法的，调用方应使用 defaultHookfunc 占位。
 func NewStreamGroup(relayStream network.Stream, beforeConnectionHook BeforeStreamOnHook) *StreamGroup {
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	s := &StreamGroup{
-		relayStream:          relayStream,
+	logicalRelayStream := ensureDualStream(relayStream)
+	return &StreamGroup{
+		relayStream:          logicalRelayStream,
+		relayFrame:           logicalRelayStream.EnableFrameRelay(),
 		connectionMap:        make(map[string]*connectionResource),
+		frameRoutes:          newFrameRouteRegistry(),
 		beforeConnectionHook: beforeConnectionHook,
 		ctx:                  ctx,
 		cancelFunc:           cancelFunc,
+		nodeId:               logicalRelayStream.NodeId(),
 	}
-	if rt, ok := relayStream.(*TcpStream); ok {
-		s.relayFrame = NewTcpFrameAdapter(rt)
-	}
-	return s
 }
 
 // CloseTargetConnection 强制关闭挂在本 group 上的某条 client leg。
