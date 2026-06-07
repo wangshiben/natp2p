@@ -174,12 +174,7 @@ func runNode(relayAddr string, keyFile string) {
 			return
 
 		case line == "/key":
-			natNode, ok := node.(*natnode.NATNode)
-			if !ok {
-				fmt.Println("当前节点不支持导出私钥")
-				continue
-			}
-			fmt.Printf("私钥(hex): %s\n", natNode.ExportPrivateKeyHex())
+			fmt.Printf("私钥(hex): %s\n", node.ExportPrivateKeyHex())
 			fmt.Println("提示: 持有该字符串等同于持有节点身份, 请妥善保管")
 
 		case strings.HasPrefix(line, "/save"):
@@ -189,12 +184,7 @@ func runNode(relayAddr string, keyFile string) {
 				continue
 			}
 			path := parts[1]
-			natNode, ok := node.(*natnode.NATNode)
-			if !ok {
-				fmt.Println("当前节点不支持导出私钥")
-				continue
-			}
-			if err := natNode.SavePrivateKey(path); err != nil {
+			if err := node.SavePrivateKey(path); err != nil {
 				fmt.Printf("保存失败: %v\n", err)
 				continue
 			}
