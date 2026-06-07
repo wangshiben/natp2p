@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,15 @@ const (
 
 const KeepAliveRoute = "/ping"
 
+// pendingInboxMessage 是 inboxCh 上传递的内部消息结构。
+// 当帧重组完成时若 crypto 尚未安装（典型场景：TLS 握手与对端首条加密消息抵达存在竞态），
+// 就把 needDecrypt=true 的原始密文挂进队列，由 NextMessage 在被读取时再用当时的 crypto 解密。
+type pendingInboxMessage struct {
+	msg         *network.Message
+	needDecrypt bool // true 表示 Payload 为密文，等读取时再解密
+	cipherIsE2E bool // true 表示密文带 E2E 信封（需用 DecryptWithMessageID 并去重）
+}
+
 // TcpStream : 可完全到达的流对象
 type TcpStream struct {
 	nodeId       string
@@ -37,7 +47,7 @@ type TcpStream struct {
 	streamCtx    context.Context
 	streamCancel context.CancelFunc
 
-	inboxCh chan *network.Message
+	inboxCh chan *pendingInboxMessage
 
 	pendingMu sync.Mutex
 	pending   map[uint64]*ackTracker
@@ -84,7 +94,7 @@ func startTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		assembler:    network.NewFrameAssembler(),
 		streamCtx:    ctx,
 		streamCancel: cancel,
-		inboxCh:      make(chan *network.Message, inboxBufferSize),
+		inboxCh:      make(chan *pendingInboxMessage, inboxBufferSize),
 		pending:      make(map[uint64]*ackTracker),
 		recvTrackers: make(map[uint64]*recvTracker),
 		delivered:    make(map[uint64]bool),
@@ -122,6 +132,7 @@ func AcceptTcpStream(conn net.Conn) (*TcpStream, *network.Message, error) {
 func (t *TcpStream) NodeId() string       { return t.nodeId }
 func (t *TcpStream) ConnectionId() string { return t.connectionId }
 func (t *TcpStream) SetCryptoSuite(suite network.EncrypSuite) {
+	log.Printf("[TcpStream] SetCryptoSuite: nodeId=%.16s connId=%s suite=%T", t.nodeId, t.connectionId, suite)
 	t.crypto = suite
 }
 
@@ -151,7 +162,11 @@ func (t *TcpStream) SetIdentity(nodeId, connectionId string) {
 }
 
 func (t *TcpStream) keepLive() {
-	ticker := time.NewTicker(5 * time.Second)
+	connType := "TCP"
+	if t.connection != nil && t.connection.RemoteAddr().Network() != "tcp" {
+		connType = "KCP"
+	}
+	ticker := time.NewTicker(900 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -170,6 +185,8 @@ func (t *TcpStream) keepLive() {
 			})
 			cancel()
 			if err != nil && t.streamCtx.Err() == nil && !isContextError(err) {
+				log.Printf("[%s] keepLive 心跳失败, 关闭连接: nodeId=%.16s connId=%s err=%v",
+					connType, t.nodeId, t.connectionId, err)
 				t.failAndClose(err)
 				return
 			}
@@ -182,13 +199,54 @@ func (t *TcpStream) keepLive() {
 // =============================================================================
 
 func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-t.streamCtx.Done():
-		return nil, t.streamErr()
-	case msg := <-t.inboxCh:
-		return msg, nil
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-t.streamCtx.Done():
+			return nil, t.streamErr()
+		case pending := <-t.inboxCh:
+			if pending == nil || pending.msg == nil {
+				continue
+			}
+			msg := pending.msg
+			// 若重组时尚未装 crypto，本消息保留密文，现在按当下 crypto 解密。
+			// 解决 TLS 握手与对端加密首条消息抵达的竞态。
+			if pending.needDecrypt && t.crypto != nil {
+				if identitySuite, ok := t.crypto.(network.MessageIdentitySuite); ok {
+					decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
+					if err != nil {
+						// 解密失败可能是这条消息本身就是握手期的明文（无信封），
+						// 不视为致命错误，原样投递给上层。
+						previewLen := len(msg.Payload)
+						if previewLen > 32 {
+							previewLen = 32
+						}
+						log.Printf("[TcpStream] NextMessage 延迟解密失败(E2E), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
+							t.nodeId, t.connectionId, len(msg.Payload), msg.Payload[:previewLen], err)
+						return msg, nil
+					}
+					msg.Payload = decrypted
+					if hasMessageID && t.seenOrRecordE2EMessage(messageID) {
+						// 是重复 E2E 消息，跳过继续读下一条。
+						continue
+					}
+				} else {
+					decrypted, err := t.crypto.Decrypt(msg.Payload)
+					if err != nil {
+						previewLen := len(msg.Payload)
+						if previewLen > 32 {
+							previewLen = 32
+						}
+						log.Printf("[TcpStream] NextMessage 延迟解密失败(plain), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
+							t.nodeId, t.connectionId, len(msg.Payload), msg.Payload[:previewLen], err)
+						return msg, nil
+					}
+					msg.Payload = decrypted
+				}
+			}
+			return msg, nil
+		}
 	}
 }
 
@@ -548,6 +606,17 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 		if err := t.sendAck(f.MessageId, f.TotalFrames, network.FullAckRange(f.TotalFrames)); err != nil {
 			return err
 		}
+		// 关键修改：解密延迟到 NextMessage 读取时再做。
+		// 这是为了消除 TLS 握手期间的竞态——对端可能在我方 SetCryptoSuite 之前
+		// 就发来加密消息，按"重组时立刻解密"会因 t.crypto==nil 而原样推入 inbox，
+		// 等读取时是密文。改在 NextMessage 时按当下 t.crypto 解密，可彻底消除竞态。
+		// 但 frameRelayMode 走纯转发不入 inbox，与解密无关，照旧返回。
+		if t.frameRelayMode.Load() {
+			return nil
+		}
+		// 仅在我方还没装 crypto 时延迟解密；已装则立刻解密 + E2E 去重，行为不变。
+		needDecrypt := false
+		cipherIsE2E := false
 		if t.crypto != nil {
 			if identitySuite, ok := t.crypto.(network.MessageIdentitySuite); ok {
 				decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
@@ -565,12 +634,21 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 				}
 				msg.Payload = decrypted
 			}
-		}
-		if t.frameRelayMode.Load() {
-			return nil
+		} else {
+			// crypto 还没装 → Payload 可能是 TLS 握手的明文（如 saltSign），
+			// 也可能是对端抢跑发来的密文。无法在此区分，统一打 needDecrypt 标记，
+			// 由 NextMessage 在读取时按当下 crypto 决定是否解密。
+			needDecrypt = true
+			cipherIsE2E = true // 假设若需解密则是 E2E 信封；非信封 aesGCMDecrypt 也能识别
+			previewLen := len(msg.Payload)
+			if previewLen > 32 {
+				previewLen = 32
+			}
+			log.Printf("[TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=%.16s connId=%s route=%s payloadLen=%d hexPreview=%x",
+				t.nodeId, t.connectionId, msg.Header.RouteName, len(msg.Payload), msg.Payload[:previewLen])
 		}
 		select {
-		case t.inboxCh <- msg:
+		case t.inboxCh <- &pendingInboxMessage{msg: msg, needDecrypt: needDecrypt, cipherIsE2E: cipherIsE2E}:
 		case <-t.streamCtx.Done():
 			return t.streamErr()
 		}
