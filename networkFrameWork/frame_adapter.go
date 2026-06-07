@@ -4,6 +4,7 @@ import (
 	"bnfs_p2p/network"
 	"context"
 	"errors"
+	"log"
 	"sort"
 	"sync"
 )
@@ -266,11 +267,18 @@ func (e *DualFrameRelayEndpoint) AttachStream(kind streamTransport, stream netwo
 // 原始 MessageId 是多少」。这样当反方向需要把帧/ACK 写回这条来源 leg 时，HandleFrame
 // 能直接命中已存在的 route，而不会误判成一条全新消息再分配新 dstID。
 func (e *DualFrameRelayEndpoint) collect(kind streamTransport, adapter *TcpFrameAdapter) {
+	kindStr := "KCP"
+	if kind == streamTransportTCP {
+		kindStr = "TCP"
+	}
 	for {
 		f, err := adapter.NextFrame(e.stream.ctx)
 		if err != nil {
-			// 当前 leg 读失败：若不是整组关闭、且它仍是该 kind 的现役 leg，触发 failover/重连。
-			if e.stream.ctx.Err() == nil && e.isCurrent(kind, adapter) {
+			isCurrent := e.isCurrent(kind, adapter)
+			ctxErr := e.stream.ctx.Err()
+			log.Printf("[FrameRelay] %s NextFrame 失败: nodeId=%.16s connId=%s isCurrent=%v ctxErr=%v err=%v",
+				kindStr, e.stream.NodeId(), e.stream.ConnectionId(), isCurrent, ctxErr, err)
+			if ctxErr == nil && isCurrent {
 				e.stream.handleLegFailure(kind, adapter.stream)
 			}
 			return
@@ -409,6 +417,12 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 	out := cloneFrame(frame)
 	out.MessageId = dstID
 	if err := endpoint.HandleFrame(ctx, out); err != nil {
+		kindStr := "KCP"
+		if route.kind == streamTransportTCP {
+			kindStr = "TCP"
+		}
+		log.Printf("[FrameRelay] %s HandleFrame 写入失败, 触发 replayRoute: nodeId=%.16s connId=%s err=%v",
+			kindStr, e.stream.NodeId(), e.stream.ConnectionId(), err)
 		return e.replayRoute(ctx, logicalID, route.kind, endpoint)
 	}
 	return nil
@@ -420,7 +434,12 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 //   - 把已缓存的所有帧按 SeqId 顺序重放到 backup leg，保证目标侧拿到的是完整消息，
 //     而不是「前半段在旧 leg、后半段在新 leg」的拼不起来的半条消息。
 func (e *DualFrameRelayEndpoint) replayRoute(ctx context.Context, logicalID uint64, failedKind streamTransport, failedEndpoint *TcpFrameAdapter) error {
-	e.stream.handleLegFailure(failedKind, failedEndpoint.stream)
+	// 仅当 failedEndpoint 仍是该 kind 的现役 adapter 时才触发 leg 失败，
+	// 否则说明 leg 已被新 adapter 替换，写到旧 endpoint 失败属于"路由陈旧"，
+	// 不应再次 handleLegFailure（避免与正常重连流程产生级联）。
+	if e.isCurrent(failedKind, failedEndpoint) {
+		e.stream.handleLegFailure(failedKind, failedEndpoint.stream)
+	}
 
 	e.mu.Lock()
 	if e.adapters[failedKind] == failedEndpoint {

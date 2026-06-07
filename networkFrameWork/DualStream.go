@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"github.com/xtaci/kcp-go/v5"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -125,13 +126,46 @@ func (d *DualStream) Close() error {
 }
 
 func (d *DualStream) NextMessage(ctx context.Context) (*network.Message, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-d.ctx.Done():
-		return nil, errors.New("stream closed")
-	case msg := <-d.inbox:
-		return msg, nil
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-d.ctx.Done():
+			return nil, errors.New("stream closed")
+		case msg := <-d.inbox:
+			if msg == nil {
+				continue
+			}
+			// 兜底解密：startPump 在 crypto 未装时可能把密文消息推入 d.inbox。
+			// 在应用读取时按当下 d.crypto 再尝试解密一次（成功覆盖、失败原样返回）。
+			// 这彻底消除了 TLS 握手 / 元数据交换期间的解密竞态。
+			d.mu.RLock()
+			crypto := d.crypto
+			d.mu.RUnlock()
+			if crypto != nil && len(msg.Payload) > 0 {
+				if identitySuite, ok := crypto.(network.MessageIdentitySuite); ok {
+					decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
+					if err == nil {
+						previewLen := len(msg.Payload)
+						if previewLen > 16 {
+							previewLen = 16
+						}
+						log.Printf("[DualStream] NextMessage 兜底解密成功(E2E): nodeId=%.16s connId=%s 原密文前16字节=%x → 明文长度=%d",
+							d.NodeId(), d.ConnectionId(), msg.Payload[:previewLen], len(decrypted))
+						msg.Payload = decrypted
+						if hasMessageID {
+							_ = messageID
+						}
+					}
+					// 解密失败则保留原样（多半因为消息已经在 TcpStream 解过了/或本来就是明文）
+				} else {
+					if decrypted, err := crypto.Decrypt(msg.Payload); err == nil {
+						msg.Payload = decrypted
+					}
+				}
+			}
+			return msg, nil
+		}
 	}
 }
 
@@ -141,6 +175,8 @@ func (d *DualStream) NextMessage(ctx context.Context) (*network.Message, error) 
 func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) error {
 	primaryKind, primary, backupKind, backup := d.sendOrder()
 	if primary == nil && backup == nil {
+		log.Printf("[DualStream] SendMessage 失败: 双 leg 均不可用, nodeId=%.16s connId=%s",
+			d.NodeId(), d.ConnectionId())
 		return errors.New("stream closed")
 	}
 	if primary == nil {
@@ -155,13 +191,40 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 		if ctx.Err() != nil {
 			return err
 		}
-		d.handleLegFailure(primaryKind, primary)
+		primaryKindStr := "KCP"
+		if primaryKind == streamTransportTCP {
+			primaryKindStr = "TCP"
+		}
+		// 仅当 primary 仍是该 kind 的现役 leg 时才触发失败重连。
+		// 否则说明 leg 已被新连接替换，本次写到的是已被关闭的旧 leg，
+		// 写失败是路由陈旧而非真实故障，避免触发级联重连。
+		d.mu.RLock()
+		stillCurrent := d.streamLocked(primaryKind) == primary
+		d.mu.RUnlock()
+		if stillCurrent {
+			log.Printf("[DualStream] SendMessage primary %s 失败, 尝试 backup: nodeId=%.16s connId=%s err=%v",
+				primaryKindStr, d.NodeId(), d.ConnectionId(), err)
+			d.handleLegFailure(primaryKind, primary)
+		}
 		if backup == nil {
+			log.Printf("[DualStream] SendMessage 无 backup leg, 返回错误: nodeId=%.16s connId=%s",
+				d.NodeId(), d.ConnectionId())
 			return err
 		}
 		if retryErr := sendMessageWithIdentity(ctx, backup, cloneMessage(message), messageID); retryErr != nil {
+			backupKindStr := "KCP"
+			if backupKind == streamTransportTCP {
+				backupKindStr = "TCP"
+			}
 			if ctx.Err() == nil {
-				d.handleLegFailure(backupKind, backup)
+				d.mu.RLock()
+				stillCurrentBackup := d.streamLocked(backupKind) == backup
+				d.mu.RUnlock()
+				if stillCurrentBackup {
+					log.Printf("[DualStream] SendMessage backup %s 也失败: nodeId=%.16s connId=%s err=%v",
+						backupKindStr, d.NodeId(), d.ConnectionId(), retryErr)
+					d.handleLegFailure(backupKind, backup)
+				}
 			}
 			return retryErr
 		}
@@ -339,6 +402,10 @@ func (d *DualStream) attach(kind streamTransport, stream network.Stream) error {
 }
 
 func (d *DualStream) startPump(kind streamTransport, stream network.Stream) {
+	kindStr := "KCP"
+	if kind == streamTransportTCP {
+		kindStr = "TCP"
+	}
 	go func() {
 		for {
 			msg, err := stream.NextMessage(d.ctx)
@@ -346,6 +413,18 @@ func (d *DualStream) startPump(kind streamTransport, stream network.Stream) {
 				if d.ctx.Err() != nil || isContextError(err) {
 					return
 				}
+				// 关键：仅当本 stream 仍是该 kind 的现役 leg 时才触发重连。
+				// 否则说明本 leg 已被新 leg 替换、attach() 调用了 old.Close()，
+				// 我们的 NextMessage 是因 old.Close() 唤醒退出的，
+				// 此时不应再次 handleLegFailure，否则会与正常重连流程发生竞态导致级联重连。
+				d.mu.RLock()
+				current := d.streamLocked(kind)
+				d.mu.RUnlock()
+				if current != stream {
+					return
+				}
+				log.Printf("[DualStream] %s startPump NextMessage 失败: nodeId=%.16s connId=%s err=%v",
+					kindStr, d.NodeId(), d.ConnectionId(), err)
 				d.handleLegFailure(kind, stream)
 				return
 			}
@@ -383,14 +462,36 @@ func (d *DualStream) detach(kind streamTransport, stream network.Stream) {
 	}
 }
 
-// handleLegFailure 在发送写失败时被调用：关闭并 detach 失败 leg，并尝试调度该协议的重连。
+// handleLegFailure 在某条 leg 失败时被调用：关闭并 detach 失败 leg。
+// 仅在本端注册了重连 dialer 时才尝试重连——relay 端没有 dialer（也不该有，
+// 因为对端是 NAT 后节点，relay 无法主动拨向它），所以 relay 端只做"关闭+detach"。
 func (d *DualStream) handleLegFailure(kind streamTransport, stream network.Stream) {
 	if stream == nil {
 		return
 	}
+	kindStr := "KCP"
+	if kind == streamTransportTCP {
+		kindStr = "TCP"
+	}
+
+	// 探测是否有注册的重连 dialer（典型为 client 拨号方有，relay 端无）。
+	d.reconnectMu.Lock()
+	hasDialer := d.reconnectDialers[kind] != nil && !d.reconnectDisabled[kind]
+	d.reconnectMu.Unlock()
+
+	if hasDialer {
+		log.Printf("[DualStream] %s leg 失败, 关闭并触发重连: nodeId=%.16s connId=%s",
+			kindStr, d.NodeId(), d.ConnectionId())
+	} else {
+		log.Printf("[DualStream] %s leg 失败, 关闭(relay 端不重连): nodeId=%.16s connId=%s",
+			kindStr, d.NodeId(), d.ConnectionId())
+	}
+
 	_ = stream.Close()
 	d.detach(kind, stream)
-	d.scheduleReconnect(kind)
+	if hasDialer {
+		d.scheduleReconnect(kind)
+	}
 }
 
 func isContextError(err error) bool {

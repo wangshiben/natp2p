@@ -60,3 +60,55 @@ func TestReceiveSecureMessage(t *testing.T) {
 
 	t.Logf("=== 测试结束 ===")
 }
+
+// TestPrivateKeyHexRoundTrip 验证私钥 → hex → 私钥 的对称往返。
+// 关键校验点是「派生出来的公钥与原私钥派生公钥完全一致」——
+// 这等价于 ECDH 标量恢复正确，节点身份(NodeID = SHA256(pubKeyHex)) 也一致。
+func TestPrivateKeyHexRoundTrip(t *testing.T) {
+	priv, err := MakeKeyPair()
+	if err != nil {
+		t.Fatalf("生成密钥对失败: %v", err)
+	}
+
+	hexStr := GetPrivKeyStr(priv)
+	if len(hexStr) == 0 {
+		t.Fatalf("GetPrivKeyStr 返回空字符串")
+	}
+	t.Logf("私钥 hex (%d chars): %s...", len(hexStr), hexStr[:16])
+
+	restored, err := ExtractPrivateKeyFromHex(hexStr)
+	if err != nil {
+		t.Fatalf("ExtractPrivateKeyFromHex 失败: %v", err)
+	}
+
+	// 对称性：再次序列化结果必须与首次一致。
+	if hexStr != GetPrivKeyStr(restored) {
+		t.Fatalf("私钥往返不一致")
+	}
+
+	// 派生公钥必须与原始私钥派生公钥一致。
+	if GetPubKeyStr(priv.PublicKey()) != GetPubKeyStr(restored.PublicKey()) {
+		t.Fatalf("还原私钥派生的公钥与原私钥不一致")
+	}
+}
+
+// TestExtractPrivateKeyFromHex_Invalid 验证非法 hex 与长度不符时返回错误。
+func TestExtractPrivateKeyFromHex_Invalid(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"非hex", "ZZZnotHex"},
+		{"奇数位", "abc"},
+		{"空串", ""},
+		{"长度错误", "deadbeef"}, // 仅 4 字节, ECDH P-256 要求 32 字节标量
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := ExtractPrivateKeyFromHex(c.input); err == nil {
+				t.Fatalf("input=%q 应返回 error, 实际 nil", c.input)
+			}
+		})
+	}
+}

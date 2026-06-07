@@ -59,7 +59,7 @@ func (r *RelayStarter) StartListen() {
 			if !ok || session == nil {
 				continue
 			}
-			session.SetNoDelay(1, 10, 2, 1)
+			session.SetNoDelay(1, 50, 2, 1)
 			session.SetMtu(1000)
 			session.SetWriteBuffer(4 * 1024 * 1024)
 			session.SetWindowSize(128, 512)

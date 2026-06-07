@@ -22,7 +22,8 @@ type Node struct {
 	lastSeen   int64
 }
 
-// NewNode 创建新节点，生成 ECDH 密钥对
+// NewNode 创建新节点，生成 ECDH 密钥对。
+// PeerID = hex(SHA256(hex(公钥原始字节)))，与 relay/crypto 层约定一致。
 func NewNode() (*Node, error) {
 	// 生成 P-256 椭圆曲线密钥对
 	privateKey, err := crypoto.MakeKeyPair()
@@ -30,11 +31,12 @@ func NewNode() (*Node, error) {
 		return nil, err
 	}
 
-	// 使用公钥哈希生成 PeerID
+	// 使用公钥 hex 的 SHA256 哈希生成 PeerID（与 Dialers.go / TLSPacakge.go 一致）
 	publicKey := privateKey.PublicKey()
 	publicKeyBytes := publicKey.Bytes()
+	pubKeyHex := hex.EncodeToString(publicKeyBytes)
 
-	hash := sha256.Sum256(publicKeyBytes)
+	hash := sha256.Sum256([]byte(pubKeyHex))
 	peerID := hex.EncodeToString(hash[:])
 
 	return &Node{
@@ -46,13 +48,14 @@ func NewNode() (*Node, error) {
 	}, nil
 }
 
-// NewNodeWithKey 使用现有密钥创建节点
+// NewNodeWithKey 使用现有密钥创建节点。
+// PeerID = hex(SHA256(hex(公钥原始字节)))，与 relay/crypto 层约定一致。
 func NewNodeWithKey(privateKey *ecdh.PrivateKey) (*Node, error) {
-	// 使用公钥哈希生成 PeerID
 	publicKey := privateKey.PublicKey()
 	publicKeyBytes := publicKey.Bytes()
+	pubKeyHex := hex.EncodeToString(publicKeyBytes)
 
-	hash := sha256.Sum256(publicKeyBytes)
+	hash := sha256.Sum256([]byte(pubKeyHex))
 	peerID := hex.EncodeToString(hash[:])
 
 	return &Node{
@@ -62,6 +65,41 @@ func NewNodeWithKey(privateKey *ecdh.PrivateKey) (*Node, error) {
 		lastCalled: time.Now().Unix(),
 		lastSeen:   time.Now().Unix(),
 	}, nil
+}
+
+// NewNodeFromPubKeyHex 从公钥十六进制字符串创建远程节点条目。
+// 用于无对应私钥的场景（如从网络中获知的远程节点）。
+// PeerID = hex(SHA256(pubKeyHex))，与 NewNode / NewNodeWithKey 一致。
+func NewNodeFromPubKeyHex(pubKeyHex string) (*Node, error) {
+	rawBytes, err := hex.DecodeString(pubKeyHex)
+	if err != nil {
+		return nil, err
+	}
+	pubKey, err := ecdh.P256().NewPublicKey(rawBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	hash := sha256.Sum256([]byte(pubKeyHex))
+	peerID := hex.EncodeToString(hash[:])
+
+	return &Node{
+		peerID:     peerID,
+		pubKey:     pubKey,
+		lastCalled: time.Now().Unix(),
+		lastSeen:   time.Now().Unix(),
+	}, nil
+}
+
+// NewNodeFromPeerID 仅用 PeerID 创建远程节点条目，公钥未知。
+// 用于出站连接等仅知目标 NodeID 而无公钥的场景。
+// Pubkey() 将返回空字符串，Sign() 不可用。
+func NewNodeFromPeerID(peerID string) *Node {
+	return &Node{
+		peerID:     peerID,
+		lastCalled: time.Now().Unix(),
+		lastSeen:   time.Now().Unix(),
+	}
 }
 
 // PeerID 返回节点的唯一标识符
@@ -69,9 +107,12 @@ func (n *Node) PeerID() string {
 	return n.peerID
 }
 
-// Pubkey 返回公钥的十六进制字符串表示
+// Pubkey 返回公钥的十六进制字符串表示。
+// 若公钥为空（如仅由 PeerID 构造的远程节点），返回空字符串。
 func (n *Node) Pubkey() string {
-	// 使用 ecdh.PublicKey 的 Bytes() 方法获取公钥字节
+	if n.pubKey == nil {
+		return ""
+	}
 	publicKeyBytes := n.pubKey.Bytes()
 	return hex.EncodeToString(publicKeyBytes)
 }
@@ -90,17 +131,16 @@ func (n *Node) Verify(data []byte) (bool, error) {
 
 // VerifySignature 完整验证方法，验证签名是否由本节点生成
 func (n *Node) VerifySignature(data, signature []byte) (bool, error) {
+	if n.privKey == nil {
+		return false, errors.New("VerifySignature: 私钥为空")
+	}
 	hash := sha256.Sum256(data)
-
-	// 使用私钥验证签名（基于 ECDH 的简化实现）
-	// 注意：ECDH 本身不直接支持签名，这里使用私钥的字节作为密钥进行 HMAC
 	privKeyBytes := n.privKey.Bytes()
 	hmac := sha256.New()
 	hmac.Write(privKeyBytes)
 	hmac.Write(hash[:])
 	expectedSignature := hmac.Sum(nil)
 
-	// 比较签名
 	if len(signature) != len(expectedSignature) {
 		return false, nil
 	}
@@ -115,10 +155,10 @@ func (n *Node) VerifySignature(data, signature []byte) (bool, error) {
 
 // Sign 对数据进行签名
 func (n *Node) Sign(data []byte) ([]byte, error) {
+	if n.privKey == nil {
+		return nil, errors.New("Sign: 私钥为空（远程节点不支持签名）")
+	}
 	hash := sha256.Sum256(data)
-
-	// 使用私钥生成签名（基于 ECDH 的简化实现）
-	// 注意：ECDH 本身不直接支持签名，这里使用私钥的字节作为密钥进行 HMAC
 	privKeyBytes := n.privKey.Bytes()
 	hmac := sha256.New()
 	hmac.Write(privKeyBytes)
@@ -154,21 +194,19 @@ func (n *Node) LastSeen() int64 {
 // XOR 计算本节点与另一个节点的 XOR 距离
 func (n *Node) XOR(node *interfaces.Node) (big.Int, error) {
 	if node == nil {
-		return big.Int{}, errors.New("node cannot be nil")
+		return big.Int{}, errors.New("node 不能为 nil")
 	}
 
-	// 将 PeerID 转换为 big.Int
 	nID, ok := new(big.Int).SetString(n.peerID, 16)
 	if !ok {
-		return big.Int{}, errors.New("invalid peerID format")
+		return big.Int{}, errors.New("无效的 peerID 格式")
 	}
 
 	otherID, ok := new(big.Int).SetString((*node).PeerID(), 16)
 	if !ok {
-		return big.Int{}, errors.New("invalid node peerID format")
+		return big.Int{}, errors.New("无效的 node peerID 格式")
 	}
 
-	// 计算 XOR 距离
 	xor := new(big.Int).Xor(nID, otherID)
 	return *xor, nil
 }

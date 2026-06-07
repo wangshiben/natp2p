@@ -195,7 +195,7 @@ func kcpStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAdd
 	if err != nil {
 		return nil, err
 	}
-	conn.SetNoDelay(1, 10, 2, 1)
+	conn.SetNoDelay(1, 50, 2, 1)
 	conn.SetMtu(1000)
 	conn.SetWriteBuffer(4 * 1024 * 1024)
 	conn.SetWindowSize(128, 512)
