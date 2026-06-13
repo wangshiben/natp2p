@@ -82,6 +82,12 @@ func NewTcpFrameAdapter(stream *TcpStream) *TcpFrameAdapter {
 	if stream == nil {
 		return nil
 	}
+	// 若该流已装有 frameTap（例如 relay 在启动读循环前用 PrepareBridgeLeg 提前装好以缓冲握手帧）,
+	// 复用同一通道, 避免替换通道导致已缓冲的帧丢失。
+	if existing := stream.getFrameTap(); existing != nil {
+		stream.SetFrameRelayMode(true)
+		return &TcpFrameAdapter{stream: stream, frames: existing}
+	}
 	ch := make(chan *network.Frame, 4096)
 	stream.SetFrameTap(ch)
 	stream.SetFrameRelayMode(true)
