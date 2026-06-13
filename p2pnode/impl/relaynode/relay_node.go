@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,7 +41,13 @@ var errPeerLinkDown = errors.New("relaynode: 控制链路未建立")
 // pendingFind 跟踪一次进行中的跨中继 FIND 请求。
 type pendingFind struct {
 	target string
-	respCh chan *controlMessage
+	respCh chan findAnswer
+}
+
+// findAnswer 是一次 FIND 的应答, 带上「是哪条控制链路回的」, 以便用该链路的可路由地址拨号。
+type findAnswer struct {
+	cm   *controlMessage
+	link *peerLink
 }
 
 // RelayNode 是公网中继节点，实现 p2pnode.Node 接口。
@@ -199,8 +206,8 @@ func (n *RelayNode) onPeerHello(peerID, peerAddr string) {
 	log.Printf("[relaynode] 登记对端 relay: id=%.16s addr=%s", peerID, peerAddr)
 }
 
-// deliverFindResp 把 FIND_RESP 投递给等待中的发起者。
-func (n *RelayNode) deliverFindResp(cm *controlMessage) {
+// deliverFindResp 把 FIND_RESP 投递给等待中的发起者, 附带回应的控制链路。
+func (n *RelayNode) deliverFindResp(pl *peerLink, cm *controlMessage) {
 	n.mu.Lock()
 	pf := n.pendingFinds[cm.ReqID]
 	n.mu.Unlock()
@@ -208,7 +215,7 @@ func (n *RelayNode) deliverFindResp(cm *controlMessage) {
 		return
 	}
 	select {
-	case pf.respCh <- cm:
+	case pf.respCh <- findAnswer{cm: cm, link: pl}:
 	default:
 	}
 }
@@ -240,11 +247,18 @@ func (n *RelayNode) acceptControlLink(stream network.Stream, firstMsg *network.M
 	sc := client.NewStreamClient(stream)
 
 	pl := &peerLink{owner: n, outbound: false, ctx: n.ctx, cancel: func() {}}
+	// 记录对端实际连入的 IP, 供 dialHostAddr 拼出可路由的桥接地址
+	// （对端 HELLO 自报的 host 可能是 ":9000" 等不可路由占位）。
+	if tcp := networkFrameWork.TCPStreamOf(stream); tcp != nil && tcp.RawConn() != nil {
+		if host, _, err := net.SplitHostPort(tcp.RawConn().RemoteAddr().String()); err == nil {
+			pl.observedRemoteIP = host
+		}
+	}
 	n.mu.Lock()
 	n.inboundLinks = append(n.inboundLinks, pl)
 	n.mu.Unlock()
 	pl.adoptInbound(sc)
-	log.Printf("[relaynode] 控制链路已建立(被动): peerNodeId=%.16s", peerNodeId)
+	log.Printf("[relaynode] 控制链路已建立(被动): peerNodeId=%.16s remoteIP=%s", peerNodeId, pl.observedRemoteIP)
 	return nil
 }
 
@@ -278,10 +292,17 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 		_ = stream.Close()
 	}
 
-	hostAddr, err := n.findHostRelay(target)
+	hostLink, err := n.findHostRelay(target)
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("relaynode: 查找 nat 节点 %.16s 失败: %w", target, err)
+	}
+	// 用控制链路的可路由地址桥接拨号, 而不是对端自报的 Addr（可能是 ":9000" 等不可路由占位,
+	// 会导致 relay 误拨到自身形成环路 —— 正是本次测试 connect 超时的根因）。
+	hostAddr := hostLink.dialHostAddr()
+	if hostAddr == "" {
+		cleanup()
+		return fmt.Errorf("relaynode: 无法确定托管 relay 的可路由地址 (target=%.16s)", target)
 	}
 
 	// 裸字节级跨中继桥接：relay 退化成哑字节管道, 不重写 MessageId / 不组包 / 不 ACK,
@@ -299,9 +320,10 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 	return nil
 }
 
-// findHostRelay 向所有已建立的控制链路并发 FIND, 返回首个声称托管 target 的 relay 地址。
+// findHostRelay 向所有已建立的控制链路并发 FIND, 返回首个声称托管 target 的「控制链路」。
+// 调用方用该链路的 dialHostAddr() 得到可路由的桥接地址（而非对端自报的可能不可路由的 Addr）。
 // 全部未命中或超时则返回错误（需求 3）。
-func (n *RelayNode) findHostRelay(target string) (string, error) {
+func (n *RelayNode) findHostRelay(target string) (*peerLink, error) {
 	n.mu.RLock()
 	links := make([]*peerLink, 0, len(n.peerLinks)+len(n.inboundLinks))
 	for _, pl := range n.peerLinks {
@@ -311,11 +333,11 @@ func (n *RelayNode) findHostRelay(target string) (string, error) {
 	n.mu.RUnlock()
 
 	if len(links) == 0 {
-		return "", errors.New("无可用的对端 relay 控制链路")
+		return nil, errors.New("无可用的对端 relay 控制链路")
 	}
 
 	reqID := n.findCounter.Add(1)
-	pf := &pendingFind{target: target, respCh: make(chan *controlMessage, len(links))}
+	pf := &pendingFind{target: target, respCh: make(chan findAnswer, len(links))}
 	n.mu.Lock()
 	n.pendingFinds[reqID] = pf
 	n.mu.Unlock()
@@ -335,16 +357,16 @@ func (n *RelayNode) findHostRelay(target string) (string, error) {
 	for i := 0; i < len(links); i++ {
 		select {
 		case <-n.ctx.Done():
-			return "", errors.New("relaynode 已关闭")
+			return nil, errors.New("relaynode 已关闭")
 		case <-deadline.C:
-			return "", errors.New("FIND 超时, 无 relay 托管目标节点")
-		case resp := <-pf.respCh:
-			if resp.Hosts && resp.Addr != "" {
-				return resp.Addr, nil
+			return nil, errors.New("FIND 超时, 无 relay 托管目标节点")
+		case ans := <-pf.respCh:
+			if ans.cm.Hosts {
+				return ans.link, nil
 			}
 		}
 	}
-	return "", errors.New("没有 relay 托管目标 nat 节点")
+	return nil, errors.New("没有 relay 托管目标 nat 节点")
 }
 
 // =============================================================================
