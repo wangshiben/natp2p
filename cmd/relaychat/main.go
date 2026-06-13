@@ -1,18 +1,45 @@
 // relaychat 是 relayNode 跨中继能力的验证程序（参考 cmd/p2pchat/main.go）。
 //
-// 三种模式（flag 驱动, 便于脚本化双服务器部署）：
+// 四种运行模式（flag 驱动, 便于脚本化双服务器部署）：
 //
-//	-mode relay  -listen :9000 [-public IP:9000] [-peer IP2:9000] [-key file]
-//	    启动一个公网中继节点。-peer 指定要主动建立控制链路的对端 relay 地址（可多次, 逗号分隔）。
+//	-mode relay   -listen :9000 [-public IP:9000] [-peer IP2:9000[,IP3:9000]] [-key file]
+//	    启动一个公网中继节点（RelayNode）。
+//	    -listen  本地监听地址（如 0.0.0.0:9000）。
+//	    -public  对外可达地址（如 1.2.3.4:9000）；为空时回退用 -listen, 仅适合本机测试。
+//	    -peer    要主动建立控制链路的对端 relay 地址, 逗号分隔可填多个;
+//	             控制链路用于跨中继 FIND, 任一端发起即可（双向对称）。
+//	    每 5 秒打印一次状态: relay 邻居数 / 本地托管的 NAT 节点数。
 //
-//	-mode listen -relay IP:9000 [-key file]
-//	    启动一个 NAT 节点, 注册到 relay 并对收到的每条消息回显 "echo:<原文>"。
-//	    启动后打印自身 NodeID（供 connect 方使用）。
+//	-mode listen  -relay IP:9000 [-key file]
+//	    启动一个 NAT 节点, 注册到 -relay 指定的中继, 对收到的每条消息回显 "echo:<原文>"。
+//	    启动后打印自身 NodeID（供 connect 方作为 -target 使用）。进程阻塞直到 Ctrl+C / SIGTERM。
 //
-//	-mode connect -relay IP:9000 -target <NodeID> [-rounds 3] [-msg hello]
-//	    启动一个 NAT 节点, 注册到 relay, 连接 target 节点并发起 N 轮请求/响应通信。
+//	-mode connect -relay IP:9000 -target <NodeID> [-rounds 3] [-msg hello] [-key file]
+//	    启动一个 NAT 节点, 注册到 -relay, 连接 -target 节点并发起 -rounds 轮请求/响应通信:
+//	    每轮发送 "<msg>-<i>" 并等待对端回包。target 与本节点可注册在不同的 relay 上,
+//	    入口 relay 会经控制链路 FIND 到托管 target 的 relay 并跨中继桥接。
+//	    全部轮次成功退出码 0, 否则非 0。
 //
-// 也支持 -mode interactive 进入交互式控制台（行为接近 p2pchat）。
+//	-mode interactive   进入交互式控制台（默认模式, 行为接近 p2pchat）。
+//
+// 通用 flag:
+//	-key <file|hex>   可选。以指定私钥恢复同一节点身份再次上线（文件路径或直接粘贴 hex）。
+//
+// ── 端到端示例（双公网服务器跨中继, 与 pacakgeTest 验证一致）──
+//
+// 服务器1 (relay1, 公网 IP 203.0.113.1) 上启动中继:
+//	relaychat -mode relay -listen 0.0.0.0:9000 -public 203.0.113.1:9000
+//
+// 服务器2 (relay2, 公网 IP 198.51.100.1) 上启动中继, 并与 relay1 建控制链路:
+//	relaychat -mode relay -listen 0.0.0.0:9000 -public 198.51.100.1:9000 -peer 203.0.113.1:9000
+//
+// 本地节点2 注册到 relay2, 进入回显模式, 记下打印出的 NodeID（记为 NODE2）:
+//	relaychat -mode listen -relay 198.51.100.1:9000
+//
+// 本地节点1 经 relay1 跨中继连接 NODE2, 做 3 轮通信:
+//	relaychat -mode connect -relay 203.0.113.1:9000 -target <NODE2> -rounds 3 -msg hello
+//
+// 预期: 节点1 打印 "成功 3/3 轮", 节点2 打印 3 行 "[收到] ... hello-0/1/2"。
 package main
 
 import (
@@ -42,6 +69,7 @@ func main() {
 	rounds := flag.Int("rounds", 3, "通信轮数 (connect 模式)")
 	msg := flag.String("msg", "hello", "每轮消息前缀 (connect 模式)")
 	keyFile := flag.String("key", "", "私钥文件, 用同一身份再次上线")
+	flag.Usage = printUsage
 	flag.Parse()
 
 	switch *mode {
@@ -54,9 +82,41 @@ func main() {
 	case "interactive":
 		runInteractive()
 	default:
-		fmt.Printf("未知模式: %s\n", *mode)
+		fmt.Printf("未知模式: %s\n\n", *mode)
+		printUsage()
 		os.Exit(1)
 	}
+}
+
+// printUsage 打印各模式用法与一个跨中继端到端示例。
+func printUsage() {
+	fmt.Fprint(os.Stderr, `relaychat — relayNode 跨中继验证程序
+
+用法:
+  relaychat -mode relay   -listen :9000 [-public IP:9000] [-peer IP2:9000[,IP3:9000]] [-key file]
+  relaychat -mode listen  -relay IP:9000 [-key file]
+  relaychat -mode connect -relay IP:9000 -target <NodeID> [-rounds 3] [-msg hello] [-key file]
+  relaychat -mode interactive
+
+模式:
+  relay        启动公网中继节点; -peer 指定要建控制链路的对端 relay(逗号分隔)
+  listen       注册到 relay 并回显收到的每条消息; 打印自身 NodeID; 阻塞至 Ctrl+C
+  connect      经 relay 跨中继连接 -target 并做 -rounds 轮请求/响应
+  interactive  交互式控制台(默认)
+
+跨中继端到端示例:
+  # 服务器1 (203.0.113.1)
+  relaychat -mode relay -listen 0.0.0.0:9000 -public 203.0.113.1:9000
+  # 服务器2 (198.51.100.1), 与服务器1 建控制链路
+  relaychat -mode relay -listen 0.0.0.0:9000 -public 198.51.100.1:9000 -peer 203.0.113.1:9000
+  # 本地节点2 注册到服务器2, 记下打印的 NodeID
+  relaychat -mode listen -relay 198.51.100.1:9000
+  # 本地节点1 经服务器1 跨中继连接节点2, 3 轮通信
+  relaychat -mode connect -relay 203.0.113.1:9000 -target <NodeID> -rounds 3 -msg hello
+
+flags:
+`)
+	flag.PrintDefaults()
 }
 
 func loadKey(path string) (*ecdh.PrivateKey, error) {
