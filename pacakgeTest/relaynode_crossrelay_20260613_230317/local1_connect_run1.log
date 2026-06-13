@@ -1,0 +1,17 @@
+NAT 节点 ID: d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30
+注册到 relay: 203.0.113.1:9000
+正在跨中继连接 target d2d61f782e916cb99793a0c6b9992a3469537d0ed7b0e29a9c8fb86edb32148e ...
+2026/06/13 23:04:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=d2d61f782e916cb9 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 route= payloadLen=130 hexPreview=3034623238363264343361633635363234626634633534336162393937303666
+2026/06/13 23:04:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=d2d61f782e916cb9 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 route= payloadLen=129 hexPreview=3630626366636263313937313961333531646163616166636137663533363039
+2026/06/13 23:04:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=d2d61f782e916cb9 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 route=/p2p/handshake-info payloadLen=186 hexPreview=737b46b689d36223ab8ec4bb1287557043f009c38d4f3b6d457b99f6e4d6ec6c
+2026/06/13 23:04:14 [TcpStream] SetCryptoSuite: nodeId=d2d61f782e916cb9 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 suite=*crypoto.TLSCrypto
+2026/06/13 23:04:14 [exchangeMetadata] 发送 metadata: peerID=d2d61f782e916cb9 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 payloadLen=110 preview="{\"peer_id\":\"d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30\",\"r..."
+2026/06/13 23:04:15 [exchangeMetadata] 收到 metadata: peerID=d2d61f782e916cb9 headerNodeId=d2d61f782e916cb9 headerConnId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 headerRoute=/p2p/handshake-info payloadLen=110 hexPreview=7b22706565725f6964223a2264326436316637383265393136636239393739336130633662393939326133343639353337643065643762306532396139633866623836656462333231343865222c2272 asciiPreview="{\"peer_id\":\"d2d61f782e916cb99793a0c6b9992a3469537d0ed7b0e29a9c8fb86edb32148e\",\"r"
+已连接到 d2d61f782e916cb99793a0c6b9992a3469537d0ed7b0e29a9c8fb86edb32148e, 开始 3 轮通信
+→ 第 0 轮 发送: hello-0
+← 第 0 轮 收到: echo:hello-0
+→ 第 1 轮 发送: hello-1
+← 第 1 轮 收到: echo:hello-1
+→ 第 2 轮 发送: hello-2
+← 第 2 轮 收到: echo:hello-2
+通信完成: 成功 3/3 轮
