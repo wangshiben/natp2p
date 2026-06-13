@@ -61,7 +61,7 @@ var frameMagicBytes = []byte(FrameMagic)
 //
 //	[AckId(8 LE)] [FrameType(1)] [PayloadLen(4 LE)] [Payload(PayloadLen)]
 func (f *Frame) ParseToBytes() ([]byte, error) {
-	if len(f.Payload) > int(^uint32(0)) {
+	if uint64(len(f.Payload)) > uint64(^uint32(0)) {
 		return nil, errors.New("frame payload too large")
 	}
 	buf := make([]byte, FrameHeaderLength+len(f.Payload))
@@ -387,11 +387,16 @@ func seqsToRanges(seqs []uint32) []AckRange {
 }
 
 // FrameIdGenerator 单调递增地生成 MessageId / AckId，并发安全。
+//
+// 用 atomic.Uint64 而非裸 uint64，是为了让 Go 运行时保证该字段 8 字节对齐：
+// FrameIdGenerator 会被按值嵌入到 TcpStream / DualFrameRelayEndpoint 等结构体里，
+// 在 32 位平台(GOARCH=386)上裸 uint64 字段可能落在 4 字节对齐处，
+// 直接对其做 64 位原子操作会触发 "unaligned 64-bit atomic operation" panic。
 type FrameIdGenerator struct {
-	counter uint64
+	counter atomic.Uint64
 }
 
 // Next 返回下一个 ID(从 1 开始，0 视为未设置)。
 func (g *FrameIdGenerator) Next() uint64 {
-	return atomic.AddUint64(&g.counter, 1)
+	return g.counter.Add(1)
 }
