@@ -552,6 +552,17 @@ func (d *DualStream) scheduleReconnect(kind streamTransport) {
 	go d.runReconnect(kind, dial)
 }
 
+func transportName(kind streamTransport) string {
+	switch kind {
+	case streamTransportKCP:
+		return "KCP"
+	case streamTransportTCP:
+		return "TCP"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 func (d *DualStream) runReconnect(kind streamTransport, dial streamReconnectDialer) {
 	defer func() {
 		d.reconnectMu.Lock()
@@ -559,6 +570,7 @@ func (d *DualStream) runReconnect(kind streamTransport, dial streamReconnectDial
 		d.reconnectMu.Unlock()
 	}()
 
+	kindStr := transportName(kind)
 	backoff := initialReconnectBackoff
 	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
 		select {
@@ -574,9 +586,17 @@ func (d *DualStream) runReconnect(kind streamTransport, dial streamReconnectDial
 		stream, err := dial(d.ctx)
 		if err == nil && stream != nil {
 			if attachErr := d.attach(kind, stream); attachErr == nil {
+				log.Printf("[DualStream] %s 重连成功: nodeId=%.16s connId=%s 第%d次尝试",
+					kindStr, d.nodeId, d.connectionId, attempt)
 				return
+			} else {
+				log.Printf("[DualStream] %s 重连 attach 失败: nodeId=%.16s connId=%s 第%d次尝试 err=%v",
+					kindStr, d.nodeId, d.connectionId, attempt, attachErr)
 			}
 			_ = stream.Close()
+		} else {
+			log.Printf("[DualStream] %s 重连拨号失败: nodeId=%.16s connId=%s 第%d/%d次尝试 err=%v",
+				kindStr, d.nodeId, d.connectionId, attempt, maxReconnectAttempts, err)
 		}
 
 		backoff *= 2
@@ -592,6 +612,8 @@ func (d *DualStream) runReconnect(kind streamTransport, dial streamReconnectDial
 	d.mu.RLock()
 	empty := d.kcp == nil && d.tcp == nil
 	d.mu.RUnlock()
+	log.Printf("[DualStream] %s 重连彻底失败(已达%d次上限, 标记永久禁用): nodeId=%.16s connId=%s 另一leg是否也已断开=%v",
+		kindStr, maxReconnectAttempts, d.nodeId, d.connectionId, empty)
 	if empty {
 		d.Close()
 	}
