@@ -5,6 +5,7 @@ import (
 	"bnfs_p2p/networkFrameWork/client"
 	"context"
 	"log"
+	"net"
 	"sync"
 	"time"
 )
@@ -34,9 +35,49 @@ type peerLink struct {
 	sc       *client.StreamClient
 	peerID   string // 对端 relay NodeId（HELLO 后获知）
 	peerAddr string // 对端 relay 公网业务地址（HELLO 后获知）
+	// observedRemoteIP 是对端实际连入/被连的 IP（accept 侧从底层连接的 RemoteAddr 取得）。
+	// HELLO 里对端自报的 Addr 可能是 ":9000" 这类不可路由的占位（relay 不知道自己的公网 IP），
+	// 因此桥接拨号时优先用「可路由地址」: 见 dialHostAddr。
+	observedRemoteIP string
 
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// dialHostAddr 返回向「该对端 relay」发起桥接拨号时应使用的可路由地址。
+//
+// 选取优先级（关键修复）：
+//  1. outbound 链路: 直接用我方拨号时用的 addr —— 它本来就是可路由的对端地址。
+//  2. inbound 链路: 用「观察到的对端 IP」+「对端 HELLO 自报地址里的端口」拼成可路由地址,
+//     因为对端自报的 host 部分（如空 / 0.0.0.0 / 内网）不可信, 但端口可信。
+//  3. 兜底: 用对端自报的 peerAddr 原样返回。
+//
+// 这样即使 relay 启动时没有正确配置 -public（自报 ":9000"），跨中继桥接也能拨到真正的对端。
+func (pl *peerLink) dialHostAddr() string {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	if pl.outbound && pl.addr != "" {
+		return pl.addr
+	}
+	if pl.observedRemoteIP != "" {
+		port := portOf(pl.peerAddr)
+		if port == "" {
+			port = "9000"
+		}
+		return net.JoinHostPort(pl.observedRemoteIP, port)
+	}
+	return pl.peerAddr
+}
+
+// portOf 从 "host:port" / ":port" 中取端口; 失败返回空。
+func portOf(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		return p
+	}
+	return ""
 }
 
 // startOutboundPeerLink 创建并启动一条主动维持的控制链路（带链路级重试）。
@@ -164,7 +205,7 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 		}
 		_ = pl.send(resp)
 	case ctrlFindResp:
-		pl.owner.deliverFindResp(cm)
+		pl.owner.deliverFindResp(pl, cm)
 	default:
 		log.Printf("[relaynode] 未知控制消息类型: %s", cm.Type)
 	}
