@@ -21,22 +21,32 @@
 //	    全部轮次成功退出码 0, 否则非 0。
 //
 //	-mode interactive   进入交互式控制台（默认模式, 行为接近 p2pchat）。
+//	    在控制台中:
+//	      relay <listen> [peer]    启动中继节点(阻塞)
+//	      node  <relayAddr> [key]  启动 NAT 节点并进入聊天会话
+//	    进入 node 聊天会话后支持: -c <NodeId> 连接、直接输入文本发消息、自动显示
+//	    收到的消息、/list 列邻居、/who 看身份、/key /save 管理私钥、/exit 退出。
 //
 // 通用 flag:
+//
 //	-key <file|hex>   可选。以指定私钥恢复同一节点身份再次上线（文件路径或直接粘贴 hex）。
 //
 // ── 端到端示例（双公网服务器跨中继, 与 pacakgeTest 验证一致）──
 //
 // 服务器1 (relay1, 公网 IP 203.0.113.1) 上启动中继:
+//
 //	relaychat -mode relay -listen 0.0.0.0:9000 -public 203.0.113.1:9000
 //
 // 服务器2 (relay2, 公网 IP 198.51.100.1) 上启动中继, 并与 relay1 建控制链路:
+//
 //	relaychat -mode relay -listen 0.0.0.0:9000 -public 198.51.100.1:9000 -peer 203.0.113.1:9000
 //
 // 本地节点2 注册到 relay2, 进入回显模式, 记下打印出的 NodeID（记为 NODE2）:
+//
 //	relaychat -mode listen -relay 198.51.100.1:9000
 //
 // 本地节点1 经 relay1 跨中继连接 NODE2, 做 3 轮通信:
+//
 //	relaychat -mode connect -relay 203.0.113.1:9000 -target <NODE2> -rounds 3 -msg hello
 //
 // 预期: 节点1 打印 "成功 3/3 轮", 节点2 打印 3 行 "[收到] ... hello-0/1/2"。
@@ -51,6 +61,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -288,12 +299,29 @@ func runConnect(relayAddr, target string, rounds int, msgPrefix, keyFile string)
 }
 
 // runInteractive 进入交互式控制台。
+//
+// 两级命令:
+//
+//	relay <listen> [peer]   启动中继节点并阻塞(Ctrl+C 退出)
+//	node  <relayAddr> [key] 启动 NAT 节点并进入「聊天会话」, 支持手动收发消息
+//	quit                    退出
+//
+// 进入 node 聊天会话后(详见 runChatNode):
+//
+//	-c <NodeId>     跨中继连接到目标节点
+//	-q              断开当前活动连接
+//	/list           列出已知邻居
+//	/who            显示本节点 ID 与当前活动会话
+//	/key            打印本节点私钥 hex
+//	/save <path>    保存私钥到文件
+//	/exit           关闭节点, 返回上一级
+//	其他输入         作为消息发送给当前活动连接
 func runInteractive() {
 	fmt.Println("=== relaychat 交互模式 ===")
 	fmt.Println("用法:")
-	fmt.Println("  relay <listen> [peer]   启动中继节点, 可选与对端 relay 建链")
-	fmt.Println("  node  <relayAddr>       启动 NAT 节点 (回显模式)")
-	fmt.Println("  quit                    退出")
+	fmt.Println("  relay <listen> [peer]    启动中继节点, 可选与对端 relay 建链 (阻塞, Ctrl+C 退出)")
+	fmt.Println("  node  <relayAddr> [key]  启动 NAT 节点并进入聊天会话 (手动收发消息)")
+	fmt.Println("  quit                     退出")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -322,9 +350,269 @@ func runInteractive() {
 			if len(fields) > 1 {
 				addr = fields[1]
 			}
-			runListen(addr, "")
+			key := ""
+			if len(fields) > 2 {
+				key = fields[2]
+			}
+			runChatNode(addr, key, scanner)
 		default:
 			fmt.Printf("未知命令: %s\n", fields[0])
 		}
 	}
+}
+
+// chatSession 维护交互式聊天会话的状态：当前活动连接、各 peer 的接收协程标记。
+type chatSession struct {
+	node *natnode.NATNode
+
+	mu         sync.Mutex
+	activeConn p2pnode.Connection
+	activePeer p2pnode.NodeID
+	// receiveStarted 标记某 peer 是否已启动接收协程, 避免重复启动。
+	receiveStarted map[p2pnode.NodeID]bool
+
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// runChatNode 启动一个 NAT 节点并进入聊天会话, 支持手动连接 / 收发 / 查看消息。
+//
+// scanner 复用上层 runInteractive 的标准输入扫描器, 避免与外层 REPL 抢输入。
+// relayAddr 是要注册到的入口 relay; keyFile 可选, 用同一身份再次上线。
+func runChatNode(relayAddr, keyFile string, scanner *bufio.Scanner) {
+	privKey, err := loadKey(keyFile)
+	if err != nil {
+		fmt.Printf("加载私钥失败: %v\n", err)
+		return
+	}
+	if privKey != nil {
+		fmt.Printf("已从 %q 加载私钥, 恢复原节点身份\n", keyFile)
+	}
+
+	node, err := natnode.NewNATNode(privKey, relayAddr)
+	if err != nil {
+		fmt.Printf("创建节点失败: %v\n", err)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &chatSession{
+		node:           node,
+		receiveStarted: make(map[p2pnode.NodeID]bool),
+		ctx:            ctx,
+		cancel:         cancel,
+	}
+
+	// 入站连接回调: 显示来源, 自动设为活动会话并启动接收协程。
+	node.OnConnection(func(conn p2pnode.Connection) {
+		peer := conn.Peer()
+		s.mu.Lock()
+		s.activeConn = conn
+		s.activePeer = peer.ID
+		alreadyStarted := s.receiveStarted[peer.ID]
+		s.receiveStarted[peer.ID] = true
+		s.mu.Unlock()
+		fmt.Printf("\n[入站连接] 来自 %s (已设为当前会话)\n> ", peer.ID)
+		if !alreadyStarted {
+			go s.receiveLoop(conn)
+		}
+	})
+
+	fmt.Printf("本节点 ID: %s\n", node.ID())
+	fmt.Printf("注册到 relay: %s\n", relayAddr)
+
+	go func() {
+		if err := node.Listen(ctx, relayAddr); err != nil && ctx.Err() == nil {
+			fmt.Printf("\nListen 退出: %v\n", err)
+		}
+	}()
+	time.Sleep(500 * time.Millisecond)
+
+	printChatHelp()
+	s.chatLoop(scanner)
+}
+
+// printChatHelp 打印聊天会话内可用命令。
+func printChatHelp() {
+	fmt.Println("\n可用命令:")
+	fmt.Println("  -c <NodeId>   跨中继连接到目标节点 (经入口 relay 自动 FIND + 桥接)")
+	fmt.Println("  -q            断开当前活动连接")
+	fmt.Println("  /list         列出已知邻居")
+	fmt.Println("  /who          显示本节点 ID 与当前活动会话")
+	fmt.Println("  /key          打印本节点私钥 hex (妥善保管)")
+	fmt.Println("  /save <path>  保存私钥到文件")
+	fmt.Println("  /help         再次显示本帮助")
+	fmt.Println("  /exit         关闭节点, 返回上一级")
+	fmt.Println("  其他输入       作为消息发送给当前活动连接")
+	fmt.Println()
+}
+
+// chatLoop 是聊天会话的命令循环, 直到 /exit 或输入结束。
+func (s *chatSession) chatLoop(scanner *bufio.Scanner) {
+	for {
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			s.shutdown()
+			return
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		switch {
+		case line == "/exit":
+			s.shutdown()
+			fmt.Printf("节点 %s 已关闭, 返回上一级\n", s.node.ID())
+			return
+
+		case line == "/help":
+			printChatHelp()
+
+		case line == "/who":
+			s.mu.Lock()
+			active := s.activePeer
+			s.mu.Unlock()
+			fmt.Printf("本节点 ID: %s\n", s.node.ID())
+			if active == "" {
+				fmt.Println("当前无活动会话")
+			} else {
+				fmt.Printf("当前活动会话: %s\n", active)
+			}
+
+		case line == "/key":
+			fmt.Printf("私钥(hex): %s\n", s.node.ExportPrivateKeyHex())
+			fmt.Println("提示: 持有该字符串等同于持有节点身份, 请妥善保管")
+
+		case strings.HasPrefix(line, "/save"):
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				fmt.Println("用法: /save <path>")
+				continue
+			}
+			if err := s.node.SavePrivateKey(parts[1]); err != nil {
+				fmt.Printf("保存失败: %v\n", err)
+				continue
+			}
+			fmt.Printf("私钥已保存到 %q (权限 0600)\n", parts[1])
+
+		case line == "/list":
+			neighbors := s.node.Neighbors()
+			if len(neighbors) == 0 {
+				fmt.Println("暂无已知邻居")
+				continue
+			}
+			s.mu.Lock()
+			active := s.activePeer
+			s.mu.Unlock()
+			fmt.Printf("已知邻居 (%d 个):\n", len(neighbors))
+			for _, p := range neighbors {
+				mark := " "
+				if p.ID == active {
+					mark = "*"
+				}
+				fmt.Printf(" %s %s  (%s)\n", mark, p.ID, p.LastSeen.Format("15:04:05"))
+			}
+
+		case line == "-q":
+			s.mu.Lock()
+			peer := s.activePeer
+			conn := s.activeConn
+			if peer == "" {
+				s.mu.Unlock()
+				fmt.Println("当前无活动连接")
+				continue
+			}
+			s.activeConn = nil
+			s.activePeer = ""
+			delete(s.receiveStarted, peer)
+			s.mu.Unlock()
+			if conn != nil {
+				conn.Close()
+			}
+			fmt.Printf("已断开与 %s 的连接\n", peer)
+
+		case strings.HasPrefix(line, "-c "):
+			s.handleConnect(p2pnode.NodeID(strings.TrimSpace(line[3:])))
+
+		default:
+			s.handleSend(line)
+		}
+	}
+}
+
+// handleConnect 跨中继连接到目标节点并设为当前活动会话。
+func (s *chatSession) handleConnect(targetID p2pnode.NodeID) {
+	if len(targetID) != 64 {
+		fmt.Printf("无效的 NodeID 长度: %d (应为 64 位 hex)\n", len(targetID))
+		return
+	}
+	if targetID == s.node.ID() {
+		fmt.Println("不能连接自身")
+		return
+	}
+	fmt.Printf("正在跨中继连接 %s ...\n", targetID)
+	conn, err := s.node.Connect(s.ctx, targetID)
+	if err != nil {
+		fmt.Printf("连接失败: %v\n", err)
+		return
+	}
+	s.mu.Lock()
+	s.activeConn = conn
+	s.activePeer = targetID
+	isNew := !s.receiveStarted[targetID]
+	if isNew {
+		s.receiveStarted[targetID] = true
+	}
+	s.mu.Unlock()
+	if isNew {
+		fmt.Printf("已连接到 %s\n", targetID)
+		go s.receiveLoop(conn)
+	} else {
+		fmt.Printf("已切换到与 %s 的会话\n", targetID)
+	}
+}
+
+// handleSend 把一行文本作为消息发给当前活动连接。
+func (s *chatSession) handleSend(text string) {
+	s.mu.Lock()
+	conn := s.activeConn
+	s.mu.Unlock()
+	if conn == nil {
+		fmt.Println("无活动连接, 请先用 -c <NodeId> 连接目标节点")
+		return
+	}
+	msg := &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: []byte(text)}
+	if err := conn.Send(s.ctx, msg); err != nil {
+		fmt.Printf("发送失败: %v\n", err)
+	}
+}
+
+// receiveLoop 持续接收某连接的消息并打印, 直到连接断开。
+func (s *chatSession) receiveLoop(conn p2pnode.Connection) {
+	peerID := conn.Peer().ID
+	for {
+		msg, err := conn.Receive(s.ctx)
+		if err != nil {
+			if s.ctx.Err() != nil {
+				return // 节点关闭, 静默退出
+			}
+			fmt.Printf("\n[断开] %s\n> ", peerID)
+			s.mu.Lock()
+			delete(s.receiveStarted, peerID)
+			if s.activePeer == peerID {
+				s.activeConn = nil
+				s.activePeer = ""
+			}
+			s.mu.Unlock()
+			return
+		}
+		fmt.Printf("\n[%s] %s\n> ", peerID, string(msg.Payload))
+	}
+}
+
+// shutdown 关闭会话: 取消 ctx 并关闭节点。
+func (s *chatSession) shutdown() {
+	s.cancel()
+	s.node.Close()
 }
