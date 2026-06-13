@@ -39,8 +39,12 @@ type NATNode struct {
 
 	registeredRelays map[string]*relayEntry
 	knownRelays      map[string]struct{}
-	peerAddrIndex    map[p2pnode.NodeID][]p2pnode.PeerAddr
-	conns            map[p2pnode.NodeID]*NATConnection
+	// entryRelays 是本节点自己「已注册/可经其收发」的入口 relay 地址列表（含 bootstrap）。
+	// Connect 只会经这些自己的入口 relay 拨号, 由入口 relay 负责跨中继查找并连接到 target 的 relay。
+	// 绝不直接拨向 target 所在的 relay —— 在复杂网络里那条路径未经验证、可能根本不通。
+	entryRelays   map[string]struct{}
+	peerAddrIndex map[p2pnode.NodeID][]p2pnode.PeerAddr
+	conns         map[p2pnode.NodeID]*NATConnection
 
 	onConnection p2pnode.OnConnectionCallback
 	seenRequests map[uint64]struct{}
@@ -90,6 +94,7 @@ func NewNATNode(privKey *ecdh.PrivateKey, bootstrapRelay string) (*NATNode, erro
 		handshake:        NewNATHandshakeHandler(privKey),
 		registeredRelays: make(map[string]*relayEntry),
 		knownRelays:      make(map[string]struct{}),
+		entryRelays:      make(map[string]struct{}),
 		peerAddrIndex:    make(map[p2pnode.NodeID][]p2pnode.PeerAddr),
 		conns:            make(map[p2pnode.NodeID]*NATConnection),
 		seenRequests:     make(map[uint64]struct{}),
@@ -98,6 +103,8 @@ func NewNATNode(privKey *ecdh.PrivateKey, bootstrapRelay string) (*NATNode, erro
 	}
 
 	n.knownRelays[bootstrapRelay] = struct{}{}
+	// bootstrap relay 即本节点的初始入口 relay。
+	n.entryRelays[bootstrapRelay] = struct{}{}
 
 	return n, nil
 }
@@ -147,6 +154,8 @@ func (n *NATNode) registerAndServe(addr string) error {
 
 	n.mu.Lock()
 	n.registeredRelays[addr] = &relayEntry{addr: addr, stream: stream}
+	// 已成功注册的 relay 即为本节点的入口 relay, 可经它发起跨中继连接。
+	n.entryRelays[addr] = struct{}{}
 	n.mu.Unlock()
 
 	return n.handleInboundHello(addr, stream)
@@ -302,7 +311,13 @@ func addrListToPeerAddrs(addrs []string) []p2pnode.PeerAddr {
 	return res
 }
 
-// Connect 查找 target 并通过 relay 建立连接。
+// Connect 查找 target 并通过本节点自己的入口 relay 建立连接。
+//
+// 重要拓扑约束：NAT 节点**只**经自己的入口 relay（entryRelays，即已注册/bootstrap 的 relay）拨号,
+// 由入口 relay 负责跨中继查找 target 所在的 relay 并完成 relay→relay 的桥接。
+// NAT 节点**绝不**直接拨向 target 所在的 relay —— 在复杂网络里 "natNode→对方 relay" 这条路径
+// 未经验证、可能根本不通（例如 natNode1→relayNode0 不通, 只能 natNode1→relayNode1→relayNode0）。
+// 因此这里不再使用 peerAddrIndex[target] 或任意 knownRelays 作为拨号目标。
 func (n *NATNode) Connect(ctx context.Context, target p2pnode.NodeID) (p2pnode.Connection, error) {
 	// 快速路径：已连接则直接返回。
 	n.mu.RLock()
@@ -311,28 +326,37 @@ func (n *NATNode) Connect(ctx context.Context, target p2pnode.NodeID) (p2pnode.C
 		return conn, nil
 	}
 
-	// 查 target 的已知 relay 地址。
-	addrs := n.peerAddrIndex[target]
-	known := make([]string, 0, len(n.knownRelays))
-	for r := range n.knownRelays {
-		known = append(known, r)
+	// 仅收集本节点自己的入口 relay 作为候选拨号地址。
+	entries := make([]string, 0, len(n.entryRelays))
+	for r := range n.entryRelays {
+		entries = append(entries, r)
 	}
 	n.mu.RUnlock()
 
-	var relayAddr string
-	if len(addrs) > 0 {
-		relayAddr = addrs[0].Relay
-	} else if len(known) > 0 {
-		// 无 target 专用 relay 地址，尝试任一已知 relay。
-		relayAddr = known[0]
-	} else {
-		return nil, fmt.Errorf("natnode: 无 target %s 的 relay 地址", target)
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("natnode: 无可用的入口 relay, 无法连接 %s", target)
 	}
 
-	// 经 relay 拨号。
+	// 依次尝试每个入口 relay：经它拨号 + 握手, 任一成功即返回; 全部失败则返回最后错误。
+	// 入口 relay 内部会跨中继 FIND 到 target 所在 relay 并桥接, 对本节点透明。
+	var lastErr error
+	for _, relayAddr := range entries {
+		conn, err := n.connectViaEntryRelay(ctx, relayAddr, target)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return conn, nil
+	}
+	return nil, fmt.Errorf("natnode: 经所有入口 relay 连接 %s 均失败: %w", target, lastErr)
+}
+
+// connectViaEntryRelay 经指定的本节点入口 relay 拨号到 target 并完成握手/元数据交换/入表。
+func (n *NATNode) connectViaEntryRelay(ctx context.Context, relayAddr string, target p2pnode.NodeID) (p2pnode.Connection, error) {
+	// 经入口 relay 拨号。
 	rawStream, _, err := n.transport.Dial(ctx, relayAddr, target)
 	if err != nil {
-		return nil, fmt.Errorf("natnode: 经 %s 拨号 %s 失败: %w", relayAddr, target, err)
+		return nil, fmt.Errorf("natnode: 经入口 relay %s 拨号 %s 失败: %w", relayAddr, target, err)
 	}
 
 	// 用 StreamClient 包装。
