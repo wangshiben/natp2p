@@ -27,9 +27,45 @@ const (
 //   - 首条消息的 Header 用调用方传入的 targetNodeId 标识对端身份，
 //     Payload 是发起方自己的 hex 公钥，供对端推导 NodeId。
 func TryConnectTCPStream(addr, targetNodeId, originalPubkeyHex string) (network.Stream, string, error) {
-	connectionId := uuid.New().String()
+	return TryConnectTCPStreamWithConnID(addr, targetNodeId, originalPubkeyHex, uuid.New().String())
+}
+
+// TryConnectTCPStreamWithConnID 与 TryConnectTCPStream 相同, 但使用调用方指定的 connectionId
+// 而不是新生成一个。
+//
+// relayNode 跨中继转发时必须用它：把 local1 的原始 connectionId 一路透传到对端 relay,
+// 使端到端 connectionId 在 local1↔local2 之间保持一致。否则 relay1 另起新 connId 会让
+// 对端节点用不同 connId 应答, 破坏帧路由表 / E2E messageId 去重的一致性。
+func TryConnectTCPStreamWithConnID(addr, targetNodeId, originalPubkeyHex, connectionId string) (network.Stream, string, error) {
 	header := &network.Header{
 		RouteName:     "",
+		NodeId:        targetNodeId,
+		NodeIdVersion: 1,
+		PayLoadLength: 0,
+		ConnectionId:  connectionId,
+		OriginData:    nil,
+	}
+	body := &network.Message{
+		Header:  header,
+		Payload: []byte(originalPubkeyHex),
+	}
+	stream, err := clientStream(body, addr, targetNodeId, connectionId, true)
+	return stream, connectionId, err
+}
+
+// TryConnectControlStream 建立一条「带 RouteName 标记」的业务连接。
+//
+// 与 TryConnectTCPStream 唯一的区别是首条 hello 消息的 Header.RouteName 由调用方指定，
+// 而不是固定为空。relayNode 用它建立 relay→relay 控制链路：把 routeName 设为
+// RelayControlRoute，对端 relay 在 MissingGroupHandler 里据此识别"这是控制链路接入，
+// 而不是普通客户端要连接某个本地未托管的 nat 节点"。
+//
+// 行为与 TryConnectTCPStream 一致：dual 拨号 + 自动重连 dialer，
+// 首条消息 Payload 为发起方公钥 hex，供对端推导 NodeId。
+func TryConnectControlStream(addr, targetNodeId, originalPubkeyHex, routeName string) (network.Stream, string, error) {
+	connectionId := uuid.New().String()
+	header := &network.Header{
+		RouteName:     routeName,
 		NodeId:        targetNodeId,
 		NodeIdVersion: 1,
 		PayLoadLength: 0,
@@ -64,6 +100,36 @@ func TryRegisterRelayStream(pubKey, relayAddress string) (network.Stream, error)
 		Payload: []byte(pubKey),
 	}
 	return clientStream(body, relayAddress, originalNodeId, "", true)
+}
+
+// TryRegisterRelayStreamTCP 与 TryRegisterRelayStream 相同, 但只用单条 TCP leg 注册（不走 dual KCP+TCP）。
+// 用于跨中继场景下避免 relayStream 的 KCP/TCP 双 leg 在中继转发处的 failover 竞态。
+func TryRegisterRelayStreamTCP(pubKey, relayAddress string) (network.Stream, error) {
+	hash := sha256.Sum256([]byte(pubKey))
+	originalNodeId := hex.EncodeToString(hash[:])
+	header := &network.Header{
+		RouteName:     "",
+		NodeId:        originalNodeId,
+		NodeIdVersion: 1,
+		ConnectionId:  "",
+	}
+	body := &network.Message{Header: header, Payload: []byte(pubKey)}
+	return clientStream(body, relayAddress, originalNodeId, "", false)
+}
+
+// TryConnectTCPOnlyStream 与 TryConnectTCPStream 相同, 但只用单条 TCP leg 连接（不走 dual）。
+// 用于跨中继：源节点单 leg 连入口 relay, 入口 relay 单 leg 桥接, 全链路 TCP 单 leg, 无 failover 竞态。
+func TryConnectTCPOnlyStream(addr, targetNodeId, originalPubkeyHex string) (network.Stream, string, error) {
+	connectionId := uuid.New().String()
+	header := &network.Header{
+		RouteName:     "",
+		NodeId:        targetNodeId,
+		NodeIdVersion: 1,
+		ConnectionId:  connectionId,
+	}
+	body := &network.Message{Header: header, Payload: []byte(originalPubkeyHex)}
+	stream, err := clientStream(body, addr, targetNodeId, connectionId, false)
+	return stream, connectionId, err
 }
 
 // TryRegisterStream : nat后设备注册Stream

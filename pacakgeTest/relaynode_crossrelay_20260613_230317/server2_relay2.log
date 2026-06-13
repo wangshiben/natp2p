@@ -1,0 +1,110 @@
+RelayNode ID: 3097a4cb56a0301ad1099bbc0c17fe022f907ff748a5fe1bf8f620a34df4be24
+监听: 0.0.0.0:9000  对外地址: 198.51.100.1:9000
+2026/06/13 23:02:51 [relaynode] 开始维持到 relay 203.0.113.1:9000 的控制链路
+维持到对端 relay 的控制链路: 203.0.113.1:9000
+RelayStarter Start AT 0.0.0.0:9000
+2026/06/13 23:02:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=121 hexPreview=7b2274797065223a2248454c4c4f222c226e6f64655f6964223a223733393563
+2026/06/13 23:02:51 [relaynode] 控制链路已建立(主动): peer=203.0.113.1:9000
+2026/06/13 23:02:51 [relaynode] 登记对端 relay: id=7395c71907051514 addr=203.0.113.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+[状态] relay邻居=1 托管NAT节点=0
+[状态] relay邻居=1 托管NAT节点=0
+[状态] relay邻居=1 托管NAT节点=0
+[状态] relay邻居=1 托管NAT节点=0
+[状态] relay邻居=1 托管NAT节点=0
+[状态] relay邻居=1 托管NAT节点=0
+2026/06/13 23:03:28 [relay] 新连接: local=198.51.100.1:9000 remote=111.0.0.1:12120
+2026/06/13 23:03:28 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=111.0.0.1:12120): nodeId=d2d61f782e916cb9 connId=
+2026/06/13 23:03:28 [relay] 新建 StreamGroup: nodeId=d2d61f782e916cb9
+2026/06/13 23:03:28 [relaynode] 本地托管的 NAT 节点登记到 natNodes: d2d61f782e916cb9
+[状态] relay邻居=1 托管NAT节点=1
+2026/06/13 23:03:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a312c227461726765
+2026/06/13 23:03:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a312c227461726765
+2026/06/13 23:03:35 [relay] 新连接: local=198.51.100.1:9000 remote=203.0.113.1:44524
+2026/06/13 23:03:35 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=203.0.113.1:44524): nodeId=d2d61f782e916cb9 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4
+2026/06/13 23:03:35 [relay] StreamOn 成功: targetNodeId=d2d61f782e916cb9 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 forward=true
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+2026/06/13 23:04:01 [DualStream] TCP startPump NextMessage 失败: nodeId=d2d61f782e916cb9 connId= err=EOF
+2026/06/13 23:04:01 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=d2d61f782e916cb9 connId=
+2026/06/13 23:04:01 [FrameRelay] TCP NextFrame 失败: nodeId=d2d61f782e916cb9 connId= isCurrent=true ctxErr=context canceled err=EOF
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+[状态] relay邻居=1 托管NAT节点=1
+2026/06/13 23:04:44 [relay] 新连接: local=198.51.100.1:9000 remote=111.0.0.1:12212
+2026/06/13 23:04:44 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=111.0.0.1:12212): nodeId=adf865221a19c470 connId=
+2026/06/13 23:04:44 [relay] 新建 StreamGroup: nodeId=adf865221a19c470
+2026/06/13 23:04:44 [relaynode] 本地托管的 NAT 节点登记到 natNodes: adf865221a19c470
+[状态] relay邻居=1 托管NAT节点=2
+[状态] relay邻居=1 托管NAT节点=2
+2026/06/13 23:04:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a322c227461726765
+2026/06/13 23:04:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a322c227461726765
+2026/06/13 23:04:52 [relay] 新连接: local=198.51.100.1:9000 remote=203.0.113.1:58400
+2026/06/13 23:04:52 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=203.0.113.1:58400): nodeId=adf865221a19c470 connId=3ea6d994-6f30-4d9f-bad7-70129a6978f6
+2026/06/13 23:04:52 [relay] StreamOn 成功: targetNodeId=adf865221a19c470 connId=3ea6d994-6f30-4d9f-bad7-70129a6978f6 forward=true
+2026/06/13 23:04:55 [FrameRelay] TCP NextFrame 失败: nodeId=adf865221a19c470 connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/06/13 23:04:55 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=adf865221a19c470 connId=
+2026/06/13 23:04:55 [DualStream] TCP startPump NextMessage 失败: nodeId=adf865221a19c470 connId= err=EOF
+2026/06/13 23:04:55 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=adf865221a19c470 connId=
+2026/06/13 23:04:55 [FrameRelay] TCP HandleFrame 写入失败, 触发 replayRoute: nodeId=adf865221a19c470 connId= err=EOF
+2026/06/13 23:04:55 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=adf865221a19c470 connId=
+2026/06/13 23:04:56 [relay] 新连接: local=198.51.100.1:9000 remote=111.0.0.1:12228
+2026/06/13 23:04:56 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=111.0.0.1:12228): nodeId=bec5a31fff68f456 connId=
+2026/06/13 23:04:56 [relay] 新建 StreamGroup: nodeId=bec5a31fff68f456
+2026/06/13 23:04:56 [relaynode] 本地托管的 NAT 节点登记到 natNodes: bec5a31fff68f456
+[状态] relay邻居=1 托管NAT节点=3
+[状态] relay邻居=1 托管NAT节点=3
+2026/06/13 23:05:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a332c227461726765
+2026/06/13 23:05:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a332c227461726765
+2026/06/13 23:05:03 [relay] 新连接: local=198.51.100.1:9000 remote=203.0.113.1:52618
+2026/06/13 23:05:03 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=203.0.113.1:52618): nodeId=bec5a31fff68f456 connId=b59ebbe6-a314-45e2-b360-35692a58d022
+2026/06/13 23:05:03 [relay] StreamOn 成功: targetNodeId=bec5a31fff68f456 connId=b59ebbe6-a314-45e2-b360-35692a58d022 forward=true
+2026/06/13 23:05:04 [FrameRelay] TCP NextFrame 失败: nodeId=bec5a31fff68f456 connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/06/13 23:05:04 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bec5a31fff68f456 connId=
+2026/06/13 23:05:04 [DualStream] TCP startPump NextMessage 失败: nodeId=bec5a31fff68f456 connId= err=EOF
+2026/06/13 23:05:04 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bec5a31fff68f456 connId=
+2026/06/13 23:05:04 [FrameRelay] TCP HandleFrame 写入失败, 触发 replayRoute: nodeId=bec5a31fff68f456 connId= err=EOF
+2026/06/13 23:05:04 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bec5a31fff68f456 connId=
+2026/06/13 23:05:05 [relay] 新连接: local=198.51.100.1:9000 remote=111.0.0.1:12231
+2026/06/13 23:05:05 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=111.0.0.1:12231): nodeId=bee1d03628d86152 connId=
+2026/06/13 23:05:05 [relay] 新建 StreamGroup: nodeId=bee1d03628d86152
+2026/06/13 23:05:05 [relaynode] 本地托管的 NAT 节点登记到 natNodes: bee1d03628d86152
+[状态] relay邻居=1 托管NAT节点=4
+[状态] relay邻居=1 托管NAT节点=4
+2026/06/13 23:05:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a342c227461726765
+2026/06/13 23:05:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a342c227461726765
+2026/06/13 23:05:12 [relay] 新连接: local=198.51.100.1:9000 remote=203.0.113.1:48092
+2026/06/13 23:05:12 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=203.0.113.1:48092): nodeId=bee1d03628d86152 connId=f549106c-951a-49c3-8524-39a015122c2b
+2026/06/13 23:05:12 [relay] StreamOn 成功: targetNodeId=bee1d03628d86152 connId=f549106c-951a-49c3-8524-39a015122c2b forward=true
+2026/06/13 23:05:14 [DualStream] TCP startPump NextMessage 失败: nodeId=bee1d03628d86152 connId= err=EOF
+2026/06/13 23:05:14 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bee1d03628d86152 connId=
+2026/06/13 23:05:14 [FrameRelay] TCP NextFrame 失败: nodeId=bee1d03628d86152 connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/06/13 23:05:14 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bee1d03628d86152 connId=
+2026/06/13 23:05:15 [relay] 新连接: local=198.51.100.1:9000 remote=111.0.0.1:12234
+2026/06/13 23:05:15 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=111.0.0.1:12234): nodeId=62f8ff357cecfe1d connId=
+2026/06/13 23:05:15 [relay] 新建 StreamGroup: nodeId=62f8ff357cecfe1d
+2026/06/13 23:05:15 [relaynode] 本地托管的 NAT 节点登记到 natNodes: 62f8ff357cecfe1d
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5
+2026/06/13 23:05:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a352c227461726765
+2026/06/13 23:05:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3097a4cb56a0301a connId=218d3440-39c9-4da3-9643-5c900afd18ab route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a352c227461726765
+2026/06/13 23:05:23 [relay] 新连接: local=198.51.100.1:9000 remote=203.0.113.1:44838
+2026/06/13 23:05:23 [relay] AcceptTcpStream 成功 (local=198.51.100.1:9000 remote=203.0.113.1:44838): nodeId=62f8ff357cecfe1d connId=a6f938b6-7462-4090-8b05-a095f9c66187
+2026/06/13 23:05:23 [relay] StreamOn 成功: targetNodeId=62f8ff357cecfe1d connId=a6f938b6-7462-4090-8b05-a095f9c66187 forward=true
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5
+[状态] relay邻居=1 托管NAT节点=5

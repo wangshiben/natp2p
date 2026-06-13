@@ -165,6 +165,9 @@ func NewTLSCrypto(targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) 
 	}
 	SaltData := message.Payload
 	SlatSign := strings.Split(string(SaltData), "|")
+	if len(SlatSign) < 2 {
+		return nil, fmt.Errorf("wrong Salt format: 期望 \"salt|sign\", 收到 %d 段 (payloadLen=%d)", len(SlatSign), len(SaltData))
+	}
 	targetPubKeyStr := GetPubKeyStr(targetPublicKey)
 	slatDataSign := getHashHex(SlatSign[0] + targetPubKeyStr)
 	if slatDataSign != SlatSign[1] {

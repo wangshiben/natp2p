@@ -720,6 +720,12 @@ func ensureDualStream(stream network.Stream) *DualStream {
 	return dual
 }
 
+// EnsureDualStream 是 ensureDualStream 的导出版本，供外部包（relaynode 等）把一条底层流
+// 收拢成 *DualStream，以便在同一逻辑连接上聚合多条 leg（KCP/TCP）并享受 leg 切换/重连。
+func EnsureDualStream(stream network.Stream) *DualStream {
+	return ensureDualStream(stream)
+}
+
 // detectStreamTransport 根据流的具体类型判断协议：DualStream 取它当前现役的 leg；
 // 普通 carrier 看底层 net.Conn 是不是 *kcp.UDPSession，否则当 TCP。
 func detectStreamTransport(stream network.Stream) streamTransport {
