@@ -164,7 +164,13 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 	for {
 		f, err := client.NextFrame(ctx)
 		if err != nil {
+			if bridgeDebug {
+				logBridge("C2R NextFrame 退出 connId=%s err=%v", client.ConnectionId(), err)
+			}
 			return
+		}
+		if bridgeDebug {
+			logBridge("C2R got frame connId=%s msg=%d seq=%d type=%d", client.ConnectionId(), f.MessageId, f.SeqId, f.FrameType)
 		}
 
 		entry := routes.clientGet(client.ConnectionId(), f.MessageId)
@@ -182,6 +188,9 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 		out := *f
 		out.MessageId = entry.dstID
 		if err := entry.dest.HandleFrame(ctx, &out); err != nil {
+			if bridgeDebug {
+				logBridge("C2R HandleFrame->relay 失败 connId=%s err=%v", client.ConnectionId(), err)
+			}
 			return
 		}
 	}

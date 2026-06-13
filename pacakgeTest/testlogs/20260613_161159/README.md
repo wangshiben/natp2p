@@ -1,7 +1,7 @@
 # 中继传输测试记录 — 2026-06-13 16:11
 
 ## 拓扑
-- 中继服务器(公网): 38.76.170.102:9000  `mode=server`  (2H2G Debian12)
+- 中继服务器(公网): 198.51.100.1:9000  `mode=server`  (2H2G Debian12)
 - 被叫端(本机): `mode=relayServer -size 4096`  nodeId=b7cccb0a...
 - 主叫端(本机): `mode=client -size 4096`  → 经 relay 连接被叫端
 - 本机出口 IP(relay 视角): 111.30.198.99
