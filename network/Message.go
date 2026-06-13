@@ -224,7 +224,7 @@ func (m *Message) SplitToFrames(messageId uint64, maxPayload int) ([]*Frame, err
 	}
 
 	totalFrames := (len(body) + maxPayload - 1) / maxPayload
-	if totalFrames > int(^uint32(0)) {
+	if uint64(totalFrames) > uint64(^uint32(0)) {
 		return nil, errors.New("message too large to fit into frames")
 	}
 
