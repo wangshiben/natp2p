@@ -18,8 +18,8 @@ import (
 	"time"
 )
 
-func Server() {
-	starter := networkFrameWork.NewRelayStarter(":9000")
+func Server(listenAddr string) {
+	starter := networkFrameWork.NewRelayStarter(listenAddr)
 	starter.StartListen()
 }
 func main() {
@@ -45,7 +45,7 @@ func CMDClient() {
 	case "client":
 		RelayClient(*address, *targetId, *size)
 	case "server":
-		Server()
+		Server(*address)
 	}
 }
 
