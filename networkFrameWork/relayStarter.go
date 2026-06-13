@@ -85,6 +85,11 @@ func (r *RelayStarter) Close() {
 	r.close <- struct{}{}
 }
 
+// Cover 返回底层 TransportCover, 供 relayNode 安装 MissingGroupHandler / RegisterHook。
+func (r *RelayStarter) Cover() *TransportCover {
+	return r.netGroup
+}
+
 func NewRelayStarter(listenAddr string) *RelayStarter {
 	return &RelayStarter{
 		addr:     listenAddr,

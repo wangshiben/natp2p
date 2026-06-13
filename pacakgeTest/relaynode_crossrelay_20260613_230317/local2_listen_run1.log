@@ -1,0 +1,16 @@
+NAT 节点 ID: d2d61f782e916cb99793a0c6b9992a3469537d0ed7b0e29a9c8fb86edb32148e
+注册到 relay: 198.51.100.1:9000
+等待入站连接, 将对每条消息回显 echo:<原文> ...
+2026/06/13 23:04:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=d2d61f782e916cb9 connId= route= payloadLen=130 hexPreview=3034623934336661623431633365316133326462653933373033336432353330
+2026/06/13 23:04:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=d48d38cf2121dd99 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 route= payloadLen=130 hexPreview=3034623934336661623431633365316133326462653933373033336432353330
+2026/06/13 23:04:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=d48d38cf2121dd99 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 route= payloadLen=129 hexPreview=6339666539303931326136323436663138613664333563663239633733306235
+2026/06/13 23:04:14 [TcpStream] SetCryptoSuite: nodeId=d48d38cf2121dd99 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 suite=*crypoto.TLSCrypto
+2026/06/13 23:04:14 [exchangeMetadata] 发送 metadata: peerID=d48d38cf2121dd99 connId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 payloadLen=110 preview="{\"peer_id\":\"d2d61f782e916cb99793a0c6b9992a3469537d0ed7b0e29a9c8fb86edb32148e\",\"r..."
+2026/06/13 23:04:14 [exchangeMetadata] 收到 metadata: peerID=d48d38cf2121dd99 headerNodeId=d48d38cf2121dd99 headerConnId=cc3e1dab-d214-4d34-bbc2-7c046b954ea4 headerRoute=/p2p/handshake-info payloadLen=110 hexPreview=7b22706565725f6964223a2264343864333863663231323164643939616364666632613839666165646138646165666165613937316366626135316561343534653065666364303239633330222c2272 asciiPreview="{\"peer_id\":\"d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30\",\"r"
+[入站连接] 来自 d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30
+[收到] d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30: hello-0
+[收到] d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30: hello-1
+[收到] d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30: hello-2
+
+收到中断信号, 退出
+[断开] d48d38cf2121dd99acdff2a89faeda8daefaea971cfba51ea454e0efcd029c30: context canceled

@@ -14,8 +14,11 @@ import (
 )
 
 const (
-	initialAckTimeout      = 300 * time.Millisecond
-	maxRetransmitAttempts  = 3
+	// initialAckTimeout 是首次等待 ACK 的超时。取值要容忍跨公网 / 多跳中继的 RTT
+	// （local↔relay1↔relay2↔local 往返可达数百毫秒并带抖动）, 过小会触发不必要的重传甚至握手失败。
+	initialAckTimeout = 600 * time.Millisecond
+	// maxRetransmitAttempts 是单条消息的最大重传次数。配合指数退避, 给跨公网高延迟链路足够的送达窗口。
+	maxRetransmitAttempts  = 6
 	ackBatchThreshold      = 100
 	recvAckIdleTimeout     = time.Second
 	recvAckTickInterval    = 250 * time.Millisecond
@@ -81,13 +84,26 @@ type TcpStream struct {
 	fatalMu   sync.Mutex
 	fatalErr  error
 	closeOnce sync.Once
+
+	// firstMsgID / firstMsgTotalFrames 记录 AcceptTcpStreamSync 同步读到的首条消息标识,
+	// 供调用方在确定流模式后用 AckFirstMessage 补发首包 ACK。
+	firstMsgID          uint64
+	firstMsgTotalFrames uint32
 }
 
 // startTcpStream 在已经建好的连接上开 readLoop 与 recvAckTimer，
 // 是 NewTCPStream / AcceptTcpStream / 拨号入口共享的内部构造路径。
 func startTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
+	t := newTcpStream(nodeId, connectionId, conn)
+	t.startLoops()
+	return t
+}
+
+// newTcpStream 仅构造 TcpStream, 不启动 readLoop / recvAckTimer。
+// 用于需要在启动读循环之前先确定流模式（如 relay 桥接先切 pure forwarder）的场景。
+func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	ctx, cancel := context.WithCancel(context.Background())
-	t := &TcpStream{
+	return &TcpStream{
 		nodeId:       nodeId,
 		connection:   conn,
 		connectionId: connectionId,
@@ -100,9 +116,12 @@ func startTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		delivered:    make(map[uint64]bool),
 		e2eDelivered: make(map[string]struct{}),
 	}
+}
+
+// startLoops 启动 readLoop 与 recvAckTimer。每个流只应调用一次。
+func (t *TcpStream) startLoops() {
 	go t.readLoop()
 	go t.recvAckTimer()
-	return t
 }
 
 func NewTCPStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
@@ -123,6 +142,68 @@ func AcceptTcpStream(conn net.Conn) (*TcpStream, *network.Message, error) {
 	t.nodeId = hex.EncodeToString(hash[:])
 	t.connectionId = msg.Header.ConnectionId
 	return t, msg, nil
+}
+
+// AcceptTcpStreamSync 同步读取首条消息后返回, 但**不**启动 readLoop / recvAckTimer。
+//
+// 与 AcceptTcpStream 的区别：首条消息通过直接同步读帧获得, 期间没有后台读循环,
+// 因此首条消息之后到达的帧不会被提前组包进 inbox。调用方据首条消息决定流模式
+// （如 relay 桥接需要先 SetPureForwarder + 装 frameTap）, 再调用 StartLoops() 启动读循环,
+// 从而消除「模式切换前若干帧已被当作 Message 组包」的竞态。
+func AcceptTcpStreamSync(conn net.Conn) (*TcpStream, *network.Message, error) {
+	t := newTcpStream("", "", conn)
+	msg, msgID, totalFrames, err := t.readFirstMessageSync()
+	if err != nil {
+		t.Close()
+		return nil, nil, err
+	}
+	t.firstMsgID = msgID
+	t.firstMsgTotalFrames = totalFrames
+	hash := sha256.Sum256(msg.Payload)
+	t.nodeId = hex.EncodeToString(hash[:])
+	t.connectionId = msg.Header.ConnectionId
+	return t, msg, nil
+}
+
+// AckFirstMessage 给同步读到的首条消息回 ACK。
+// 普通（非裸字节桥接）路径在 StartLoops 前调用, 以补回 readFirstMessageSync 未发的首包 ACK。
+func (t *TcpStream) AckFirstMessage() error {
+	if t.firstMsgTotalFrames == 0 {
+		return nil
+	}
+	return t.sendAck(t.firstMsgID, t.firstMsgTotalFrames, network.FullAckRange(t.firstMsgTotalFrames))
+}
+
+// StartLoops 是 startLoops 的导出别名, 供 AcceptTcpStreamSync 的调用方在确定流模式后启动读循环。
+func (t *TcpStream) StartLoops() { t.startLoops() }
+
+// RawConn 返回底层 net.Conn, 供裸字节级桥接（relay 透明转发）直接 io.Copy 使用。
+// 仅当未启动 readLoop（如 AcceptTcpStreamSync 之后未 StartLoops）时, 裸读才不会与 readLoop 抢字节。
+func (t *TcpStream) RawConn() net.Conn { return t.connection }
+
+// readFirstMessageSync 直接在连接上同步读帧, 直到组装出第一条完整 Message。
+// 不经过 readLoop / inbox, 也不发 ACK（由调用方决定是否 ACK）。
+// 返回首条消息及其 messageId / totalFrames（供调用方按需 ACK）。
+func (t *TcpStream) readFirstMessageSync() (*network.Message, uint64, uint32, error) {
+	for {
+		frame, err := network.ReadFrame(t.connection)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		if frame.FrameType == network.FrameTypeAck {
+			continue
+		}
+		msg, err := t.assembler.Add(frame)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		if msg != nil {
+			t.deliveredMu.Lock()
+			t.delivered[frame.MessageId] = true
+			t.deliveredMu.Unlock()
+			return msg, frame.MessageId, frame.TotalFrames, nil
+		}
+	}
 }
 
 // =============================================================================

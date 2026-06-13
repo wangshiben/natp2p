@@ -1,4 +1,4 @@
-mode: relayServer, address: 38.0.0.1:9000, targetId: targetId, size: 4096
+mode: relayServer, address: 198.51.100.1:9000, targetId: targetId, size: 4096
 Starting relay server...
 b7cccb0ac0bca58b8a7b9ac8012cb33029fcc0139462b469e052d5380cd44c45
 2026/06/13 16:17:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=b7cccb0ac0bca58b connId= route= payloadLen=130 hexPreview=3034373232643534373639333035326664653263343762663333383464663732

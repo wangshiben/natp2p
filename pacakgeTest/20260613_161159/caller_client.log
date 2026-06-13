@@ -1,4 +1,4 @@
-mode: client, address: 38.0.0.1:9000, targetId: b7cccb0ac0bca58b8a7b9ac8012cb33029fcc0139462b469e052d5380cd44c45, size: 4096
+mode: client, address: 198.51.100.1:9000, targetId: b7cccb0ac0bca58b8a7b9ac8012cb33029fcc0139462b469e052d5380cd44c45, size: 4096
 2026/06/13 16:17:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=b7cccb0ac0bca58b connId=46477dd0-0abc-4e80-82ba-3e77c3e11ec5 route= payloadLen=130 hexPreview=3034353963656338383461623233313935306565393439636630646364636631
 2026/06/13 16:17:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=b7cccb0ac0bca58b connId=46477dd0-0abc-4e80-82ba-3e77c3e11ec5 route= payloadLen=129 hexPreview=6465633563616636373964313264303637653730363932363230666136343962
 2026/06/13 16:17:15 [TcpStream] SetCryptoSuite: nodeId=b7cccb0ac0bca58b connId=46477dd0-0abc-4e80-82ba-3e77c3e11ec5 suite=*crypoto.TLSCrypto
