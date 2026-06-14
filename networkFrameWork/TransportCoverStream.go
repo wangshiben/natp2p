@@ -30,8 +30,9 @@ type TransportCover struct {
 	onMissingGroup func(stream network.Stream, firstMsg *network.Message) error
 
 	// onRegister 在新的 relay 注册流（ConnectionId 为空）首次建立 StreamGroup 时被调用，
-	// 参数是该被托管节点的 NodeId。relayNode 用它把本地托管的 nat 节点登记进 natNodes DHT。
-	onRegister func(nodeId string)
+	// 参数是该被托管节点的 NodeId 及其底层连接的远端地址（用于排障 / 展示托管来源 IP）。
+	// relayNode 用它把本地托管的 nat 节点登记进 natNodes DHT 并记录来源地址。
+	onRegister func(nodeId, remoteAddr string)
 }
 
 // SetMissingGroupHandler 安装「业务连接未命中本地 group」的回调。传 nil 卸载，恢复默认报错行为。
@@ -42,7 +43,8 @@ func (t *TransportCover) SetMissingGroupHandler(h func(stream network.Stream, fi
 }
 
 // SetRegisterHook 安装「新 relay 注册流建立 group」的回调。传 nil 卸载。
-func (t *TransportCover) SetRegisterHook(h func(nodeId string)) {
+// 回调参数：被托管节点 NodeId、其底层连接远端地址（如 "1.2.3.4:5678"）。
+func (t *TransportCover) SetRegisterHook(h func(nodeId, remoteAddr string)) {
 	t.lock.Lock()
 	t.onRegister = h
 	t.lock.Unlock()
@@ -140,7 +142,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 				t.lock.Unlock()
 				go group.StartListen()
 				if registerHook != nil {
-					registerHook(registeredNodeId)
+					registerHook(registeredNodeId, remoteAddr)
 				}
 			} else {
 				t.lock.Unlock()
