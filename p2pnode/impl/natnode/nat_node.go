@@ -507,8 +507,11 @@ func (n *NATNode) Close() error {
 	return errors.Join(errs...)
 }
 
-// relayManager 定期检查活跃 relay 注册数，维持至少 3 个。
-// 不足时从 knownRelays 中选取未注册 relay 尝试注册。
+// relayManager 定期检查活跃 relay 注册数，维持本节点对**自己的入口 relay**的注册。
+//
+// 关键约束：候选只来自 entryRelays（本节点显式配置/bootstrap 的入口 relay），
+// **绝不**用 knownRelays——后者包含从元数据交换里学到的「对端的 relay」, 直接去注册它们
+// 会让本 NAT 节点与多个公网 relay 建立直连, 违背「只连自己入口 relay」的拓扑约束。
 func (n *NATNode) relayManager() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -520,17 +523,10 @@ func (n *NATNode) relayManager() {
 		case <-ticker.C:
 		}
 
-		n.mu.RLock()
-		count := len(n.registeredRelays)
-		n.mu.RUnlock()
-
-		if count >= 3 {
-			continue
-		}
-
 		n.mu.Lock()
+		// 候选 = 本节点入口 relay 中尚未注册的那些。
 		var candidates []string
-		for addr := range n.knownRelays {
+		for addr := range n.entryRelays {
 			if _, exists := n.registeredRelays[addr]; !exists {
 				candidates = append(candidates, addr)
 			}
@@ -546,18 +542,15 @@ func (n *NATNode) relayManager() {
 
 			n.mu.RLock()
 			_, alreadyRegistered := n.registeredRelays[addr]
-			currentCount := len(n.registeredRelays)
 			n.mu.RUnlock()
-
-			if alreadyRegistered || currentCount >= 3 {
-				break
+			if alreadyRegistered {
+				continue
 			}
 
 			// 每条注册在独立 goroutine 中服务。
 			go func(a string) {
 				if err := n.registerAndServe(a); err != nil {
 					// registerAndServe 已在错误时做清理。
-					// 生产环境可在此处加日志。
 				}
 			}(addr)
 		}
