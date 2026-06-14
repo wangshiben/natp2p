@@ -67,6 +67,9 @@ type RelayNode struct {
 	inboundLinks   []*peerLink          // 对端拨入并被本端接管的控制链路
 	peerIDToAddr   map[string]string    // relay NodeId -> 业务地址
 	relayAddrIndex map[p2pnode.NodeID][]string
+	// hostedNatAddr 记录本 relay 托管的每个 NAT 节点的来源地址（其底层连接远端 IP:port）,
+	// 用于状态打印 / 排障, 判断"托管NAT节点"里每个节点的托管来源。
+	hostedNatAddr map[string]string // NAT 节点 NodeId -> 远端地址
 
 	pendingFinds map[uint64]*pendingFind
 	findCounter  atomic.Uint64
@@ -132,6 +135,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 		peerIDToAddr:   make(map[string]string),
 		relayAddrIndex: make(map[p2pnode.NodeID][]string),
 		pendingFinds:   make(map[uint64]*pendingFind),
+		hostedNatAddr:  make(map[string]string),
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -182,10 +186,35 @@ func (n *RelayNode) ConnectPeer(addr string) {
 	log.Printf("[relaynode] 开始维持到 relay %s 的控制链路", addr)
 }
 
-// onRegister 是「新 NAT 节点注册流建立」回调：把它登记进 natNodes DHT（需求 1、2）。
-func (n *RelayNode) onRegister(nodeId string) {
+// onRegister 是「新 NAT 节点注册流建立」回调：把它登记进 natNodes DHT（需求 1、2）,
+// 并记录它的来源地址（底层连接远端 IP:port）, 便于状态打印时展示托管来源。
+func (n *RelayNode) onRegister(nodeId, remoteAddr string) {
 	n.natNodes.AddNode(DHTable.NewNodeFromPeerID(nodeId))
-	log.Printf("[relaynode] 本地托管的 NAT 节点登记到 natNodes: %.16s", nodeId)
+	n.mu.Lock()
+	n.hostedNatAddr[nodeId] = remoteAddr
+	n.mu.Unlock()
+	log.Printf("[relaynode] 本地托管的 NAT 节点登记到 natNodes: %.16s 来源=%s", nodeId, remoteAddr)
+}
+
+// HostedNatInfo 描述本 relay 托管的一个 NAT 节点的状态信息。
+type HostedNatInfo struct {
+	NodeID     string // 完整 NodeId
+	RemoteAddr string // 注册时底层连接的远端地址（托管来源 IP:port）; 可能为空(老连接)
+}
+
+// HostedNatNodesDetailed 返回本 relay 当前托管的 NAT 节点明细（含来源地址）, 供状态打印。
+func (n *RelayNode) HostedNatNodesDetailed() []HostedNatInfo {
+	hosted := n.HostedNatNodes() // 以 DHT 为准（真实托管集合）
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	out := make([]HostedNatInfo, 0, len(hosted))
+	for _, p := range hosted {
+		out = append(out, HostedNatInfo{
+			NodeID:     string(p.ID),
+			RemoteAddr: n.hostedNatAddr[string(p.ID)],
+		})
+	}
+	return out
 }
 
 // hostsLocally 判断某个 nat 节点是否当前注册在本 relay 上。

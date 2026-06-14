@@ -171,8 +171,25 @@ func runRelay(listen, public, peer, keyFile string) {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			fmt.Printf("[状态] relay邻居=%d 托管NAT节点=%d\n",
-				len(rn.RelayNeighbors()), len(rn.HostedNatNodes()))
+			neighbors := rn.RelayNeighbors()
+			hosted := rn.HostedNatNodesDetailed()
+			fmt.Printf("[状态] relay邻居=%d 托管NAT节点=%d\n", len(neighbors), len(hosted))
+			// 打印每个对端 relay 邻居及其地址。
+			for _, p := range neighbors {
+				addr := ""
+				if len(p.Addresses) > 0 {
+					addr = p.Addresses[0].Relay
+				}
+				fmt.Printf("    [relay邻居] id=%.16s addr=%s\n", p.ID, addr)
+			}
+			// 打印每个托管的 NAT 节点及其托管来源地址（底层连接远端 IP:port）。
+			for _, h := range hosted {
+				src := h.RemoteAddr
+				if src == "" {
+					src = "(未知)"
+				}
+				fmt.Printf("    [托管NAT] id=%.16s 来源=%s\n", h.NodeID, src)
+			}
 		}
 	}()
 
