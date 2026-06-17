@@ -51,7 +51,7 @@ const FrameHeaderLength = frameMagicLength + frameMessageIdLength + frameSeqIdLe
 	frameTotalFramesLength + frameAckIdLength + frameTypeLength + framePayloadLenLength
 
 // DefaultMaxFramePayload 是默认的单帧最大负载，向调用方暴露便于动态调整。
-const DefaultMaxFramePayload = 800
+const DefaultMaxFramePayload = 1400
 
 var frameMagicBytes = []byte(FrameMagic)
 
