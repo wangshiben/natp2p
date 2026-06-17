@@ -115,7 +115,7 @@ func RelayServer(addr string, size int) (string, <-chan struct{}) {
 
 // TrafficMonitor 流量监控器
 const (
-	senderWorkers     = 2
+	senderWorkers     = 8  // 增加并发发送 worker，从 2 提升到 8
 	traceHeaderLength = 32
 )
 

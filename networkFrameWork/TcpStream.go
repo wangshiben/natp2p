@@ -433,15 +433,31 @@ func (t *TcpStream) waitAck(ctx context.Context, tracker *ackTracker, timeout ti
 func (t *TcpStream) writeFrames(frames []*network.Frame) error {
 	t.sendLock.Lock()
 	defer t.sendLock.Unlock()
+
+	// 批量写入优化：把所有帧序列化到一个缓冲区，一次 Write 发出
+	// 减少 syscall 次数，大幅提升吞吐
+	if len(frames) == 0 {
+		return nil
+	}
+
+	// 预估总大小
+	totalSize := 0
+	for _, f := range frames {
+		totalSize += network.FrameHeaderLength + len(f.Payload)
+	}
+
+	buf := make([]byte, 0, totalSize)
 	for _, f := range frames {
 		bs, err := f.ParseToBytes()
 		if err != nil {
 			return err
 		}
-		if _, err := t.connection.Write(bs); err != nil {
-			t.failAndClose(err)
-			return err
-		}
+		buf = append(buf, bs...)
+	}
+
+	if _, err := t.connection.Write(buf); err != nil {
+		t.failAndClose(err)
+		return err
 	}
 	return nil
 }

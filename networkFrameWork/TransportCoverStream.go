@@ -67,6 +67,13 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 	}
 	log.Printf("[relay] 新连接: local=%s remote=%s", localAddr, remoteAddr)
 
+	// TCP 优化：服务端接受连接后立即设置 NoDelay 和缓冲区
+	if tcpConn, ok := connection.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetReadBuffer(2 * 1024 * 1024)
+		_ = tcpConn.SetWriteBuffer(2 * 1024 * 1024)
+	}
+
 	timeout, cancelFunc := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancelFunc()
 	errChan := make(chan error, 1)

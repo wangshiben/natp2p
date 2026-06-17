@@ -240,6 +240,14 @@ func tcpClientStreamContext(ctx context.Context, FirstMessage *network.Message, 
 	if err != nil {
 		return nil, err
 	}
+
+	// TCP 优化：禁用 Nagle 算法，设置缓冲区
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetReadBuffer(2 * 1024 * 1024)
+		_ = tcpConn.SetWriteBuffer(2 * 1024 * 1024)
+	}
+
 	res := startTcpStream(originalNodeId, connectionId, conn)
 	if err := res.SendMessage(handshakeCtx, cloneMessage(FirstMessage)); err != nil {
 		res.Close()
@@ -261,10 +269,14 @@ func kcpStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAdd
 	if err != nil {
 		return nil, err
 	}
-	conn.SetNoDelay(1, 50, 2, 1)
-	conn.SetMtu(1000)
+	// 调优 KCP 参数以提升吞吐：
+	// - interval 从 50ms 降到 10ms，提升响应速度
+	// - MTU 从 1000 提升到 1400（安全的互联网 MTU）
+	// - 窗口从 128/512 提升到 256/1024，容纳更多在途数据
+	conn.SetNoDelay(1, 10, 2, 1)
+	conn.SetMtu(1400)
 	conn.SetWriteBuffer(4 * 1024 * 1024)
-	conn.SetWindowSize(128, 512)
+	conn.SetWindowSize(256, 1024)
 
 	res := startTcpStream(originalNodeId, connectionId, conn)
 	if err := res.SendMessage(handshakeCtx, cloneMessage(FirstMessage)); err != nil {
