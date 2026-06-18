@@ -119,6 +119,37 @@ func (s *StreamClient) SendMessage(ctx context.Context, message *network.Message
 	return nil
 }
 
+// SendMessageAsync 异步发送消息，立即返回。发送结果通过回调通知。
+// 如果 callback 为 nil，行为退化为同步阻塞（等价于 SendMessage）。
+func (s *StreamClient) SendMessageAsync(ctx context.Context, message *network.Message, callback network.MessageResultCallback) error {
+	if callback == nil {
+		// 兼容模式：同步发送
+		return s.SendMessage(ctx, message)
+	}
+
+	// 异步模式：立即返回，后台发送
+	go func() {
+		err := s.SendMessage(ctx, message)
+
+		// 生成消息标识
+		msgID := ""
+		if message.Header != nil && len(message.Header.ConnectionId) >= 8 {
+			msgID = message.Header.ConnectionId[:8]
+		}
+
+		result := network.MessageResult{
+			MessageID:     msgID,
+			Success:       err == nil,
+			Error:         err,
+			Attempts:      1,
+			UsedTransport: "Client", // ClientStream是包装器，实际传输由底层决定
+		}
+		callback(result)
+	}()
+
+	return nil
+}
+
 // NodeId 返回底层 stream 当前认为的对端 NodeId。
 // 对 ConnectNodeWithTargetRelay 来说，这通常是目标 node 的 NodeId，而不是 relay 服务器本身。
 func (s *StreamClient) NodeId() string {

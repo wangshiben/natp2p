@@ -59,10 +59,10 @@ func (r *RelayStarter) StartListen() {
 			if !ok || session == nil {
 				continue
 			}
-			session.SetNoDelay(1, 50, 2, 1)
-			session.SetMtu(1000)
+			session.SetNoDelay(1, 10, 2, 1)
+			session.SetMtu(1400)
 			session.SetWriteBuffer(4 * 1024 * 1024)
-			session.SetWindowSize(128, 512)
+			session.SetWindowSize(256, 1024)
 			err = r.netGroup.ListenTCPConnection(kcpConn)
 			if err != nil {
 				log.Println("ListenKCPConnection error:", err)
