@@ -278,6 +278,7 @@ func (n *RelayNode) acceptControlLink(stream network.Stream, firstMsg *network.M
 	pl := &peerLink{owner: n, outbound: false, ctx: n.ctx, cancel: func() {}}
 	// 记录对端实际连入的 IP, 供 dialHostAddr 拼出可路由的桥接地址
 	// （对端 HELLO 自报的 host 可能是 ":9000" 等不可路由占位）。
+	// TODO 此处仅仅提供查询功能，正式发布时会删除查询对端HELLO的IP和port信息
 	if tcp := networkFrameWork.TCPStreamOf(stream); tcp != nil && tcp.RawConn() != nil {
 		if host, _, err := net.SplitHostPort(tcp.RawConn().RemoteAddr().String()); err == nil {
 			pl.observedRemoteIP = host
