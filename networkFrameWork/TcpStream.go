@@ -115,6 +115,12 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	// 策略：从800字节开始，每30秒根据实际吞吐调整
 	adaptor := network.NewKCPFrameSizeAdaptor()
 
+	// 根据连接的MTU自动设置最大帧大小
+	if adaptor != nil && conn != nil {
+		maxFrameSize := network.DetectMaxFrameSize(conn)
+		adaptor.SetMaxFrameSize(maxFrameSize)
+	}
+
 	t := &TcpStream{
 		nodeId:              nodeId,
 		connection:          conn,

@@ -45,13 +45,38 @@ func NewKCPFrameSizeAdaptor() *FrameSizeAdaptor {
 	return &FrameSizeAdaptor{
 		currentFrameSize: 800,                  // 从800字节开始（保守起点）
 		minFrameSize:     800,                  // 最小800字节
-		maxFrameSize:     1400,                 // 最大1400字节（已验证最优）
+		maxFrameSize:     1400,                 // 默认1400字节（可通过SetMaxFrameSize调整）
 		checkInterval:    time.Second * 30,     // 每30秒检查一次（减少调整频率）
 		baselineDuration: 0,                    // 无基线期
 		lastCheckTime:    now,
 		lastAdjustTime:   now,
 		baselinePhase:    false,
 		lastThroughput:   1.0,
+	}
+}
+
+// SetMaxFrameSize 设置最大帧大小（通常基于MTU自动计算）
+func (a *FrameSizeAdaptor) SetMaxFrameSize(maxSize int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// 确保在合理范围内
+	if maxSize < a.minFrameSize {
+		maxSize = a.minFrameSize
+	}
+	if maxSize > 8192 {
+		maxSize = 8192
+	}
+
+	oldMax := a.maxFrameSize
+	a.maxFrameSize = maxSize
+
+	println("[FrameAdaptor] 更新最大帧大小: ", oldMax, " -> ", maxSize)
+
+	// 如果当前帧大小超过新上限，调整到上限
+	if a.currentFrameSize > maxSize {
+		a.currentFrameSize = maxSize
+		println("[FrameAdaptor] 当前帧大小超限，调整为: ", maxSize)
 	}
 }
 
