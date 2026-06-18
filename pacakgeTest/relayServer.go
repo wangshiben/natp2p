@@ -115,7 +115,7 @@ func RelayServer(addr string, size int) (string, <-chan struct{}) {
 
 // TrafficMonitor 流量监控器
 const (
-	senderWorkers     = 8  // 增加并发发送 worker，从 2 提升到 8
+	senderWorkers     = 32 // 异步流水线模式：增加到32个worker以充分利用带宽
 	traceHeaderLength = 32
 )
 
@@ -259,7 +259,8 @@ func (tm *TrafficMonitor) monitor() {
 	}
 }
 
-// sender 固定并发 worker：每个 worker 自己串行阻塞发送，整体形成固定 10 线程压测。
+// sender 使用同步发送，通过增加worker数量来提升并发度。
+// 32个worker可以同时阻塞等待ACK，形成流水线效果。
 func (tm *TrafficMonitor) sender(stream network.Stream, size int, workerID uint32) {
 	defer tm.wg.Done()
 
@@ -279,6 +280,7 @@ func (tm *TrafficMonitor) sender(stream network.Stream, size int, workerID uint3
 			return
 		default:
 		}
+
 		seq++
 		writeTracePayload(payload, tm.senderID, workerID, seq)
 		targetConnectionId := tm.targetConnectionId
@@ -292,10 +294,19 @@ func (tm *TrafficMonitor) sender(stream network.Stream, size int, workerID uint3
 			},
 			Payload: append([]byte(nil), payload...),
 		}
+
+		// 使用同步发送（阻塞等待ACK）
+		// 通过32个worker并发，每个worker阻塞时其他worker继续发送
 		if err := stream.SendMessage(ctx, msg); err != nil {
-			fmt.Println("sender error:", err)
+			if ctx.Err() != nil {
+				// context取消是正常退出
+				return
+			}
+			fmt.Printf("\n❌ Worker %d 发送失败: %v\n", workerID, err)
 			return
 		}
+
+		// 只统计成功发送的消息
 		atomic.AddInt64(&tm.TxBytes, int64(size+network.HeaderLength))
 		atomic.AddInt64(&tm.TxPackets, 1)
 	}

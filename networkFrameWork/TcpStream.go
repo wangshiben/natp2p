@@ -338,6 +338,47 @@ func (t *TcpStream) SendMessage(ctx context.Context, message *network.Message) e
 	return t.sendMessageWithMessageID(ctx, message, nil)
 }
 
+// SendMessageAsync 异步发送消息，立即返回。发送结果通过回调通知。
+// 如果 callback 为 nil，行为退化为同步阻塞（等价于 SendMessage）。
+func (t *TcpStream) SendMessageAsync(ctx context.Context, message *network.Message, callback network.MessageResultCallback) error {
+	if callback == nil {
+		// 兼容模式：同步发送
+		return t.SendMessage(ctx, message)
+	}
+
+	// 异步模式：立即返回，后台发送
+	go func() {
+		err := t.SendMessage(ctx, message)
+
+		// 生成消息标识
+		msgID := ""
+		if message.Header != nil && len(message.Header.ConnectionId) >= 8 {
+			msgID = message.Header.ConnectionId[:8]
+			if len(message.Header.NodeId) >= 8 {
+				msgID += "-" + message.Header.NodeId[:8]
+			}
+		}
+
+		// 确定传输协议
+		transport := "TCP"
+		if t.connection != nil && t.connection.RemoteAddr().Network() != "tcp" {
+			transport = "KCP"
+		}
+
+		result := network.MessageResult{
+			MessageID:     msgID,
+			Success:       err == nil,
+			Error:         err,
+			Attempts:      1, // SendMessage内部已处理重传
+			UsedTransport: transport,
+		}
+
+		callback(result)
+	}()
+
+	return nil
+}
+
 func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *network.Message, messageID []byte) error {
 	if err := t.fatal(); err != nil {
 		return err
