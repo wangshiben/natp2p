@@ -28,9 +28,10 @@ type Frame struct {
 }
 
 const (
-	FrameTypeData       uint8 = 0
-	FrameTypeAck        uint8 = 1
-	FrameTypeRetransmit uint8 = 2
+	FrameTypeData           uint8 = 0
+	FrameTypeAck            uint8 = 1
+	FrameTypeRetransmit     uint8 = 2
+	FrameTypeFrameSizeChange uint8 = 3 // 帧大小变更控制帧
 )
 
 // FrameMagic 区分 Frame 与裸 Message Header，避免误解析。
