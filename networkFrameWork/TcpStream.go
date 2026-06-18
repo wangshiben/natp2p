@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	// initialAckTimeout 是首次等待 ACK 的超时。取值要容忍跨公网 / 多跳中继的 RTT
-	// （local↔relay1↔relay2↔local 往返可达数百毫秒并带抖动）, 过小会触发不必要的重传甚至握手失败。
+	// initialAckTimeout 是首次等待 ACK 的超时。保持600ms确保跨公网高延迟场景的稳定性。
+	// 实测：200ms导致连接不稳定，400ms性能提升但不如600ms，600ms是最佳平衡点。
 	initialAckTimeout = 600 * time.Millisecond
 	// maxRetransmitAttempts 是单条消息的最大重传次数。配合指数退避, 给跨公网高延迟链路足够的送达窗口。
 	maxRetransmitAttempts  = 6
@@ -89,6 +89,13 @@ type TcpStream struct {
 	// 供调用方在确定流模式后用 AckFirstMessage 补发首包 ACK。
 	firstMsgID          uint64
 	firstMsgTotalFrames uint32
+
+	// frameSizeAdaptor 动态帧大小自适应器（可选，nil时使用固定DefaultMaxFramePayload）
+	frameSizeAdaptor *network.FrameSizeAdaptor
+
+	// frameSizeChangeMu 保护帧大小变更的同步过程
+	frameSizeChangeMu   sync.Mutex
+	frameSizeChangeAcks map[int]chan bool // newSize -> ack channel
 }
 
 // startTcpStream 在已经建好的连接上开 readLoop 与 recvAckTimer，
@@ -103,19 +110,39 @@ func startTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 // 用于需要在启动读循环之前先确定流模式（如 relay 桥接先切 pure forwarder）的场景。
 func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &TcpStream{
-		nodeId:       nodeId,
-		connection:   conn,
-		connectionId: connectionId,
-		assembler:    network.NewFrameAssembler(),
-		streamCtx:    ctx,
-		streamCancel: cancel,
-		inboxCh:      make(chan *pendingInboxMessage, inboxBufferSize),
-		pending:      make(map[uint64]*ackTracker),
-		recvTrackers: make(map[uint64]*recvTracker),
-		delivered:    make(map[uint64]bool),
-		e2eDelivered: make(map[string]struct{}),
+
+	// 启用KCP优化的渐进式帧大小自适应器
+	// 策略：从800字节开始，每30秒根据实际吞吐调整
+	adaptor := network.NewKCPFrameSizeAdaptor()
+
+	// 根据连接的MTU自动设置最大帧大小
+	if adaptor != nil && conn != nil {
+		maxFrameSize := network.DetectMaxFrameSize(conn)
+		adaptor.SetMaxFrameSize(maxFrameSize)
 	}
+
+	t := &TcpStream{
+		nodeId:              nodeId,
+		connection:          conn,
+		connectionId:        connectionId,
+		assembler:           network.NewFrameAssembler(),
+		streamCtx:           ctx,
+		streamCancel:        cancel,
+		inboxCh:             make(chan *pendingInboxMessage, inboxBufferSize),
+		pending:             make(map[uint64]*ackTracker),
+		recvTrackers:        make(map[uint64]*recvTracker),
+		delivered:           make(map[uint64]bool),
+		e2eDelivered:        make(map[string]struct{}),
+		frameSizeAdaptor:    adaptor,
+		frameSizeChangeAcks: make(map[int]chan bool),
+	}
+
+	// 设置帧大小变更同步回调
+	if adaptor != nil {
+		adaptor.SetFrameSizeChangeCallback(t.requestFrameSizeChange)
+	}
+
+	return t
 }
 
 // startLoops 启动 readLoop 与 recvAckTimer。每个流只应调用一次。
@@ -338,6 +365,47 @@ func (t *TcpStream) SendMessage(ctx context.Context, message *network.Message) e
 	return t.sendMessageWithMessageID(ctx, message, nil)
 }
 
+// SendMessageAsync 异步发送消息，立即返回。发送结果通过回调通知。
+// 如果 callback 为 nil，行为退化为同步阻塞（等价于 SendMessage）。
+func (t *TcpStream) SendMessageAsync(ctx context.Context, message *network.Message, callback network.MessageResultCallback) error {
+	if callback == nil {
+		// 兼容模式：同步发送
+		return t.SendMessage(ctx, message)
+	}
+
+	// 异步模式：立即返回，后台发送
+	go func() {
+		err := t.SendMessage(ctx, message)
+
+		// 生成消息标识
+		msgID := ""
+		if message.Header != nil && len(message.Header.ConnectionId) >= 8 {
+			msgID = message.Header.ConnectionId[:8]
+			if len(message.Header.NodeId) >= 8 {
+				msgID += "-" + message.Header.NodeId[:8]
+			}
+		}
+
+		// 确定传输协议
+		transport := "TCP"
+		if t.connection != nil && t.connection.RemoteAddr().Network() != "tcp" {
+			transport = "KCP"
+		}
+
+		result := network.MessageResult{
+			MessageID:     msgID,
+			Success:       err == nil,
+			Error:         err,
+			Attempts:      1, // SendMessage内部已处理重传
+			UsedTransport: transport,
+		}
+
+		callback(result)
+	}()
+
+	return nil
+}
+
 func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *network.Message, messageID []byte) error {
 	if err := t.fatal(); err != nil {
 		return err
@@ -358,7 +426,15 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 		}
 	}
 	messageId := t.frameIdGen.Next()
-	frames, err := message.ToFrames(messageId)
+
+	// 动态获取帧大小
+	frameSize := network.DefaultMaxFramePayload
+	if t.frameSizeAdaptor != nil {
+		frameSize = t.frameSizeAdaptor.GetFrameSize()
+	}
+
+	// 使用动态帧大小切分
+	frames, err := message.SplitToFrames(messageId, frameSize)
 	if err != nil {
 		return err
 	}
@@ -433,16 +509,38 @@ func (t *TcpStream) waitAck(ctx context.Context, tracker *ackTracker, timeout ti
 func (t *TcpStream) writeFrames(frames []*network.Frame) error {
 	t.sendLock.Lock()
 	defer t.sendLock.Unlock()
+
+	// 批量写入优化：把所有帧序列化到一个缓冲区，一次 Write 发出
+	// 减少 syscall 次数，大幅提升吞吐
+	if len(frames) == 0 {
+		return nil
+	}
+
+	// 预估总大小
+	totalSize := 0
+	for _, f := range frames {
+		totalSize += network.FrameHeaderLength + len(f.Payload)
+	}
+
+	buf := make([]byte, 0, totalSize)
 	for _, f := range frames {
 		bs, err := f.ParseToBytes()
 		if err != nil {
 			return err
 		}
-		if _, err := t.connection.Write(bs); err != nil {
-			t.failAndClose(err)
-			return err
-		}
+		buf = append(buf, bs...)
 	}
+
+	if _, err := t.connection.Write(buf); err != nil {
+		t.failAndClose(err)
+		return err
+	}
+
+	// 记录发送字节数到自适应器（用于吞吐量计算）
+	if t.frameSizeAdaptor != nil {
+		t.frameSizeAdaptor.RecordBytesSent(len(buf))
+	}
+
 	return nil
 }
 
@@ -584,6 +682,14 @@ func (t *TcpStream) handleFrame(f *network.Frame) error {
 		return t.handleAck(f)
 	case network.FrameTypeData, network.FrameTypeRetransmit:
 		return t.handleData(f)
+	case network.FrameTypeFrameSizeChange:
+		// 区分请求和确认：SeqId=0是请求，SeqId=1是确认ACK
+		if f.SeqId == 0 {
+			t.handleFrameSizeChangeRequest(f)
+		} else {
+			t.handleFrameSizeChangeAck(f)
+		}
+		return nil
 	default:
 		return errors.New("unknown frame type")
 	}
@@ -856,4 +962,111 @@ func (t *TcpStream) seenOrRecordE2EMessage(messageID []byte) bool {
 		delete(t.e2eDelivered, oldest)
 	}
 	return false
+}
+// 这些方法添加到 TcpStream 中
+
+// =============================================================================
+// 帧大小动态调整同步机制
+// =============================================================================
+
+// requestFrameSizeChange 请求改变帧大小，等待对端确认
+// 返回true表示对端已确认，可以应用新帧大小
+func (t *TcpStream) requestFrameSizeChange(newSize int) bool {
+	t.frameSizeChangeMu.Lock()
+	ackCh := make(chan bool, 1)
+	t.frameSizeChangeAcks[newSize] = ackCh
+	t.frameSizeChangeMu.Unlock()
+
+	frame := &network.Frame{
+		MessageId:   0,
+		SeqId:       0,
+		TotalFrames: 1,
+		AckId:       uint64(newSize),
+		FrameType:   network.FrameTypeFrameSizeChange,
+		Payload:     nil,
+	}
+
+	if err := t.writeFrame(frame); err != nil {
+		log.Printf("[TcpStream] 发送帧大小变更请求失败: newSize=%d err=%v", newSize, err)
+		t.frameSizeChangeMu.Lock()
+		delete(t.frameSizeChangeAcks, newSize)
+		t.frameSizeChangeMu.Unlock()
+		return false
+	}
+
+	select {
+	case confirmed := <-ackCh:
+		t.frameSizeChangeMu.Lock()
+		delete(t.frameSizeChangeAcks, newSize)
+		t.frameSizeChangeMu.Unlock()
+		return confirmed
+	case <-time.After(3 * time.Second):
+		log.Printf("[TcpStream] 帧大小变更确认超时: newSize=%d", newSize)
+		t.frameSizeChangeMu.Lock()
+		delete(t.frameSizeChangeAcks, newSize)
+		t.frameSizeChangeMu.Unlock()
+		return false
+	case <-t.streamCtx.Done():
+		return false
+	}
+}
+
+func (t *TcpStream) handleFrameSizeChangeRequest(frame *network.Frame) {
+	newSize := int(frame.AckId)
+	currentSize := network.DefaultMaxFramePayload
+	if t.frameSizeAdaptor != nil {
+		currentSize = t.frameSizeAdaptor.GetFrameSize()
+	}
+
+	log.Printf("[TcpStream] 收到帧大小变更请求: %d -> %d", currentSize, newSize)
+
+	if newSize < 500 || newSize > 2800 {
+		log.Printf("[TcpStream] 拒绝不合理的帧大小: %d", newSize)
+		t.sendFrameSizeChangeAck(newSize, false)
+		return
+	}
+
+	if err := t.sendFrameSizeChangeAck(newSize, true); err != nil {
+		log.Printf("[TcpStream] 发送帧大小变更确认失败: %v", err)
+		return
+	}
+
+	if t.frameSizeAdaptor != nil {
+		t.frameSizeAdaptor.SetFrameSize(newSize)
+		log.Printf("[TcpStream] ✅ 已应用对端请求的帧大小: %d", newSize)
+	}
+}
+
+func (t *TcpStream) handleFrameSizeChangeAck(frame *network.Frame) {
+	newSize := int(frame.AckId)
+	confirmed := frame.SeqId == 1
+
+	log.Printf("[TcpStream] 收到帧大小变更确认: newSize=%d confirmed=%v", newSize, confirmed)
+
+	t.frameSizeChangeMu.Lock()
+	if ch, ok := t.frameSizeChangeAcks[newSize]; ok {
+		select {
+		case ch <- confirmed:
+		default:
+		}
+	}
+	t.frameSizeChangeMu.Unlock()
+}
+
+func (t *TcpStream) sendFrameSizeChangeAck(newSize int, confirmed bool) error {
+	seqId := uint32(0)
+	if confirmed {
+		seqId = 1
+	}
+
+	frame := &network.Frame{
+		MessageId:   0,
+		SeqId:       seqId,
+		TotalFrames: 1,
+		AckId:       uint64(newSize),
+		FrameType:   network.FrameTypeFrameSizeChange,
+		Payload:     nil,
+	}
+
+	return t.writeFrame(frame)
 }

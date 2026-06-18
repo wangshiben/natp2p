@@ -28,9 +28,10 @@ type Frame struct {
 }
 
 const (
-	FrameTypeData       uint8 = 0
-	FrameTypeAck        uint8 = 1
-	FrameTypeRetransmit uint8 = 2
+	FrameTypeData           uint8 = 0
+	FrameTypeAck            uint8 = 1
+	FrameTypeRetransmit     uint8 = 2
+	FrameTypeFrameSizeChange uint8 = 3 // 帧大小变更控制帧
 )
 
 // FrameMagic 区分 Frame 与裸 Message Header，避免误解析。
@@ -51,7 +52,7 @@ const FrameHeaderLength = frameMagicLength + frameMessageIdLength + frameSeqIdLe
 	frameTotalFramesLength + frameAckIdLength + frameTypeLength + framePayloadLenLength
 
 // DefaultMaxFramePayload 是默认的单帧最大负载，向调用方暴露便于动态调整。
-const DefaultMaxFramePayload = 800
+const DefaultMaxFramePayload = 1400
 
 var frameMagicBytes = []byte(FrameMagic)
 
