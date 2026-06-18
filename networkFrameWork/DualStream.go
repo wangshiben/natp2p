@@ -169,6 +169,49 @@ func (d *DualStream) NextMessage(ctx context.Context) (*network.Message, error) 
 	}
 }
 
+// SendMessageAsync 异步发送消息，立即返回。发送结果通过回调通知。
+// 内部会自动重试 primary/backup，回调中的 MessageResult 包含最终结果。
+// 兼容老代码：如果 callback 为 nil，行为退化为同步阻塞（等价于 SendMessage）。
+func (d *DualStream) SendMessageAsync(ctx context.Context, message *network.Message, callback network.MessageResultCallback) error {
+	if callback == nil {
+		// 兼容模式：同步发送
+		return d.SendMessage(ctx, message)
+	}
+
+	// 异步模式：立即返回，后台发送
+	go func() {
+		err := d.SendMessage(ctx, message)
+
+		// 生成消息标识（使用ConnectionId+NodeId前缀）
+		msgID := ""
+		if message.Header != nil {
+			msgID = message.Header.ConnectionId[:8] + "-" + message.Header.NodeId[:8]
+		}
+
+		result := network.MessageResult{
+			MessageID: msgID,
+			Success:   err == nil,
+			Error:     err,
+			Attempts:  1, // SendMessage 内部已处理 primary/backup 切换
+		}
+
+		// 判断使用的传输协议
+		d.mu.RLock()
+		if d.preferred == streamTransportKCP {
+			result.UsedTransport = "KCP"
+		} else if d.preferred == streamTransportTCP {
+			result.UsedTransport = "TCP"
+		} else {
+			result.UsedTransport = "Unknown"
+		}
+		d.mu.RUnlock()
+
+		callback(result)
+	}()
+
+	return nil
+}
+
 // SendMessage 选定 primary/backup 后发送。任一方向写失败会立刻关闭并 detach 失败 leg、
 // 调度该协议重连，然后用同一条消息在 backup 上重发，实现实时切换。
 // 若两条 leg 都失败或都不存在，关闭整个逻辑流并返回错误。

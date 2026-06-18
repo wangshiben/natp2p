@@ -9,6 +9,7 @@ type Stream interface {
 
 	NextMessage(ctx context.Context) (*Message, error)
 	SendMessage(ctx context.Context, message *Message) error
+	SendMessageAsync(ctx context.Context, message *Message, callback MessageResultCallback) error
 	NodeId() string
 	ConnectionId() string
 	SetCryptoSuite(suite EncrypSuite)
