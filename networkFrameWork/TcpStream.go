@@ -40,11 +40,19 @@ type pendingInboxMessage struct {
 
 // TcpStream : 可完全到达的流对象
 type TcpStream struct {
-	nodeId       string
+	// nodeId / connectionId 用原子指针保护：握手期 keepLive 心跳(900ms tick)与帧打戳等
+	// 后台 goroutine 会并发读，而 SetIdentity / Accept 路径会在后台 goroutine 启动后才写入，
+	// 早前用裸 string 串行赋值导致 -race 报数据竞争（读: keepLive，写: SetIdentity）。
+	// 一律经 setNodeId/getNodeId、setConnectionId/getConnectionId 访问，禁止直接读写字段。
+	nodeId       atomic.Pointer[string]
 	connection   net.Conn
 	sendLock     sync.Mutex
-	connectionId string
-	crypto       network.EncrypSuite
+	connectionId atomic.Pointer[string]
+	// crypto 同样用原子指针：握手期 SetCryptoSuite 写，readLoop/handleData 与发送路径并发读。
+	// 原子 Load/Store 既消除字段本身的竞争，又建立 happens-before —— 保证读到的 EncrypSuite
+	// 是「构造完成」的（否则 readLoop 可能读到 NewTLSCrypto 尚未初始化完的 aesGCMEncryptKey）。
+	// 经 getCrypto/setCrypto 访问，禁止直接读写。
+	crypto       atomic.Pointer[network.EncrypSuite]
 	frameIdGen   network.FrameIdGenerator
 	assembler    *network.FrameAssembler
 
@@ -123,9 +131,7 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	}
 
 	t := &TcpStream{
-		nodeId:              nodeId,
 		connection:          conn,
-		connectionId:        connectionId,
 		assembler:           network.NewFrameAssembler(),
 		streamCtx:           ctx,
 		streamCancel:        cancel,
@@ -137,6 +143,9 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		frameSizeAdaptor:    adaptor,
 		frameSizeChangeAcks: make(map[int]chan bool),
 	}
+	// 身份字段经原子指针存储（见字段注释），构造期串行设置，之后任何并发读写都走原子。
+	t.setNodeId(nodeId)
+	t.setConnectionId(connectionId)
 
 	// 设置帧大小变更同步回调。
 	//
@@ -184,8 +193,8 @@ func AcceptTcpStream(conn net.Conn) (*TcpStream, *network.Message, error) {
 		return nil, nil, err
 	}
 	hash := sha256.Sum256(msg.Payload)
-	t.nodeId = hex.EncodeToString(hash[:])
-	t.connectionId = msg.Header.ConnectionId
+	t.setNodeId(hex.EncodeToString(hash[:]))
+	t.setConnectionId(msg.Header.ConnectionId)
 	return t, msg, nil
 }
 
@@ -205,8 +214,8 @@ func AcceptTcpStreamSync(conn net.Conn) (*TcpStream, *network.Message, error) {
 	t.firstMsgID = msgID
 	t.firstMsgTotalFrames = totalFrames
 	hash := sha256.Sum256(msg.Payload)
-	t.nodeId = hex.EncodeToString(hash[:])
-	t.connectionId = msg.Header.ConnectionId
+	t.setNodeId(hex.EncodeToString(hash[:]))
+	t.setConnectionId(msg.Header.ConnectionId)
 	return t, msg, nil
 }
 
@@ -255,12 +264,39 @@ func (t *TcpStream) readFirstMessageSync() (*network.Message, uint64, uint32, er
 // 基础属性 / 生命周期
 // =============================================================================
 
-func (t *TcpStream) NodeId() string       { return t.nodeId }
-func (t *TcpStream) ConnectionId() string { return t.connectionId }
-func (t *TcpStream) SetCryptoSuite(suite network.EncrypSuite) {
-	log.Printf("[TcpStream] SetCryptoSuite: nodeId=%.16s connId=%s suite=%T", t.nodeId, t.connectionId, suite)
-	t.crypto = suite
+func (t *TcpStream) NodeId() string       { return t.getNodeId() }
+func (t *TcpStream) ConnectionId() string { return t.getConnectionId() }
+
+// getNodeId / setNodeId / getConnectionId / setConnectionId 原子访问身份字段。
+// nil 指针（从未 set）视为空串。所有读写点必须经这四个方法，不得直接碰字段，否则 -race 会报竞争。
+func (t *TcpStream) getNodeId() string {
+	if p := t.nodeId.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
+func (t *TcpStream) setNodeId(s string) { t.nodeId.Store(&s) }
+func (t *TcpStream) getConnectionId() string {
+	if p := t.connectionId.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+func (t *TcpStream) setConnectionId(s string) { t.connectionId.Store(&s) }
+
+func (t *TcpStream) SetCryptoSuite(suite network.EncrypSuite) {
+	log.Printf("[TcpStream] SetCryptoSuite: nodeId=%.16s connId=%s suite=%T", t.getNodeId(), t.getConnectionId(), suite)
+	t.setCrypto(suite)
+}
+
+// getCrypto / setCrypto 原子访问加密套件。从未 set（nil 指针）或显式 set 为 nil 时返回 nil。
+func (t *TcpStream) getCrypto() network.EncrypSuite {
+	if p := t.crypto.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+func (t *TcpStream) setCrypto(suite network.EncrypSuite) { t.crypto.Store(&suite) }
 
 func (t *TcpStream) Close() error {
 	t.failAndClose(errors.New("stream closed"))
@@ -280,11 +316,11 @@ func (t *TcpStream) Connection() net.Conn {
 //
 // 使用场景：服务端 AcceptTcpStream 时只能拿到 IP/Port，需要等首条消息（含公钥）
 // 到达后才知道对端是谁；relay 客户端注册成功后也要在这里把流绑定到具体身份。
-// 不加锁的原因：调用发生在握手阶段，此时 readLoop 仍在运行但 nodeId/connectionId
-// 还没被任何并发读取者使用，串行赋值即可。
+// 该写入发生在握手阶段，但此时 keepLive 心跳 goroutine 已启动并会并发读 nodeId/connectionId，
+// 故经原子指针 set（曾误以为「无并发读取者、串行赋值即可」，导致 -race 报竞争）。
 func (t *TcpStream) SetIdentity(nodeId, connectionId string) {
-	t.nodeId = nodeId
-	t.connectionId = connectionId
+	t.setNodeId(nodeId)
+	t.setConnectionId(connectionId)
 }
 
 func (t *TcpStream) keepLive() {
@@ -304,15 +340,15 @@ func (t *TcpStream) keepLive() {
 			err := t.SendMessage(heartbeatCtx, &network.Message{
 				Header: &network.Header{
 					RouteName:     KeepAliveRoute,
-					NodeId:        t.nodeId,
+					NodeId:        t.getNodeId(),
 					NodeIdVersion: 1,
-					ConnectionId:  t.connectionId,
+					ConnectionId:  t.getConnectionId(),
 				},
 			})
 			cancel()
 			if err != nil && t.streamCtx.Err() == nil && !isContextError(err) {
 				log.Printf("[%s] keepLive 心跳失败, 关闭连接: nodeId=%.16s connId=%s err=%v",
-					connType, t.nodeId, t.connectionId, err)
+					connType, t.getNodeId(), t.getConnectionId(), err)
 				t.failAndClose(err)
 				return
 			}
@@ -338,8 +374,9 @@ func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
 			msg := pending.msg
 			// 若重组时尚未装 crypto，本消息保留密文，现在按当下 crypto 解密。
 			// 解决 TLS 握手与对端加密首条消息抵达的竞态。
-			if pending.needDecrypt && t.crypto != nil {
-				if identitySuite, ok := t.crypto.(network.MessageIdentitySuite); ok {
+			crypto := t.getCrypto()
+			if pending.needDecrypt && crypto != nil {
+				if identitySuite, ok := crypto.(network.MessageIdentitySuite); ok {
 					decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
 					if err != nil {
 						// 解密失败可能是这条消息本身就是握手期的明文（无信封），
@@ -349,7 +386,7 @@ func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
 							previewLen = 32
 						}
 						log.Printf("[TcpStream] NextMessage 延迟解密失败(E2E), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
-							t.nodeId, t.connectionId, len(msg.Payload), msg.Payload[:previewLen], err)
+							t.getNodeId(), t.getConnectionId(), len(msg.Payload), msg.Payload[:previewLen], err)
 						return msg, nil
 					}
 					msg.Payload = decrypted
@@ -358,14 +395,14 @@ func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
 						continue
 					}
 				} else {
-					decrypted, err := t.crypto.Decrypt(msg.Payload)
+					decrypted, err := crypto.Decrypt(msg.Payload)
 					if err != nil {
 						previewLen := len(msg.Payload)
 						if previewLen > 32 {
 							previewLen = 32
 						}
 						log.Printf("[TcpStream] NextMessage 延迟解密失败(plain), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
-							t.nodeId, t.connectionId, len(msg.Payload), msg.Payload[:previewLen], err)
+							t.getNodeId(), t.getConnectionId(), len(msg.Payload), msg.Payload[:previewLen], err)
 						return msg, nil
 					}
 					msg.Payload = decrypted
@@ -428,15 +465,15 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 	if err := t.fatal(); err != nil {
 		return err
 	}
-	if t.crypto != nil {
-		if suite, ok := t.crypto.(network.MessageIdentitySuite); ok {
+	if crypto := t.getCrypto(); crypto != nil {
+		if suite, ok := crypto.(network.MessageIdentitySuite); ok {
 			encrypted, _, err := suite.EncryptWithMessageID(message.Payload, messageID)
 			if err != nil {
 				return err
 			}
 			message.Payload = encrypted
 		} else {
-			encrypted, err := t.crypto.Encrypt(message.Payload)
+			encrypted, err := crypto.Encrypt(message.Payload)
 			if err != nil {
 				return err
 			}
@@ -462,7 +499,7 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 	// group.relayStream.SendMessage（callee leg 是 pureForwarder），那条 leg 的 t.connectionId
 	// 是 relay 自己的、并非 client 的；只有取 message.Header.ConnectionId 才能把 client 的
 	// connectionId 正确带到 callee。后续帧走 frame pump 的 HandleFrame（不经此处），verbatim 透传。
-	connId := t.connectionId
+	connId := t.getConnectionId()
 	if message.Header != nil && message.Header.ConnectionId != "" {
 		connId = message.Header.ConnectionId
 	}
@@ -840,8 +877,8 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 		// 仅在我方还没装 crypto 时延迟解密；已装则立刻解密 + E2E 去重，行为不变。
 		needDecrypt := false
 		cipherIsE2E := false
-		if t.crypto != nil {
-			if identitySuite, ok := t.crypto.(network.MessageIdentitySuite); ok {
+		if crypto := t.getCrypto(); crypto != nil {
+			if identitySuite, ok := crypto.(network.MessageIdentitySuite); ok {
 				decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
 				if err != nil {
 					return err
@@ -851,7 +888,7 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 					return nil
 				}
 			} else {
-				decrypted, err := t.crypto.Decrypt(msg.Payload)
+				decrypted, err := crypto.Decrypt(msg.Payload)
 				if err != nil {
 					return err
 				}
@@ -868,7 +905,7 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 				previewLen = 32
 			}
 			log.Printf("[TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=%.16s connId=%s route=%s payloadLen=%d hexPreview=%x",
-				t.nodeId, t.connectionId, msg.Header.RouteName, len(msg.Payload), msg.Payload[:previewLen])
+				t.getNodeId(), t.getConnectionId(), msg.Header.RouteName, len(msg.Payload), msg.Payload[:previewLen])
 		}
 		select {
 		case t.inboxCh <- &pendingInboxMessage{msg: msg, needDecrypt: needDecrypt, cipherIsE2E: cipherIsE2E}:
@@ -936,7 +973,7 @@ func (t *TcpStream) sendAck(messageId uint64, total uint32, ranges []network.Ack
 	if err != nil {
 		return err
 	}
-	f.ConnectionId = t.connectionId // 源头打戳：ACK 也带本流 connectionId，relay 按帧头回程
+	f.ConnectionId = t.getConnectionId() // 源头打戳：ACK 也带本流 connectionId，relay 按帧头回程
 	return t.writeFrame(f)
 }
 
@@ -1020,7 +1057,7 @@ func (t *TcpStream) requestFrameSizeChange(newSize int) bool {
 		TotalFrames:  1,
 		AckId:        uint64(newSize),
 		FrameType:    network.FrameTypeFrameSizeChange,
-		ConnectionId: t.connectionId,
+		ConnectionId: t.getConnectionId(),
 		Payload:      nil,
 	}
 
@@ -1103,7 +1140,7 @@ func (t *TcpStream) sendFrameSizeChangeAck(newSize int, confirmed bool) error {
 		TotalFrames:  1,
 		AckId:        uint64(newSize),
 		FrameType:    network.FrameTypeFrameSizeChange,
-		ConnectionId: t.connectionId,
+		ConnectionId: t.getConnectionId(),
 		Payload:      nil,
 	}
 
