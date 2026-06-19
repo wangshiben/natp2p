@@ -34,6 +34,12 @@ type FrameSizeAdaptor struct {
 	checkInterval    time.Duration // 吞吐检查间隔
 	baselineDuration time.Duration // 基线建立时长
 
+	// minHealthyThroughput 是判定链路"还活着"的绝对吞吐下限(KB/s)。
+	// 低于此值时禁止"增大帧"——零/近零吞吐往往意味着链路在反复重传或卡死，
+	// 此时 currentThroughput >= lastThroughput*0.95 会被近零值平凡满足，
+	// 旧逻辑会误判为"稳定"而把帧越调越大。见 tryAdjustByThroughput。
+	minHealthyThroughput float64
+
 	// 同步回调：当需要改变帧大小时调用，返回true表示对端已确认
 	onFrameSizeChange func(newSize int) bool
 }
@@ -43,15 +49,16 @@ type FrameSizeAdaptor struct {
 func NewKCPFrameSizeAdaptor() *FrameSizeAdaptor {
 	now := time.Now()
 	return &FrameSizeAdaptor{
-		currentFrameSize: 800,                  // 从800字节开始（保守起点）
-		minFrameSize:     800,                  // 最小800字节
-		maxFrameSize:     1400,                 // 默认1400字节（可通过SetMaxFrameSize调整）
-		checkInterval:    time.Second * 30,     // 每30秒检查一次（减少调整频率）
-		baselineDuration: 0,                    // 无基线期
-		lastCheckTime:    now,
-		lastAdjustTime:   now,
-		baselinePhase:    false,
-		lastThroughput:   1.0,
+		currentFrameSize:     800,              // 从800字节开始（保守起点）
+		minFrameSize:         800,              // 最小800字节
+		maxFrameSize:         1400,             // 默认1400字节（可通过SetMaxFrameSize调整）
+		checkInterval:        time.Second * 30, // 每30秒检查一次（减少调整频率）
+		baselineDuration:     0,                // 无基线期
+		lastCheckTime:        now,
+		lastAdjustTime:       now,
+		baselinePhase:        false,
+		lastThroughput:       1.0,
+		minHealthyThroughput: 10.0, // 低于10KB/s视为链路异常，禁止增大帧
 	}
 }
 
@@ -151,9 +158,25 @@ func (a *FrameSizeAdaptor) tryAdjustByThroughput(currentThroughput float64) {
 	newSize := oldSize
 	direction := 0 // 0=不变，1=增大，-1=减小
 
-	// 策略1: 吞吐量达到预期95%以上 -> 考虑增大帧8%（更保守）
-	expectedThroughput := a.lastThroughput * 0.95
-	if currentThroughput >= expectedThroughput && oldSize < a.maxFrameSize {
+	// 链路健康闸门：吞吐低于绝对下限(minHealthyThroughput)时，链路很可能在
+	// 反复重传或卡死。此时 currentThroughput >= lastThroughput*0.95 会被两个
+	// 近零值平凡满足，旧逻辑误判为"稳定"并增大帧（日志现象：
+	// "吞吐稳定, 请求 增大 帧: 800 -> 864 (当前: 0 KB/s, 上次: 0 KB/s)"）。
+	// 这里强制：近零吞吐绝不增大；若已比最小帧大则缩小一档，否则保持不动。
+	if currentThroughput < a.minHealthyThroughput {
+		if oldSize > a.minFrameSize {
+			newSize = int(float64(oldSize) * 0.91)
+			if newSize < a.minFrameSize {
+				newSize = a.minFrameSize
+			}
+			if newSize != oldSize {
+				direction = -1
+			}
+		}
+		// oldSize 已是最小帧：direction 保持 0，不调整，等链路恢复。
+		println("[FrameAdaptor] 链路吞吐过低(", int(currentThroughput), "KB/s <", int(a.minHealthyThroughput), "KB/s), 禁止增大帧")
+	} else if currentThroughput >= a.lastThroughput*0.95 && oldSize < a.maxFrameSize {
+		// 策略1: 吞吐量达到预期95%以上 -> 考虑增大帧8%（更保守）
 		newSize = int(float64(oldSize) * 1.08)
 		if newSize > a.maxFrameSize {
 			newSize = a.maxFrameSize

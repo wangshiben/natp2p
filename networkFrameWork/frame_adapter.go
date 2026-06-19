@@ -170,10 +170,13 @@ type dualRelayFrame struct {
 	frame *network.Frame
 }
 
-// frameEndpointKey 是 incomingIDs / ackIDs 的 key：某条具体 leg（kind）上的一个 transport MessageId。
-// 用 kind 区分是因为 TCP/KCP 两条 leg 的 MessageId 命名空间各自独立，可能数值相同。
+// frameEndpointKey 是 incomingIDs / ackIDs 的 key：某条具体 leg（kind）上、某条业务连接（connId）的一个 transport MessageId。
+// 用 kind 区分 TCP/KCP 两条 leg 的独立命名空间；用 connId 区分**同一条物理连接上多路复用的多条逻辑连接**——
+// callee 把 N 条 per-conn 流复用到一条 server↔relay 连接时，各 per-conn 流的 frameIdGen 都从 1 开始、
+// MessageId 会撞车，必须带 connId 才能把它们区分开（否则两条流的 msgId=1 会被并成同一条 logicalID 而互相串台）。
 type frameEndpointKey struct {
 	kind      streamTransport
+	connId    string
 	messageID uint64
 }
 
@@ -187,6 +190,7 @@ type frameEndpointKey struct {
 //	             按序重放到 backup leg，避免目标侧拿到半条消息无法重组。
 type dualFrameRoute struct {
 	kind        streamTransport
+	connId      string // 该 logicalID 所属业务连接，failover 重绑 ackIDs 时需要
 	endpoint    *TcpFrameAdapter
 	dstID       uint64
 	totalFrames uint32
@@ -305,6 +309,7 @@ func (e *DualFrameRelayEndpoint) collect(kind streamTransport, adapter *TcpFrame
 		if e.routes[logicalID] == nil {
 			e.routes[logicalID] = &dualFrameRoute{
 				kind:        kind,
+				connId:      f.ConnectionId,
 				endpoint:    adapter,
 				dstID:       f.MessageId,
 				totalFrames: f.TotalFrames,
@@ -329,8 +334,8 @@ func (e *DualFrameRelayEndpoint) isCurrent(kind streamTransport, adapter *TcpFra
 // incomingMessageID 把「某条 leg 上 remote 主动发来的数据帧 MessageId」翻译成稳定的 logicalID。
 // 第一次见到就分配一个新的 logicalID 并记下来；之后同一来源消息的所有数据帧
 // 都会拿到同一个 logicalID。
-func (e *DualFrameRelayEndpoint) incomingMessageID(kind streamTransport, messageID uint64) uint64 {
-	key := frameEndpointKey{kind: kind, messageID: messageID}
+func (e *DualFrameRelayEndpoint) incomingMessageID(kind streamTransport, connId string, messageID uint64) uint64 {
+	key := frameEndpointKey{kind: kind, connId: connId, messageID: messageID}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if id, ok := e.incomingIDs[key]; ok {
@@ -342,7 +347,9 @@ func (e *DualFrameRelayEndpoint) incomingMessageID(kind streamTransport, message
 }
 
 // ackMessageID 把「某条 leg 上对端回给 relay 的 ACK(dstID)」翻译回原 logicalID。
-// ACK 回程必须与 incomingIDs 分表，否则会和对端主动发来的数据帧编号撞车。
+// **不按 connId 区分**：dstID 由目标 leg 的 AllocMessageId 分配、全 leg 唯一，本就不撞车；
+// 而 ACK 帧携带的是「回 ACK 那一方的 t.connectionId」，与原数据帧的业务 connId 不一定相同
+// （例如注册流 connId 为空），按 connId 查会查不到 → ACK 丢失 → 发送端永远等不到确认。
 func (e *DualFrameRelayEndpoint) ackMessageID(kind streamTransport, messageID uint64) (uint64, bool) {
 	key := frameEndpointKey{kind: kind, messageID: messageID}
 	e.mu.Lock()
@@ -353,15 +360,15 @@ func (e *DualFrameRelayEndpoint) ackMessageID(kind streamTransport, messageID ui
 
 func (e *DualFrameRelayEndpoint) resolveIncomingMessageID(kind streamTransport, frame *network.Frame) (uint64, bool) {
 	if frame != nil && frame.FrameType == network.FrameTypeAck {
+		// ACK 回程按 dstID（唯一）查，不带 connId（见 ackMessageID 说明）。
 		id, ok := e.ackMessageID(kind, frame.MessageId)
 		return id, ok
 	}
-	return e.incomingMessageID(kind, frame.MessageId), true
+	// 入站数据按 {kind, connId, msgId} 区分：多路复用时各流 msgId 从 1 起会撞车，靠 connId 区分。
+	return e.incomingMessageID(kind, frame.ConnectionId, frame.MessageId), true
 }
 
-// bindAckMessageID 显式登记 {leg kind, dstID} -> logicalID。
-// 用于「出站建立 route 时」把目标 leg 的 dstID 指回同一个 logicalID，
-// 使得对端基于 dstID 发回的 ACK 帧能在 collect 里被翻译回这个 logicalID。
+// bindAckMessageID 显式登记 {leg kind, dstID} -> logicalID（dstID 唯一, 不带 connId）。
 func (e *DualFrameRelayEndpoint) bindAckMessageID(kind streamTransport, transportMessageID uint64, logicalID uint64) {
 	key := frameEndpointKey{kind: kind, messageID: transportMessageID}
 	e.mu.Lock()
@@ -406,13 +413,14 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 		}
 		route = &dualFrameRoute{
 			kind:        kind,
+			connId:      frame.ConnectionId,
 			endpoint:    adapter,
 			dstID:       adapter.AllocMessageId(),
 			totalFrames: frame.TotalFrames,
 			framesBySeq: make(map[uint32]*network.Frame),
 		}
 		e.routes[logicalID] = route
-		// 闭环：目标 leg 用 dstID 回来的 ACK，要能翻译回这个 logicalID。
+		// 闭环：目标 leg 用 dstID(唯一) 回来的 ACK，要能翻译回这个 logicalID。不带 connId（见 ackMessageID）。
 		e.ackIDs[frameEndpointKey{kind: kind, messageID: route.dstID}] = logicalID
 	}
 	route.framesBySeq[frame.SeqId] = cached
