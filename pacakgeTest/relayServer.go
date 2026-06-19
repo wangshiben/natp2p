@@ -6,11 +6,13 @@ import (
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
 	"context"
+	"crypto/ecdh"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"sync"
@@ -18,8 +20,32 @@ import (
 	"time"
 )
 
-func Server(listenAddr string) {
+// migrateRoute 是 callee→client 的"迁移指令"消息的 RouteName；payload 为新的专用 identity nodeId。
+const migrateRoute = "/test/migrate"
+
+// Server 启动中转 relay，并装 ForwardHook：每累计 hookThreshold 字节调用一次，
+// 打印累计 ForwardStats + 该批最后一帧的 connectionId（用于证明共享 group 与各重流专用 group 都被统计）。
+func Server(listenAddr string, hookThreshold int64) {
 	starter := networkFrameWork.NewRelayStarter(listenAddr)
+	var totalFwd int64
+	cfg := &networkFrameWork.ForwardHookConfig{
+		ThresholdBytes: hookThreshold,
+		Hook: func(ctx context.Context, stats *networkFrameWork.ForwardStats) error {
+			t := atomic.AddInt64(&totalFwd, stats.TotalBytes)
+			connId := ""
+			if stats.LastFrame != nil {
+				connId = stats.LastFrame.ConnectionId
+			}
+			fmt.Printf("[ForwardHook] +%s (%d 帧) connId=%s | server端累计转发=%s\n",
+				formatBytes(stats.TotalBytes), stats.TotalFrames, connId, formatBytes(t))
+			return nil
+		},
+		ErrorHook: func(ctx context.Context, info *networkFrameWork.ForwardErrorInfo) {
+			fmt.Printf("[ForwardHook][ERR] dir=%s err=%v\n", info.Direction, info.Err)
+		},
+	}
+	starter.Cover().SetForwardHook(cfg)
+	fmt.Printf("ForwardHook 已装: 每 %s 累计上报一次\n", formatBytes(hookThreshold))
 	starter.StartListen()
 }
 func main() {
@@ -32,46 +58,81 @@ func CMDClient() {
 	mode := flag.String("mode", "relayServer", "relay Server address")
 	targetId := flag.String("targetId", "targetId", "relay Server address")
 	size := flag.Int("size", 14*1024, "Message Payload size in bytes")
+	durationSec := flag.Int("duration", 300, "压测时长(秒)")
+	floodDelaySec := flag.Int("floodDelay", 3, "client 建连后延迟多少秒再开始满发(给各流先在共享连接上握手, 避免握手期 HOL)")
+	elephantMB := flag.Int("elephantMB", 2, "callee 侧大象流判定阈值(MB): 某共享流累计收到超过此值即迁到独立连接")
+	hookThresholdKB := flag.Int("hookThresholdKB", 512, "relay ForwardHook 每累计多少 KB 上报一次")
 	flag.Parse()
-	fmt.Printf("mode: %s, address: %s, targetId: %s, size: %d\n", *mode, *address, *targetId, *size)
+	duration := time.Duration(*durationSec) * time.Second
+	floodDelay := time.Duration(*floodDelaySec) * time.Second
+	fmt.Printf("mode: %s, address: %s, targetId: %s, size: %d, duration: %s, floodDelay: %s, elephantMB: %d\n",
+		*mode, *address, *targetId, *size, duration, floodDelay, *elephantMB)
 	switch *mode {
 	case "relayServer":
 		fmt.Println("Starting relay server...")
-		server, done := RelayServer(*address, *size)
+		server, done := RelayServer(*address, *size, duration, floodDelay, int64(*elephantMB)*1024*1024)
 		hash := sha256.Sum256([]byte(server))
 		originalNodeId := hex.EncodeToString(hash[:])
 		fmt.Println(originalNodeId)
 		<-done
 	case "client":
-		RelayClient(*address, *targetId, *size)
+		// 单端发起：client 进程标记为 follower —— 不主动发起帧大小变更，
+		// 由 server 端掌控帧大小（见 TcpStream.frameSizeFollowerProcess）。
+		os.Setenv("BNFS_FRAME_FOLLOWER", "1")
+		RelayClient(*address, *targetId, *size, duration, floodDelay)
 	case "server":
-		Server(*address)
+		Server(*address, int64(*hookThresholdKB)*1024)
 	}
 }
 
-func RelayClient(relayAddress, targetId string, size int) {
-	pair, err := crypoto.MakeKeyPair()
-	if err != nil {
-		panic(err)
+// RelayClient 连接 relay 并压测；收到 callee 的迁移指令后重连到指定的专用 identity 继续压测。
+// 这就是"运行时大象流检测 + 重连迁移"里的 client 侧：先在共享连接上跑，被判为大象后迁到独立连接。
+func RelayClient(relayAddress, targetId string, size int, duration time.Duration, floodDelay time.Duration) {
+	deadline := time.Now().Add(duration)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 2*time.Second {
+			return
+		}
+		pair, err := crypoto.MakeKeyPair()
+		if err != nil {
+			panic(err)
+		}
+		streamClient, connectionId, err := client.ConnectNodeWithTargetRelay(targetId, relayAddress, pair)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("relay connect success connectionID: %s target=%.16s\n", connectionId, targetId)
+		keyStr := crypoto.GetPubKeyStr(pair.PublicKey())
+		sum256 := sha256.Sum256([]byte(keyStr))
+		t := &TrafficMonitor{
+			stopCh:             make(chan struct{}),
+			nodeId:             hex.EncodeToString(sum256[:]),
+			targetConnectionId: connectionId,
+			migrateCh:          make(chan string, 1),
+		}
+		t.Start(streamClient, size, remaining, floodDelay)
+
+		select {
+		case newTarget := <-t.migrateCh:
+			fmt.Printf("📦 收到迁移指令 → 重连到专用 identity %.16s\n", newTarget)
+			targetId = newTarget
+			floodDelay = 0 // 已是专用连接, 重连后立即满发
+			continue
+		default:
+			return // 正常到时结束
+		}
 	}
-	streamClient, connectionId, err := client.ConnectNodeWithTargetRelay(targetId, relayAddress, pair)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("relay connect success connectionID: %s \n", connectionId)
-	keyStr := crypoto.GetPubKeyStr(pair.PublicKey())
-	sum256 := sha256.Sum256([]byte(keyStr))
-	t := &TrafficMonitor{
-		stopCh:             make(chan struct{}),
-		nodeId:             hex.EncodeToString(sum256[:]),
-		targetConnectionId: connectionId,
-	}
-	t.Start(streamClient, size, 100*time.Second)
 }
 
-// RelayServer 注册成可被中继的节点：连上 relay 服务器后等首条消息（来自某个 client 的 hello），
-// 用 client 公钥推导出对端 nodeId 并把流绑定上去，再做 TLS 握手 + 流量测试。
-func RelayServer(addr string, size int) (string, <-chan struct{}) {
+// RelayServer 注册成可被中继的节点（server 端）。
+//
+// n‑v‑1‑v‑1：server↔relay 维持一条连接，上面承载多个 client。用 EndpointFrameMux 按帧头
+// connectionId 把这条连接帧级 demux：每见到一个新 connectionId，就 spawn 一个 goroutine 处理
+// 该逻辑连接——在它各自的 muxConn 上跑一条正常 TcpStream（独立 assembler/crypto/帧大小自适应），
+// 读首帧 hello 推导对端 nodeId、做各自的 TLS 握手、再跑流量测试。server 进程不设
+// BNFS_FRAME_FOLLOWER，故每条逻辑连接都是帧大小发起方（server 端掌控帧大小）。
+func RelayServer(addr string, size int, duration time.Duration, floodDelay time.Duration, elephantBytes int64) (string, <-chan struct{}) {
 	done := make(chan struct{})
 	pair, err := crypoto.MakeKeyPair()
 	if err != nil {
@@ -82,35 +143,143 @@ func RelayServer(addr string, size int) (string, <-chan struct{}) {
 	if err != nil {
 		panic(err)
 	}
+
+	serverNodeId := func() string {
+		s := sha256.Sum256([]byte(crypoto.GetPubKeyStr(pair.PublicKey())))
+		return hex.EncodeToString(s[:])
+	}()
+
+	mux, err := networkFrameWork.NewEndpointFrameMux(stream, func(connId string, conn net.Conn) {
+		go serveMuxConn(serverNodeId, connId, conn, pair, size, duration, addr, floodDelay, elephantBytes)
+	})
+	if err != nil {
+		panic(err)
+	}
+	mux.Start()
+	fmt.Println("EndpointFrameMux started, waiting for client connections...")
+
 	go func() {
 		defer close(done)
-		message, err := stream.NextMessage(context.Background())
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println("receive message")
-		hash := sha256.Sum256(message.Payload)
-		clientNodeId := hex.EncodeToString(hash[:])
-		if !networkFrameWork.SetStreamIdentity(stream, clientNodeId, message.Header.ConnectionId) {
-			panic("SetStreamIdentity failed")
-		}
-		streamClient := client.NewStreamClient(stream)
-		crypto, err := crypoto.NewTLSCrypto(streamClient, pair)
-		if err != nil {
-			panic(err)
-		}
-		streamClient.SetCryptoSuite(crypto)
-		CurrentNodeHex := crypoto.GetPubKeyStr(pair.PublicKey())
-		sum256 := sha256.Sum256([]byte(CurrentNodeHex))
-		t := &TrafficMonitor{
-			stopCh:             make(chan struct{}),
-			nodeId:             hex.EncodeToString(sum256[:]),
-			targetConnectionId: message.Header.ConnectionId,
-		}
-		fmt.Println("waiting crypto message")
-		t.Start(streamClient, size, 100*time.Second)
+		// 给最后接入的 client 留够完整时长 + 余量，再收尾。
+		time.Sleep(duration + 30*time.Second)
+		mux.Close()
 	}()
 	return keyStr, done
+}
+
+// serveMuxConn 处理共享连接上的一条逻辑连接（一个轻流候选）：在其专属 muxConn 上跑正常 TcpStream，
+// 读首帧 hello、独立 TLS、跑流量测试；同时起大象检测——本流累计入站超阈值即注册独立 identity、
+// 发迁移指令让 client 重连到独立连接，并停掉这条共享流（重流迁出，轻流留在共享连接，消除 HOL）。
+func serveMuxConn(serverNodeId, connId string, conn net.Conn, pair *ecdh.PrivateKey, size int, duration time.Duration, relayAddr string, floodDelay time.Duration, elephantBytes int64) {
+	sub := networkFrameWork.NewTCPStream("", connId, conn)
+	ctx := context.Background()
+	message, err := sub.NextMessage(ctx)
+	if err != nil {
+		fmt.Printf("[server] connId=%s 读 hello 失败: %v\n", connId, err)
+		return
+	}
+	hash := sha256.Sum256(message.Payload)
+	clientNodeId := hex.EncodeToString(hash[:])
+	sub.SetIdentity(clientNodeId, connId)
+	fmt.Printf("[server] connId=%s hello 收到, clientNodeId=%.16s, 开始 TLS 握手\n", connId, clientNodeId)
+
+	streamClient := client.NewStreamClient(sub)
+	crypto, err := crypoto.NewTLSCrypto(streamClient, pair)
+	if err != nil {
+		fmt.Printf("[server] connId=%s TLS 握手失败: %v\n", connId, err)
+		return
+	}
+	streamClient.SetCryptoSuite(crypto)
+	fmt.Printf("[server][共享] connId=%s TLS 握手完成, 开始流量测试 + 大象检测\n", connId)
+
+	t := &TrafficMonitor{
+		stopCh:             make(chan struct{}),
+		nodeId:             serverNodeId,
+		targetConnectionId: connId,
+	}
+
+	// 大象检测：本共享流累计入站(client→server)超过 elephantBytes 即判为大象，
+	// 注册独立 identity、发迁移指令、停掉这条共享流（迁到独立连接）。
+	go detectElephantAndMigrate(t, streamClient, connId, relayAddr, size, duration, elephantBytes)
+
+	t.Start(streamClient, size, duration, floodDelay)
+}
+
+// detectElephantAndMigrate 周期采样共享流的累计入站字节；越过 elephantBytes 即触发迁移。
+func detectElephantAndMigrate(t *TrafficMonitor, sc network.Stream, connId, relayAddr string, size int, duration time.Duration, elephantBytes int64) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		case <-ticker.C:
+			if atomic.LoadInt64(&t.TotalRxBytes) < elephantBytes {
+				continue
+			}
+			// 判为大象：注册独立 identity（独立 group, 不碰 relay）→ 起 1:1 终结 handler 等迁入。
+			dedicatedNodeId := runDedicatedHeavy(relayAddr, size, duration)
+			fmt.Printf("🐘 [server] connId=%s 判为大象(累计入站=%s) → 迁到独立 identity %.16s\n",
+				connId, formatBytes(atomic.LoadInt64(&t.TotalRxBytes)), dedicatedNodeId)
+			// 发迁移指令（reliable）：client 收到后重连到该独立 identity。
+			migrateMsg := &network.Message{
+				Header:  &network.Header{ConnectionId: connId, NodeId: sc.NodeId(), RouteName: migrateRoute},
+				Payload: []byte(dedicatedNodeId),
+			}
+			if err := sc.SendMessage(context.Background(), migrateMsg); err != nil {
+				fmt.Printf("[server] connId=%s 发迁移指令失败: %v\n", connId, err)
+			}
+			// 停掉这条共享流（client 会在独立连接上重连）。
+			t.stopMonitor(sc)
+			return
+		}
+	}
+}
+
+// runDedicatedHeavy 用一个全新 identity 注册到 relay（relay 自然新建独立 StreamGroup → 带宽隔离，
+// 且该 group 自动挂同一份 ForwardHook → 重流被统计），并起一个原始 1:1 终结 handler 等待迁入的重流。
+// 返回该独立 identity 的 nodeId（供发给 client 重连）。
+func runDedicatedHeavy(relayAddr string, size int, duration time.Duration) string {
+	pair, err := crypoto.MakeKeyPair()
+	if err != nil {
+		panic(err)
+	}
+	keyStr := crypoto.GetPubKeyStr(pair.PublicKey())
+	stream, err := networkFrameWork.TryRegisterRelayStream(keyStr, relayAddr)
+	if err != nil {
+		panic(err)
+	}
+	hash := sha256.Sum256([]byte(keyStr))
+	dedicatedNodeId := hex.EncodeToString(hash[:])
+
+	go func() {
+		message, err := stream.NextMessage(context.Background())
+		if err != nil {
+			fmt.Printf("[server][独连 %.16s] 读 hello 失败: %v\n", dedicatedNodeId, err)
+			return
+		}
+		h := sha256.Sum256(message.Payload)
+		clientNodeId := hex.EncodeToString(h[:])
+		if !networkFrameWork.SetStreamIdentity(stream, clientNodeId, message.Header.ConnectionId) {
+			fmt.Printf("[server][独连 %.16s] SetStreamIdentity 失败\n", dedicatedNodeId)
+			return
+		}
+		sc := client.NewStreamClient(stream)
+		crypto, err := crypoto.NewTLSCrypto(sc, pair)
+		if err != nil {
+			fmt.Printf("[server][独连 %.16s] TLS 握手失败: %v\n", dedicatedNodeId, err)
+			return
+		}
+		sc.SetCryptoSuite(crypto)
+		fmt.Printf("[server][独连 %.16s] 重流迁入完成, 独立连接开始压测\n", dedicatedNodeId)
+		t := &TrafficMonitor{
+			stopCh:             make(chan struct{}),
+			nodeId:             clientNodeId,
+			targetConnectionId: message.Header.ConnectionId,
+		}
+		t.Start(sc, size, duration, 0)
+	}()
+	return dedicatedNodeId
 }
 
 // TrafficMonitor 流量监控器
@@ -165,6 +334,13 @@ type TrafficMonitor struct {
 	// stopCh 用来广播测试结束；sender、receiver、monitor 都监听它退出。
 	stopCh chan struct{}
 
+	// stopOnce 保证 stopMonitor 只关一次（到时 / 迁移 可能并发触发）。
+	stopOnce sync.Once
+
+	// migrateCh 仅 client 侧用：receiver 收到 callee 的迁移指令时把新 identity nodeId 投进来，
+	// RelayClient 据此重连到独立连接。callee 侧为 nil（不处理迁移指令）。
+	migrateCh chan string
+
 	// nodeId 是本端节点 ID；senderID 会从它派生，用于在 payload trace 里标记“是谁发的包”。
 	nodeId string
 
@@ -197,27 +373,40 @@ type TrafficMonitor struct {
 	parseFailures int
 }
 
-func (tm *TrafficMonitor) Start(stream network.Stream, packetSize int, duration time.Duration) {
+func (tm *TrafficMonitor) Start(stream network.Stream, packetSize int, duration time.Duration, floodDelay time.Duration) {
 	tm.stopCh = make(chan struct{})
 	tm.senderID = traceSenderID(tm.nodeId)
 	tm.seenTrace = make(map[tracePacketKey]int)
 	tm.streamTraceStats = make(map[traceStreamKey]*traceStreamStats)
 	tm.wg.Add(senderWorkers + 2)
 	for i := 0; i < senderWorkers; i++ {
-		go tm.sender(stream, packetSize, uint32(i))
+		go tm.sender(stream, packetSize, uint32(i), floodDelay)
 	}
 	go tm.receiver(stream)
 	go tm.monitor()
 
 	go func() {
-		time.Sleep(duration)
-		fmt.Println("\n⏰ 测试时间到，正在关闭...")
-		close(tm.stopCh)
-		_ = stream.Close()
+		select {
+		case <-time.After(duration):
+			fmt.Println("\n⏰ 测试时间到，正在关闭...")
+			tm.stopMonitor(stream)
+		case <-tm.stopCh:
+			// 已被迁移/外部停掉
+		}
 	}()
 
-	fmt.Printf("🚀 测试开始... sender workers=%d\n", senderWorkers)
+	fmt.Printf("🚀 测试开始... sender workers=%d (floodDelay=%s)\n", senderWorkers, floodDelay)
 	tm.Wait()
+}
+
+// stopMonitor 停掉本监控器（关 stopCh + 关流），只执行一次。到时与迁移都走它。
+func (tm *TrafficMonitor) stopMonitor(stream network.Stream) {
+	tm.stopOnce.Do(func() {
+		close(tm.stopCh)
+		if stream != nil {
+			_ = stream.Close()
+		}
+	})
 }
 
 func (tm *TrafficMonitor) Wait() {
@@ -261,7 +450,7 @@ func (tm *TrafficMonitor) monitor() {
 
 // sender 使用同步发送，通过增加worker数量来提升并发度。
 // 32个worker可以同时阻塞等待ACK，形成流水线效果。
-func (tm *TrafficMonitor) sender(stream network.Stream, size int, workerID uint32) {
+func (tm *TrafficMonitor) sender(stream network.Stream, size int, workerID uint32, floodDelay time.Duration) {
 	defer tm.wg.Done()
 
 	payload := make([]byte, size)
@@ -273,6 +462,16 @@ func (tm *TrafficMonitor) sender(stream network.Stream, size int, workerID uint3
 		<-tm.stopCh
 		cancel()
 	}()
+
+	// floodDelay：建连后先静默一段（给同一共享连接上的其它流先完成握手，避免握手期被满发 HOL），
+	// 之后再开始满发。期间响应 stopCh 退出。
+	if floodDelay > 0 {
+		select {
+		case <-tm.stopCh:
+			return
+		case <-time.After(floodDelay):
+		}
+	}
 
 	for {
 		select {
@@ -326,6 +525,16 @@ func (tm *TrafficMonitor) receiver(stream network.Stream) {
 	for {
 		msg, err := stream.NextMessage(ctx)
 		if err != nil {
+			return
+		}
+		// 迁移指令（仅 client 侧 migrateCh 非 nil 时处理）：callee 判本流为大象，要求重连到独立连接。
+		if tm.migrateCh != nil && msg.Header != nil && msg.Header.RouteName == migrateRoute {
+			newTarget := string(msg.Payload)
+			select {
+			case tm.migrateCh <- newTarget:
+			default:
+			}
+			tm.stopMonitor(stream)
 			return
 		}
 		tm.recordTrace(msg.Payload)

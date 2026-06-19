@@ -24,7 +24,12 @@ type Frame struct {
 	TotalFrames uint32
 	AckId       uint64
 	FrameType   uint8
-	Payload     []byte
+	// ConnectionId 标记本帧所属的业务连接，client→relay→server 全程一致。
+	// relay 据它把帧路由到正确的对端 leg；callee 据它把单条物理连接上的帧
+	// 帧级 demux 到每条逻辑连接各自的 assembler / crypto / handler。
+	// 由发起端（非 pureForwarder）按流身份打戳，转发腿 verbatim 透传。
+	ConnectionId string
+	Payload      []byte
 }
 
 const (
@@ -44,12 +49,17 @@ const (
 	frameTotalFramesLength = 4
 	frameAckIdLength       = 8
 	frameTypeLength        = 1
+	frameConnIdLenLength   = 2 // ConnectionId 字节长度前缀(uint16 LE)
 	framePayloadLenLength  = 4
 )
 
-// FrameHeaderLength 是序列化后帧头的固定长度。
+// FrameHeaderLength 是序列化后帧定长头的长度（不含变长的 ConnectionId 与 Payload）。
+//
+// 线布局: [Magic(8)][MessageId(8)][SeqId(4)][TotalFrames(4)][AckId(8)][FrameType(1)]
+//
+//	[ConnIdLen(2)][PayloadLen(4)] | [ConnectionId(ConnIdLen)][Payload(PayloadLen)]
 const FrameHeaderLength = frameMagicLength + frameMessageIdLength + frameSeqIdLength +
-	frameTotalFramesLength + frameAckIdLength + frameTypeLength + framePayloadLenLength
+	frameTotalFramesLength + frameAckIdLength + frameTypeLength + frameConnIdLenLength + framePayloadLenLength
 
 // DefaultMaxFramePayload 是默认的单帧最大负载，向调用方暴露便于动态调整。
 const DefaultMaxFramePayload = 1400
@@ -60,12 +70,17 @@ var frameMagicBytes = []byte(FrameMagic)
 //
 // 结构: [Magic(8)] [MessageId(8 LE)] [SeqId(4 LE)] [TotalFrames(4 LE)]
 //
-//	[AckId(8 LE)] [FrameType(1)] [PayloadLen(4 LE)] [Payload(PayloadLen)]
+//	[AckId(8 LE)] [FrameType(1)] [ConnIdLen(2 LE)] [PayloadLen(4 LE)]
+//	[ConnectionId(ConnIdLen)] [Payload(PayloadLen)]
 func (f *Frame) ParseToBytes() ([]byte, error) {
 	if uint64(len(f.Payload)) > uint64(^uint32(0)) {
 		return nil, errors.New("frame payload too large")
 	}
-	buf := make([]byte, FrameHeaderLength+len(f.Payload))
+	connId := []byte(f.ConnectionId)
+	if len(connId) > int(^uint16(0)) {
+		return nil, errors.New("frame connectionId too long")
+	}
+	buf := make([]byte, FrameHeaderLength+len(connId)+len(f.Payload))
 	idx := 0
 
 	copy(buf[idx:], frameMagicBytes)
@@ -86,8 +101,14 @@ func (f *Frame) ParseToBytes() ([]byte, error) {
 	buf[idx] = f.FrameType
 	idx += frameTypeLength
 
+	binary.LittleEndian.PutUint16(buf[idx:idx+frameConnIdLenLength], uint16(len(connId)))
+	idx += frameConnIdLenLength
+
 	binary.LittleEndian.PutUint32(buf[idx:idx+framePayloadLenLength], uint32(len(f.Payload)))
 	idx += framePayloadLenLength
+
+	copy(buf[idx:], connId)
+	idx += len(connId)
 
 	copy(buf[idx:], f.Payload)
 	return buf, nil
@@ -121,23 +142,33 @@ func ParseFrame(data []byte) (*Frame, error) {
 	frameType := data[idx]
 	idx += frameTypeLength
 
+	connIdLen := binary.LittleEndian.Uint16(data[idx : idx+frameConnIdLenLength])
+	idx += frameConnIdLenLength
+
 	payloadLen := binary.LittleEndian.Uint32(data[idx : idx+framePayloadLenLength])
 	idx += framePayloadLenLength
 
-	if len(data)-idx < int(payloadLen) {
+	if len(data)-idx < int(connIdLen)+int(payloadLen) {
 		return nil, errors.New("frame payload truncated")
+	}
+
+	var connId string
+	if connIdLen > 0 {
+		connId = string(data[idx : idx+int(connIdLen)])
+		idx += int(connIdLen)
 	}
 
 	payload := make([]byte, payloadLen)
 	copy(payload, data[idx:idx+int(payloadLen)])
 
 	return &Frame{
-		MessageId:   messageId,
-		SeqId:       seqId,
-		TotalFrames: total,
-		AckId:       ackId,
-		FrameType:   frameType,
-		Payload:     payload,
+		MessageId:    messageId,
+		SeqId:        seqId,
+		TotalFrames:  total,
+		AckId:        ackId,
+		FrameType:    frameType,
+		ConnectionId: connId,
+		Payload:      payload,
 	}, nil
 }
 
@@ -153,11 +184,15 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 			return nil, errors.New("invalid frame magic")
 		}
 	}
+	// 定长头尾部布局: ...[ConnIdLen(2)][PayloadLen(4)]。
+	// body = ConnectionId(ConnIdLen) + Payload(PayloadLen)，需在第二段一并读出。
 	payloadLen := binary.LittleEndian.Uint32(header[FrameHeaderLength-framePayloadLenLength : FrameHeaderLength])
-	if payloadLen == 0 {
+	connIdLen := binary.LittleEndian.Uint16(header[FrameHeaderLength-framePayloadLenLength-frameConnIdLenLength : FrameHeaderLength-framePayloadLenLength])
+	bodyLen := int(connIdLen) + int(payloadLen)
+	if bodyLen == 0 {
 		return ParseFrame(header)
 	}
-	full := make([]byte, FrameHeaderLength+int(payloadLen))
+	full := make([]byte, FrameHeaderLength+bodyLen)
 	copy(full, header)
 	if _, err := io.ReadFull(r, full[FrameHeaderLength:]); err != nil {
 		return nil, err

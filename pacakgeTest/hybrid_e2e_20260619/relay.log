@@ -1,0 +1,211 @@
+mode: server, address: 0.0.0.0:9000, targetId: targetId, size: 14336, duration: 5m0s, floodDelay: 3s, elephantMB: 2
+ForwardHook 已装: 每 256.00 KB 累计上报一次
+RelayStarter Start AT 0.0.0.0:9000
+2026/06/19 13:56:15 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.2:52072
+2026/06/19 13:56:15 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 13:56:15 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 13:56:15 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.2:52072): nodeId=00ba3d9bfaa2407d connId=
+2026/06/19 13:56:15 [relay] 新建 StreamGroup: nodeId=00ba3d9bfaa2407d
+2026/06/19 13:56:36 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.4:22231
+2026/06/19 13:56:36 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 13:56:36 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 13:56:36 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.4:22231): nodeId=00ba3d9bfaa2407d connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c
+2026/06/19 13:56:36 [relay] StreamOn 成功: targetNodeId=00ba3d9bfaa2407d connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c forward=true
+2026/06/19 13:56:37 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.3:50998
+2026/06/19 13:56:37 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 13:56:37 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 13:56:37 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.3:50998): nodeId=00ba3d9bfaa2407d connId=8afbec64-05bf-4917-a030-14c86866f7ab
+2026/06/19 13:56:37 [relay] StreamOn 成功: targetNodeId=00ba3d9bfaa2407d connId=8afbec64-05bf-4917-a030-14c86866f7ab forward=true
+[ForwardHook] +256.00 KB (345 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=256.00 KB
+[ForwardHook] +256.37 KB (362 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=512.37 KB
+[ForwardHook] +256.60 KB (366 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=768.98 KB
+[ForwardHook] +256.32 KB (529 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=1.00 MB
+[ForwardHook] +256.14 KB (363 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=1.25 MB
+[ForwardHook] +256.04 KB (361 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=1.50 MB
+[ForwardHook] +256.38 KB (368 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=1.75 MB
+[ForwardHook] +256.00 KB (619 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=2.00 MB
+[ForwardHook] +256.71 KB (521 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=2.25 MB
+[ForwardHook] +256.37 KB (546 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=2.50 MB
+[ForwardHook] +256.63 KB (471 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=2.75 MB
+[ForwardHook] +256.38 KB (627 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=3.00 MB
+[ForwardHook] +256.50 KB (565 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=3.25 MB
+[ForwardHook] +256.13 KB (598 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=3.50 MB
+[ForwardHook] +256.13 KB (525 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=3.75 MB
+[ForwardHook] +256.50 KB (419 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=4.01 MB
+[ForwardHook] +256.02 KB (555 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=4.26 MB
+[ForwardHook] +256.36 KB (473 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=4.51 MB
+[ForwardHook] +256.20 KB (478 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=4.76 MB
+[ForwardHook] +256.22 KB (543 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=5.01 MB
+[ForwardHook] +256.16 KB (574 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=5.26 MB
+[ForwardHook] +256.42 KB (766 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=5.51 MB
+[ForwardHook] +256.57 KB (518 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=5.76 MB
+[ForwardHook] +256.26 KB (576 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=6.01 MB
+[ForwardHook] +256.22 KB (559 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=6.26 MB
+[ForwardHook] +256.00 KB (563 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=6.51 MB
+[ForwardHook] +256.32 KB (472 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=6.76 MB
+[ForwardHook] +256.55 KB (728 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=7.01 MB
+[ForwardHook] +256.07 KB (645 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=7.26 MB
+[ForwardHook] +256.20 KB (518 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=7.51 MB
+[ForwardHook] +256.25 KB (827 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=7.76 MB
+[ForwardHook] +256.19 KB (348 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=8.01 MB
+[ForwardHook] +256.16 KB (720 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=8.26 MB
+[ForwardHook] +256.42 KB (531 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=8.51 MB
+[ForwardHook] +256.17 KB (542 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=8.76 MB
+[ForwardHook] +256.57 KB (518 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=9.01 MB
+[ForwardHook] +256.08 KB (451 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=9.26 MB
+[ForwardHook] +256.74 KB (586 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=9.51 MB
+[ForwardHook] +256.28 KB (439 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=9.76 MB
+[ForwardHook] +256.80 KB (466 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=10.01 MB
+[ForwardHook] +256.69 KB (658 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=10.26 MB
+[ForwardHook] +256.70 KB (699 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=10.51 MB
+[ForwardHook] +256.41 KB (547 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=10.76 MB
+[ForwardHook] +256.70 KB (699 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=11.01 MB
+[ForwardHook] +256.27 KB (617 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=11.26 MB
+[ForwardHook] +256.61 KB (697 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=11.52 MB
+[ForwardHook] +256.20 KB (518 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=11.77 MB
+[ForwardHook] +256.34 KB (683 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=12.02 MB
+[ForwardHook] +256.04 KB (361 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=12.27 MB
+[ForwardHook] +256.00 KB (619 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=12.52 MB
+[ForwardHook] +256.32 KB (691 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=12.77 MB
+[ForwardHook] +256.55 KB (874 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=13.02 MB
+[ForwardHook] +256.42 KB (531 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=13.27 MB
+[ForwardHook] +256.56 KB (534 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=13.52 MB
+[ForwardHook] +256.58 KB (486 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=13.77 MB
+[ForwardHook] +256.61 KB (373 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=14.02 MB
+2026/06/19 13:57:19 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.2:54798
+2026/06/19 13:57:19 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 13:57:19 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 13:57:19 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.2:54798): nodeId=0fc5345134651b8e connId=
+2026/06/19 13:57:19 [relay] 新建 StreamGroup: nodeId=0fc5345134651b8e
+[ForwardHook] +256.57 KB (518 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=14.27 MB
+[ForwardHook] +256.40 KB (668 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=14.52 MB
+[ForwardHook] +256.21 KB (486 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=14.77 MB
+[ForwardHook] +256.29 KB (771 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=15.02 MB
+[ForwardHook] +256.41 KB (547 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=15.27 MB
+[ForwardHook] +256.32 KB (764 帧) connId=8afbec64-05bf-4917-a030-14c86866f7ab | server端累计转发=15.52 MB
+2026/06/19 13:57:24 [FrameRelay] TCP NextFrame 失败: nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab isCurrent=true ctxErr=<nil> err=read tcp 10.10.0.1:9000->10.10.0.3:50998: read: connection reset by peer
+2026/06/19 13:57:24 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab
+2026/06/19 13:57:24 [DualStream] TCP startPump NextMessage 失败: nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab err=read tcp 10.10.0.1:9000->10.10.0.3:50998: read: connection reset by peer
+2026/06/19 13:57:24 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab
+[ForwardHook] +256.02 KB (596 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=15.77 MB
+2026/06/19 13:57:26 [FrameRelay] TCP HandleFrame 写入失败, 触发 replayRoute: nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab err=read tcp 10.10.0.1:9000->10.10.0.3:50998: read: connection reset by peer
+2026/06/19 13:57:26 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab
+[ForwardHook] +256.34 KB (481 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=16.02 MB
+2026/06/19 13:57:26 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.3:59156
+2026/06/19 13:57:26 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 13:57:26 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 13:57:26 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.3:59156): nodeId=0fc5345134651b8e connId=d482f39c-0b25-4de4-8081-1ea3723b4101
+2026/06/19 13:57:26 [relay] StreamOn 成功: targetNodeId=0fc5345134651b8e connId=d482f39c-0b25-4de4-8081-1ea3723b4101 forward=true
+[ForwardHook] +256.12 KB (557 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=16.27 MB
+[ForwardHook] +256.43 KB (354 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=16.52 MB
+[ForwardHook] +256.27 KB (359 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=16.77 MB
+[ForwardHook] +256.13 KB (541 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=17.02 MB
+[ForwardHook] +256.34 KB (537 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=17.27 MB
+[ForwardHook] +256.41 KB (547 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=17.52 MB
+[ForwardHook] +256.10 KB (549 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=17.77 MB
+[ForwardHook] +256.10 KB (403 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=18.02 MB
+[ForwardHook] +256.03 KB (539 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=18.27 MB
+[ForwardHook] +256.01 KB (587 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=18.52 MB
+[ForwardHook] +256.63 KB (527 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=18.77 MB
+[ForwardHook] +256.44 KB (467 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=19.02 MB
+[ForwardHook] +256.33 KB (440 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=19.27 MB
+[ForwardHook] +256.29 KB (536 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=19.53 MB
+[ForwardHook] +256.08 KB (540 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=19.78 MB
+[ForwardHook] +256.37 KB (546 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=20.03 MB
+[ForwardHook] +256.61 KB (535 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=20.28 MB
+[ForwardHook] +256.42 KB (515 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=20.53 MB
+[ForwardHook] +256.03 KB (539 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=20.78 MB
+[ForwardHook] +256.04 KB (523 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=21.03 MB
+[ForwardHook] +256.28 KB (512 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=21.28 MB
+[ForwardHook] +256.08 KB (540 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=21.53 MB
+[ForwardHook] +256.42 KB (458 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=21.78 MB
+[ForwardHook] +256.26 KB (503 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=22.03 MB
+[ForwardHook] +256.80 KB (539 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=22.28 MB
+[ForwardHook] +256.60 KB (478 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=22.53 MB
+[ForwardHook] +256.69 KB (496 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=22.78 MB
+[ForwardHook] +256.38 KB (514 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=23.03 MB
+[ForwardHook] +256.71 KB (537 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=23.28 MB
+[ForwardHook] +256.42 KB (531 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=23.53 MB
+[ForwardHook] +256.22 KB (543 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=23.78 MB
+[ForwardHook] +256.44 KB (523 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=24.03 MB
+[ForwardHook] +256.47 KB (516 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=24.28 MB
+[ForwardHook] +256.61 KB (535 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=24.53 MB
+[ForwardHook] +256.55 KB (493 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=24.78 MB
+[ForwardHook] +256.22 KB (543 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=25.03 MB
+[ForwardHook] +256.18 KB (526 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=25.28 MB
+[ForwardHook] +256.56 KB (461 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=25.53 MB
+[ForwardHook] +256.02 KB (498 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=25.78 MB
+[ForwardHook] +256.19 KB (494 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=26.03 MB
+[ForwardHook] +256.72 KB (505 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=26.29 MB
+[ForwardHook] +256.44 KB (523 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=26.54 MB
+[ForwardHook] +256.32 KB (545 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=26.79 MB
+[ForwardHook] +256.47 KB (532 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=27.04 MB
+[ForwardHook] +256.41 KB (547 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=27.29 MB
+[ForwardHook] +256.13 KB (525 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=27.54 MB
+[ForwardHook] +256.28 KB (512 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=27.79 MB
+[ForwardHook] +256.61 KB (535 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=28.04 MB
+[ForwardHook] +256.50 KB (508 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=28.29 MB
+[ForwardHook] +256.60 KB (494 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=28.54 MB
+[ForwardHook] +256.27 KB (544 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=28.79 MB
+[ForwardHook] +256.08 KB (451 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=29.04 MB
+[ForwardHook] +256.04 KB (434 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=29.29 MB
+[ForwardHook] +256.02 KB (555 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=29.54 MB
+[ForwardHook] +256.80 KB (539 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=29.79 MB
+[ForwardHook] +256.71 KB (537 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=30.04 MB
+[ForwardHook] +256.08 KB (540 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=30.29 MB
+[ForwardHook] +256.13 KB (525 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=30.54 MB
+[ForwardHook] +256.44 KB (523 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=30.79 MB
+[ForwardHook] +256.13 KB (541 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=31.04 MB
+[ForwardHook] +256.22 KB (543 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=31.29 MB
+[ForwardHook] +256.02 KB (482 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=31.54 MB
+[ForwardHook] +256.37 KB (457 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=31.79 MB
+[ForwardHook] +256.19 KB (510 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=32.04 MB
+[ForwardHook] +256.72 KB (489 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=32.29 MB
+[ForwardHook] +256.66 KB (536 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=32.54 MB
+[ForwardHook] +256.64 KB (511 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=32.79 MB
+[ForwardHook] +256.04 KB (507 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=33.04 MB
+[ForwardHook] +256.80 KB (555 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=33.30 MB
+[ForwardHook] +256.44 KB (523 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=33.55 MB
+[ForwardHook] +256.42 KB (531 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=33.80 MB
+[ForwardHook] +256.51 KB (533 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=34.05 MB
+[ForwardHook] +256.13 KB (525 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=34.30 MB
+[ForwardHook] +256.76 KB (522 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=34.55 MB
+[ForwardHook] +256.47 KB (459 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=34.80 MB
+[ForwardHook] +256.54 KB (509 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=35.05 MB
+[ForwardHook] +256.12 KB (338 帧) connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c | server端累计转发=35.30 MB
+[ForwardHook] +256.21 KB (502 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=35.55 MB
+[ForwardHook] +256.75 KB (538 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=35.80 MB
+[ForwardHook] +256.81 KB (523 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=36.05 MB
+[ForwardHook] +256.12 KB (484 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=36.30 MB
+[ForwardHook] +256.56 KB (534 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=36.55 MB
+[ForwardHook] +256.81 KB (507 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=36.80 MB
+[ForwardHook] +256.71 KB (537 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=37.05 MB
+[ForwardHook] +256.08 KB (540 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=37.30 MB
+[ForwardHook] +256.80 KB (539 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=37.55 MB
+[ForwardHook] +256.42 KB (531 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=37.80 MB
+[ForwardHook] +256.27 KB (455 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=38.05 MB
+[ForwardHook] +256.06 KB (515 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=38.30 MB
+[ForwardHook] +256.39 KB (522 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=38.55 MB
+[ForwardHook] +256.27 KB (544 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=38.80 MB
+[ForwardHook] +256.71 KB (521 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=39.06 MB
+2026/06/19 13:58:07 [DualStream] TCP startPump NextMessage 失败: nodeId=fd490d30727bf7d5 connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c err=EOF
+2026/06/19 13:58:07 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=fd490d30727bf7d5 connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c
+2026/06/19 13:58:07 [FrameRelay] TCP NextFrame 失败: nodeId=fd490d30727bf7d5 connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c isCurrent=true ctxErr=<nil> err=EOF
+2026/06/19 13:58:07 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=fd490d30727bf7d5 connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c
+[ForwardHook] +256.19 KB (510 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=39.31 MB
+[ForwardHook] +256.04 KB (507 帧) connId=d482f39c-0b25-4de4-8081-1ea3723b4101 | server端累计转发=39.56 MB
+2026/06/19 13:58:08 [FrameRelay] TCP NextFrame 失败: nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101 isCurrent=true ctxErr=<nil> err=EOF
+2026/06/19 13:58:08 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101
+2026/06/19 13:58:08 [DualStream] TCP startPump NextMessage 失败: nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101 err=EOF
+2026/06/19 13:58:08 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101
+2026/06/19 13:58:08 [FrameRelay] TCP HandleFrame 写入失败, 触发 replayRoute: nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101 err=EOF
+2026/06/19 13:58:08 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101
+2026/06/19 13:58:15 [DualStream] TCP startPump NextMessage 失败: nodeId=00ba3d9bfaa2407d connId= err=EOF
+2026/06/19 13:58:15 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=00ba3d9bfaa2407d connId=
+2026/06/19 13:58:15 [DualStream] TCP startPump NextMessage 失败: nodeId=0fc5345134651b8e connId= err=EOF
+2026/06/19 13:58:15 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=0fc5345134651b8e connId=

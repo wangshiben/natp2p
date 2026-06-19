@@ -64,6 +64,70 @@ func TestFrameSerialization(t *testing.T) {
 	}
 }
 
+func TestFrameConnectionIdRoundTrip(t *testing.T) {
+	cases := []struct {
+		name    string
+		connId  string
+		payload []byte
+		ftype   uint8
+	}{
+		{"empty connId data frame", "", []byte("hello"), FrameTypeData},
+		{"uuid connId data frame", uuid.New().String(), []byte("world payload"), FrameTypeData},
+		{"uuid connId empty payload control frame", uuid.New().String(), nil, FrameTypeFrameSizeChange},
+		{"connId with empty payload data frame", uuid.New().String(), nil, FrameTypeData},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := &Frame{
+				MessageId:    11,
+				SeqId:        2,
+				TotalFrames:  5,
+				AckId:        800,
+				FrameType:    tc.ftype,
+				ConnectionId: tc.connId,
+				Payload:      tc.payload,
+			}
+			bs, err := original.ParseToBytes()
+			if err != nil {
+				t.Fatalf("ParseToBytes: %v", err)
+			}
+			wantLen := FrameHeaderLength + len(tc.connId) + len(tc.payload)
+			if len(bs) != wantLen {
+				t.Errorf("serialized size = %d want %d", len(bs), wantLen)
+			}
+
+			// 路径1: ParseFrame(完整字节)
+			parsed, err := ParseFrame(bs)
+			if err != nil {
+				t.Fatalf("ParseFrame: %v", err)
+			}
+			assertFrameEq(t, parsed, original)
+
+			// 路径2: ReadFrame(io.Reader) —— 两段读路径
+			read, err := ReadFrame(bytes.NewReader(bs))
+			if err != nil {
+				t.Fatalf("ReadFrame: %v", err)
+			}
+			assertFrameEq(t, read, original)
+		})
+	}
+}
+
+func assertFrameEq(t *testing.T, got, want *Frame) {
+	t.Helper()
+	if got.MessageId != want.MessageId || got.SeqId != want.SeqId ||
+		got.TotalFrames != want.TotalFrames || got.AckId != want.AckId ||
+		got.FrameType != want.FrameType {
+		t.Errorf("frame metadata mismatch: got %+v want %+v", got, want)
+	}
+	if got.ConnectionId != want.ConnectionId {
+		t.Errorf("ConnectionId mismatch: got %q want %q", got.ConnectionId, want.ConnectionId)
+	}
+	if !bytes.Equal(got.Payload, want.Payload) {
+		t.Errorf("payload mismatch: got %q want %q", got.Payload, want.Payload)
+	}
+}
+
 func TestSplitAndAssemble(t *testing.T) {
 	cases := []struct {
 		name        string

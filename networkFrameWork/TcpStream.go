@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,12 +138,29 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		frameSizeChangeAcks: make(map[int]chan bool),
 	}
 
-	// 设置帧大小变更同步回调
-	if adaptor != nil {
+	// 设置帧大小变更同步回调。
+	//
+	// 单端发起（single-initiator）：只有 initiator 端才安装回调、才会主动发
+	// FrameTypeFrameSizeChange 请求；follower 端不装回调，永远只应用+ACK 对端请求，
+	// 自己绝不发起。通过环境变量 BNFS_FRAME_FOLLOWER 把整个进程标记为 follower
+	// （测试中 client 进程设此变量，server/callee 进程不设 → 由 server 掌控帧大小）。
+	// relay 的 pureForwarder leg 另由 SetPureForwarder 卸载回调，亦不发起。
+	if adaptor != nil && !frameSizeFollowerProcess() {
 		adaptor.SetFrameSizeChangeCallback(t.requestFrameSizeChange)
 	}
 
 	return t
+}
+
+// frameSizeFollowerProcess 报告本进程是否被标记为帧大小 follower。
+// BNFS_FRAME_FOLLOWER ∈ {1,true,yes} 时为 true：本进程任何流都不主动发起帧大小变更。
+func frameSizeFollowerProcess() bool {
+	switch os.Getenv("BNFS_FRAME_FOLLOWER") {
+	case "1", "true", "yes", "TRUE", "YES":
+		return true
+	default:
+		return false
+	}
 }
 
 // startLoops 启动 readLoop 与 recvAckTimer。每个流只应调用一次。
@@ -438,6 +456,19 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 	if err != nil {
 		return err
 	}
+	// 源头打戳：从 message（一个完整业务消息）切出的数据帧带上业务 connectionId，
+	// 供 relay 按帧头路由、callee 帧级 demux。
+	// connectionId 取自 message 头（权威）——这点很关键：relay 转发 client 首条消息时走
+	// group.relayStream.SendMessage（callee leg 是 pureForwarder），那条 leg 的 t.connectionId
+	// 是 relay 自己的、并非 client 的；只有取 message.Header.ConnectionId 才能把 client 的
+	// connectionId 正确带到 callee。后续帧走 frame pump 的 HandleFrame（不经此处），verbatim 透传。
+	connId := t.connectionId
+	if message.Header != nil && message.Header.ConnectionId != "" {
+		connId = message.Header.ConnectionId
+	}
+	for _, f := range frames {
+		f.ConnectionId = connId
+	}
 	if t.pureForwarder.Load() {
 		// pure forwarder leg：写完帧就返回。不建 pending、不等 ACK、不重传，
 		// 因为 ACK 由对端真正的接收者直接回到原始发送者，跟本 leg 无关。
@@ -592,6 +623,11 @@ func (t *TcpStream) SetFrameRelayMode(enabled bool) {
 // 避免「relay 抢先 ACK 导致发送端虚高、背压压在 relay 内部缓冲」的问题。
 func (t *TcpStream) SetPureForwarder(enabled bool) {
 	t.pureForwarder.Store(enabled)
+	// 转发腿绝不参与帧大小决策：卸载自适应回调，避免 relay 在 server↔relay 这一跳上
+	// 与 server 抢着发起帧大小变更（破坏「由 server 端掌控帧大小」）。
+	if enabled && t.frameSizeAdaptor != nil {
+		t.frameSizeAdaptor.SetFrameSizeChangeCallback(nil)
+	}
 }
 
 func (t *TcpStream) getFrameTap() chan *network.Frame {
@@ -900,6 +936,7 @@ func (t *TcpStream) sendAck(messageId uint64, total uint32, ranges []network.Ack
 	if err != nil {
 		return err
 	}
+	f.ConnectionId = t.connectionId // 源头打戳：ACK 也带本流 connectionId，relay 按帧头回程
 	return t.writeFrame(f)
 }
 
@@ -978,12 +1015,13 @@ func (t *TcpStream) requestFrameSizeChange(newSize int) bool {
 	t.frameSizeChangeMu.Unlock()
 
 	frame := &network.Frame{
-		MessageId:   0,
-		SeqId:       0,
-		TotalFrames: 1,
-		AckId:       uint64(newSize),
-		FrameType:   network.FrameTypeFrameSizeChange,
-		Payload:     nil,
+		MessageId:    0,
+		SeqId:        0,
+		TotalFrames:  1,
+		AckId:        uint64(newSize),
+		FrameType:    network.FrameTypeFrameSizeChange,
+		ConnectionId: t.connectionId,
+		Payload:      nil,
 	}
 
 	if err := t.writeFrame(frame); err != nil {
@@ -1060,12 +1098,13 @@ func (t *TcpStream) sendFrameSizeChangeAck(newSize int, confirmed bool) error {
 	}
 
 	frame := &network.Frame{
-		MessageId:   0,
-		SeqId:       seqId,
-		TotalFrames: 1,
-		AckId:       uint64(newSize),
-		FrameType:   network.FrameTypeFrameSizeChange,
-		Payload:     nil,
+		MessageId:    0,
+		SeqId:        seqId,
+		TotalFrames:  1,
+		AckId:        uint64(newSize),
+		FrameType:    network.FrameTypeFrameSizeChange,
+		ConnectionId: t.connectionId,
+		Payload:      nil,
 	}
 
 	return t.writeFrame(frame)

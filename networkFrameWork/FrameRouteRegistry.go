@@ -133,12 +133,14 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 
 		entry := routes.relayGet(f.MessageId)
 		if entry == nil {
-			// relay 侧第一次见到这个 MessageId：只接受能解析出业务 Header 的数据首帧。
-			h, ok := parseFrameHeader(f)
-			if !ok {
+			// relay 侧第一次见到这个 MessageId：按帧头 connectionId 路由到目标 client leg。
+			// 改用 f.ConnectionId（每帧自带）而非解析首帧 payload：对每一帧都生效、
+			// 不依赖首帧可解析、不怕首帧丢/乱序。connectionId 经 out:=*f 全程 verbatim 透传。
+			connId := f.ConnectionId
+			if connId == "" {
 				continue
 			}
-			dst := lookup(h.ConnectionId)
+			dst := lookup(connId)
 			if dst == nil {
 				continue
 			}
