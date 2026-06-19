@@ -116,10 +116,18 @@ func parseFrameHeader(f *network.Frame) (*network.Header, bool) {
 //     找到目标 client leg，分配 dstID 建正向映射，并登记反向回程（client 的 ACK 用得上）。
 //
 // 找不到目标 client（还没连上 / 已断开）就丢弃该帧。写失败则退出 pump。
-func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry) {
+// hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
+func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig) {
+	hookState := newForwardHookState(hookConfig)
+
 	for {
 		f, err := relay.NextFrame(ctx)
 		if err != nil {
+			return
+		}
+
+		// 调用 hook（如果配置了）
+		if !hookState.onFrame(ctx, f, "relay_to_clients") {
 			return
 		}
 
@@ -160,7 +168,10 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 //     并登记反向回程（relayServer 的 ACK 用 dstID 回来时，能查回这个 client）。
 //
 // 写失败则退出 pump。
-func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry) {
+// hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
+func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig) {
+	hookState := newForwardHookState(hookConfig)
+
 	for {
 		f, err := client.NextFrame(ctx)
 		if err != nil {
@@ -171,6 +182,14 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 		}
 		if bridgeDebug {
 			logBridge("C2R got frame connId=%s msg=%d seq=%d type=%d", client.ConnectionId(), f.MessageId, f.SeqId, f.FrameType)
+		}
+
+		// 调用 hook（如果配置了）
+		if !hookState.onFrame(ctx, f, "client_to_relay") {
+			if bridgeDebug {
+				logBridge("C2R hook 返回 error，停止转发 connId=%s", client.ConnectionId())
+			}
+			return
 		}
 
 		entry := routes.clientGet(client.ConnectionId(), f.MessageId)

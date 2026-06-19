@@ -4,29 +4,53 @@ import (
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/p2pnode"
 	"context"
+	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
 )
 
-const testRelayAddr = "127.0.0.1:9000"
+// testRelayAddr 是测试用的 relay 监听地址。
+// 在 TestMain 中动态分配一个空闲端口，避免与本机其他服务（如 docker 占用的 9000）冲突。
+var testRelayAddr = "127.0.0.1:9000"
 
-// startRelay 启动中转服务器并等待就绪，返回关闭函数。
-func startRelay(t *testing.T) (relay *networkFrameWork.RelayStarter, closeRelay func()) {
+// TestMain 在所有测试运行前，挑选一个本机空闲端口作为 relay 地址，
+// 规避硬编码端口与本机已有服务冲突导致的 bind 失败。
+func TestMain(m *testing.M) {
+	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
+		addr := ln.Addr().String()
+		_ = ln.Close()
+		testRelayAddr = addr
+	}
+	os.Exit(m.Run())
+}
+
+// startRelay 启动中转服务器并等待就绪，返回 relay 实例、实际监听地址、关闭函数。
+// 每次调用都使用一个新的空闲端口，避免测试间端口冲突。
+func startRelay(t *testing.T) (relay *networkFrameWork.RelayStarter, addr string, closeRelay func()) {
 	t.Helper()
-	relay = networkFrameWork.NewRelayStarter(testRelayAddr)
+	// 动态分配空闲端口
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("无法获取空闲端口: %v", err)
+	}
+	addr = ln.Addr().String()
+	_ = ln.Close()
+
+	relay = networkFrameWork.NewRelayStarter(addr)
 	go relay.StartListen()
 	// 等待 relay 监听就绪
 	time.Sleep(300 * time.Millisecond)
-	return relay, func() { relay.Close() }
+	return relay, addr, func() { relay.Close() }
 }
 
 // TestNATNode_Register 验证基础的中转注册功能。
 func TestNATNode_Register(t *testing.T) {
-	_, closeRelay := startRelay(t)
+	_, relayAddr, closeRelay := startRelay(t)
 	defer closeRelay()
 
-	node, err := NewNATNode(nil, testRelayAddr)
+	node, err := NewNATNode(nil, relayAddr)
 	if err != nil {
 		t.Fatalf("创建节点失败: %v", err)
 	}
@@ -45,7 +69,7 @@ func TestNATNode_Register(t *testing.T) {
 	// 启动 Listen（阻塞等待入站连接）
 	listenErr := make(chan error, 1)
 	go func() {
-		listenErr <- node.Listen(ctx, testRelayAddr)
+		listenErr <- node.Listen(ctx, relayAddr)
 	}()
 
 	// 等待注册完成
@@ -63,17 +87,17 @@ func TestNATNode_Register(t *testing.T) {
 
 // TestNATNode_TwoNodeCommunication 验证两个节点通过中转节点握手和通信。
 func TestNATNode_TwoNodeCommunication(t *testing.T) {
-	_, closeRelay := startRelay(t)
+	_, relayAddr, closeRelay := startRelay(t)
 	defer closeRelay()
 
 	// 创建两个节点
-	nodeA, err := NewNATNode(nil, testRelayAddr)
+	nodeA, err := NewNATNode(nil, relayAddr)
 	if err != nil {
 		t.Fatalf("创建节点 A 失败: %v", err)
 	}
 	defer nodeA.Close()
 
-	nodeB, err := NewNATNode(nil, testRelayAddr)
+	nodeB, err := NewNATNode(nil, relayAddr)
 	if err != nil {
 		t.Fatalf("创建节点 B 失败: %v", err)
 	}
@@ -92,7 +116,7 @@ func TestNATNode_TwoNodeCommunication(t *testing.T) {
 	})
 
 	go func() {
-		if err := nodeA.Listen(ctx, testRelayAddr); err != nil {
+		if err := nodeA.Listen(ctx, relayAddr); err != nil {
 			t.Logf("A Listen 退出: %v", err)
 		}
 	}()
@@ -165,13 +189,13 @@ func TestNATNode_TwoNodeCommunication(t *testing.T) {
 
 // TestNATNode_ThreeNodeDiscovery 验证三个节点通过中转节点相互查找与通信。
 func TestNATNode_ThreeNodeDiscovery(t *testing.T) {
-	_, closeRelay := startRelay(t)
+	_, relayAddr, closeRelay := startRelay(t)
 	defer closeRelay()
 
 	// 创建三个节点
-	nodeA, _ := NewNATNode(nil, testRelayAddr)
-	nodeB, _ := NewNATNode(nil, testRelayAddr)
-	nodeC, _ := NewNATNode(nil, testRelayAddr)
+	nodeA, _ := NewNATNode(nil, relayAddr)
+	nodeB, _ := NewNATNode(nil, relayAddr)
+	nodeC, _ := NewNATNode(nil, relayAddr)
 	defer nodeA.Close()
 	defer nodeB.Close()
 	defer nodeC.Close()
@@ -197,7 +221,7 @@ func TestNATNode_ThreeNodeDiscovery(t *testing.T) {
 		wg.Add(1)
 		go func(n *NATNode) {
 			defer wg.Done()
-			n.Listen(ctx, testRelayAddr)
+			n.Listen(ctx, relayAddr)
 		}(node)
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -342,11 +366,11 @@ func TestNATNode_ThreeNodeDiscovery(t *testing.T) {
 
 // TestNATNode_Bidirectional 验证双向通信和闭包行为。
 func TestNATNode_Bidirectional(t *testing.T) {
-	_, closeRelay := startRelay(t)
+	_, relayAddr, closeRelay := startRelay(t)
 	defer closeRelay()
 
-	nodeA, _ := NewNATNode(nil, testRelayAddr)
-	nodeB, _ := NewNATNode(nil, testRelayAddr)
+	nodeA, _ := NewNATNode(nil, relayAddr)
+	nodeB, _ := NewNATNode(nil, relayAddr)
 	defer nodeA.Close()
 	defer nodeB.Close()
 
@@ -358,7 +382,7 @@ func TestNATNode_Bidirectional(t *testing.T) {
 		connReady <- conn
 	})
 
-	go nodeA.Listen(ctx, testRelayAddr)
+	go nodeA.Listen(ctx, relayAddr)
 	time.Sleep(300 * time.Millisecond)
 
 	connB, err := nodeB.Connect(ctx, nodeA.ID())

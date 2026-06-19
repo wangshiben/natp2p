@@ -1,0 +1,25 @@
+mode: server, address: 0.0.0.0:9000, targetId: targetId, size: 14336
+RelayStarter Start AT 0.0.0.0:9000
+2026/06/19 08:36:47 [relay] 新连接: local=10.146.83.21:9000 remote=192.168.66.213:38668
+2026/06/19 08:36:47 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 08:36:47 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 08:36:47 [relay] AcceptTcpStream 成功 (local=10.146.83.21:9000 remote=192.168.66.213:38668): nodeId=835d93061889ad48 connId=
+2026/06/19 08:36:47 [relay] 新建 StreamGroup: nodeId=835d93061889ad48
+2026/06/19 08:37:07 [relay] 新连接: local=10.146.83.21:9000 remote=172.20.118.47:57594
+2026/06/19 08:37:07 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 08:37:07 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 08:37:07 [relay] AcceptTcpStream 成功 (local=10.146.83.21:9000 remote=172.20.118.47:57594): nodeId=835d93061889ad48 connId=55724f0b-8a70-4cf0-963b-4579b9e2f1c0
+2026/06/19 08:37:07 [relay] StreamOn 成功: targetNodeId=835d93061889ad48 connId=55724f0b-8a70-4cf0-963b-4579b9e2f1c0 forward=true
+2026/06/19 08:37:48 [TcpStream] 收到帧大小变更请求: 800 -> 864
+2026/06/19 08:37:48 [TcpStream] ✅ 已应用对端请求的帧大小: 864
+2026/06/19 08:38:08 [TcpStream] 收到帧大小变更请求: 800 -> 864
+2026/06/19 08:38:08 [TcpStream] ✅ 已应用对端请求的帧大小: 864
+2026/06/19 08:38:47 [DualStream] TCP startPump NextMessage 失败: nodeId=835d93061889ad48 connId= err=EOF
+2026/06/19 08:38:47 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=835d93061889ad48 connId=
+2026/06/19 08:38:47 [FrameRelay] TCP HandleFrame 写入失败, 触发 replayRoute: nodeId=835d93061889ad48 connId= err=EOF
+2026/06/19 08:38:47 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=835d93061889ad48 connId=
+2026/06/19 08:38:47 [DualStream] TCP startPump NextMessage 失败: nodeId=8c2d61d2a03d8cfa connId=55724f0b-8a70-4cf0-963b-4579b9e2f1c0 err=read tcp 10.146.83.21:9000->172.20.118.47:57594: read: connection reset by peer
+2026/06/19 08:38:47 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=8c2d61d2a03d8cfa connId=55724f0b-8a70-4cf0-963b-4579b9e2f1c0
+2026/06/19 08:38:47 [FrameRelay] TCP NextFrame 失败: nodeId=8c2d61d2a03d8cfa connId=55724f0b-8a70-4cf0-963b-4579b9e2f1c0 isCurrent=true ctxErr=context canceled err=read tcp 10.146.83.21:9000->172.20.118.47:57594: read: connection reset by peer

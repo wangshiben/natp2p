@@ -1,0 +1,21 @@
+NAT 节点 ID: 0b4c6c2b0f87c9118f0bc781fb7b9844c51a9e598793433a5a715abc46a41568
+注册到 relay: 10.146.83.21:9000
+2026/06/19 00:28:35 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 00:28:35 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+正在跨中继连接 target c2fcb74c1b5060807c9175b060a58d93dfaaf2eb31b46dc8ac6ccfa90d93443c ...
+2026/06/19 00:28:36 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 00:28:36 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 00:28:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=c2fcb74c1b506080 connId=262ac5cc-0ec2-4e8b-8756-01524f724282 route= payloadLen=130 hexPreview=3034646262336466646138623132656465363035646438376535393231643763
+2026/06/19 00:28:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=c2fcb74c1b506080 connId=262ac5cc-0ec2-4e8b-8756-01524f724282 route= payloadLen=129 hexPreview=6335303161653161323465363766613264323565356336386133303335626237
+2026/06/19 00:28:37 [TcpStream] SetCryptoSuite: nodeId=c2fcb74c1b506080 connId=262ac5cc-0ec2-4e8b-8756-01524f724282 suite=*crypoto.TLSCrypto
+2026/06/19 00:28:37 [exchangeMetadata] 发送 metadata: peerID=c2fcb74c1b506080 connId=262ac5cc-0ec2-4e8b-8756-01524f724282 payloadLen=110 preview="{\"peer_id\":\"0b4c6c2b0f87c9118f0bc781fb7b9844c51a9e598793433a5a715abc46a41568\",\"r..."
+2026/06/19 00:28:37 [exchangeMetadata] 收到 metadata: peerID=c2fcb74c1b506080 headerNodeId=c2fcb74c1b506080 headerConnId=262ac5cc-0ec2-4e8b-8756-01524f724282 headerRoute=/p2p/handshake-info payloadLen=110 hexPreview=7b22706565725f6964223a2263326663623734633162353036303830376339313735623036306135386439336466616166326562333162343664633861633663636661393064393334343363222c2272 asciiPreview="{\"peer_id\":\"c2fcb74c1b5060807c9175b060a58d93dfaaf2eb31b46dc8ac6ccfa90d93443c\",\"r"
+已连接到 c2fcb74c1b5060807c9175b060a58d93dfaaf2eb31b46dc8ac6ccfa90d93443c, 开始 50 轮通信 (每轮 14336 字节)
+→ 已完成 10/50 轮
+→ 已完成 20/50 轮
+→ 已完成 30/50 轮
+→ 已完成 40/50 轮
+→ 已完成 50/50 轮
+通信完成: 成功 50/50 轮, 共发送约 716800 字节
