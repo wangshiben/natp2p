@@ -74,5 +74,6 @@ WAN 上的放大来自 **重传 + 双向 + 帧头 + ACK**。但用户期望 hook
 
 > 旁注：另有一轮 90s 预热被 relay↔callee 腿 `connection reset by peer` 中途打断、重流未达阈值故未迁移，
 > 但其 hook 6.00 MB vs 应用层 5.85 MB ≈ 1.03×，独立佐证了同一结论；正式结果以上面两轮干净测试为准。
-> 本机单元测试套件中 `TestNewStreamGroup/TestNewTransportCover/TestNewTLSCrypto` 失败为环境因素
-> （本机 9000 端口被 docker-proxy 占用），干净基线代码同样失败，非本次改动回归。
+> 本机单元测试套件中 `TestNewStreamGroup/TestNewTransportCover/TestNewTLSCrypto` 偶发失败是**预存 flaky**
+> （时序/KCP 调度敏感, 单跑约 1/3 概率挂, 随机非确定性: 同一套连跑 ok/FAIL/ok 交替）, 干净基线代码同样如此,
+> 非本次改动回归。曾误判为「9000 端口被 docker-proxy(MinIO) 占用」, 实测这些用例用的是随机端口, 停掉 MinIO 后仍抖动, 故否定该归因。
