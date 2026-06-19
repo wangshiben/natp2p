@@ -27,16 +27,16 @@ func TestForwardHookTriggersOnThreshold(t *testing.T) {
 
 	state := newForwardHookState(config)
 
-	// 每帧 payload 50 字节 + FrameHeaderLength 头
+	// 净荷口径：每帧只按 payload 字节计（不含帧头）。
 	frameSize := 50
-	// 需要多少帧才累计到 100 字节阈值
-	perFrame := int64(network.FrameHeaderLength + frameSize)
+	perFrame := int64(frameSize)
 
 	// 发送足够触发一次 hook 的帧
 	framesToThreshold := int((100 + perFrame - 1) / perFrame)
 	for i := 0; i < framesToThreshold; i++ {
 		f := &network.Frame{
-			Payload: make([]byte, frameSize),
+			FrameType: network.FrameTypeData,
+			Payload:   make([]byte, frameSize),
 		}
 		if !state.onFrame(context.Background(), f, "test") {
 			t.Fatal("hook 不应返回停止信号（hook 返回 nil）")
@@ -122,7 +122,7 @@ func TestForwardHookAccumulatesAcrossFrames(t *testing.T) {
 	hookCalls := 0
 
 	config := &ForwardHookConfig{
-		ThresholdBytes: int64(network.FrameHeaderLength+50) * 3, // 3帧触发一次
+		ThresholdBytes: int64(50) * 3, // 净荷口径：3 帧 payload 触发一次
 		Hook: func(ctx context.Context, stats *ForwardStats) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -135,7 +135,7 @@ func TestForwardHookAccumulatesAcrossFrames(t *testing.T) {
 
 	// 发送 9 帧，应触发 3 次 hook（每 3 帧一次）
 	for i := 0; i < 9; i++ {
-		f := &network.Frame{Payload: make([]byte, 50)}
+		f := &network.Frame{FrameType: network.FrameTypeData, Payload: make([]byte, 50)}
 		state.onFrame(context.Background(), f, "test")
 	}
 
@@ -143,5 +143,58 @@ func TestForwardHookAccumulatesAcrossFrames(t *testing.T) {
 	defer mu.Unlock()
 	if hookCalls != 3 {
 		t.Fatalf("期望 hook 被调用 3 次，实际 %d 次", hookCalls)
+	}
+}
+
+// TestForwardHookCountsPayloadOnly 验证净荷口径：
+// 只统计 FrameTypeData 的 payload 字节，跳过 ACK / 重传 / 控制帧，且不含帧头。
+func TestForwardHookCountsPayloadOnly(t *testing.T) {
+	var mu sync.Mutex
+	var lastStats *ForwardStats
+	hookCalls := 0
+
+	config := &ForwardHookConfig{
+		ThresholdBytes: 100,
+		Hook: func(ctx context.Context, stats *ForwardStats) error {
+			mu.Lock()
+			defer mu.Unlock()
+			hookCalls++
+			lastStats = stats
+			return nil
+		},
+	}
+	state := newForwardHookState(config)
+
+	// 这些非数据帧都不应被计数（payload 各 1000 字节，远超阈值，但应被跳过）。
+	for _, ft := range []uint8{network.FrameTypeAck, network.FrameTypeRetransmit, network.FrameTypeFrameSizeChange} {
+		f := &network.Frame{FrameType: ft, Payload: make([]byte, 1000)}
+		if !state.onFrame(context.Background(), f, "test") {
+			t.Fatal("非数据帧应放行")
+		}
+	}
+	mu.Lock()
+	if hookCalls != 0 {
+		mu.Unlock()
+		t.Fatalf("ACK/重传/控制帧不应触发 hook，实际触发 %d 次", hookCalls)
+	}
+	mu.Unlock()
+
+	// 两个数据帧，各 60 字节 payload → 累计 120 ≥ 100 触发一次。
+	for i := 0; i < 2; i++ {
+		f := &network.Frame{FrameType: network.FrameTypeData, Payload: make([]byte, 60)}
+		state.onFrame(context.Background(), f, "test")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if hookCalls != 1 {
+		t.Fatalf("期望数据帧触发 1 次，实际 %d 次", hookCalls)
+	}
+	// 累计应为 2*60=120（纯净荷，不含帧头；若含头会是 120+2*39）。
+	if lastStats == nil || lastStats.TotalBytes != 120 {
+		t.Fatalf("累计应为纯净荷 120 字节，实际 %v", lastStats)
+	}
+	if lastStats.TotalFrames != 2 {
+		t.Fatalf("应只计 2 个数据帧，实际 %d", lastStats.TotalFrames)
 	}
 }
