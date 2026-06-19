@@ -1,0 +1,24 @@
+NAT 节点 ID: 7c1314965a7f19c719bd493bafc670f7540fd4e1cb7284c06e73b20f1753d70b
+注册到 relay: 10.146.83.21:9000
+等待入站连接, 回显收到的每条消息 ...
+2026/06/19 08:31:51 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 08:31:51 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+[FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+[FrameAdaptor] 吞吐稳定, 请求 增大 帧:  800  ->  864  (当前: 0 KB/s, 上次: 0 KB/s)
+2026/06/19 08:33:23 [TcpStream] 收到帧大小变更确认: newSize=864 confirmed=true
+[FrameAdaptor] ✅ 帧大小变更已同步:  800  ->  864
+2026/06/19 08:33:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=7c1314965a7f19c7 connId= route= payloadLen=130 hexPreview=3034663037333163646162653435323435343166316239333331343539366464
+2026/06/19 08:33:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=57ebb7ab79c3a442 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b route= payloadLen=130 hexPreview=3034663037333163646162653435323435343166316239333331343539366464
+[FrameAdaptor] 准备 增大 帧( 864 -> 933 ), 等待下次确认（防振荡 1 /2）
+2026/06/19 08:33:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=57ebb7ab79c3a442 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b route= payloadLen=129 hexPreview=3765366165393962616339663366626232616635623230613862303431656438
+2026/06/19 08:33:53 [TcpStream] SetCryptoSuite: nodeId=57ebb7ab79c3a442 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b suite=*crypoto.TLSCrypto
+2026/06/19 08:33:53 [exchangeMetadata] 发送 metadata: peerID=57ebb7ab79c3a442 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b payloadLen=110 preview="{\"peer_id\":\"7c1314965a7f19c719bd493bafc670f7540fd4e1cb7284c06e73b20f1753d70b\",\"r..."
+2026/06/19 08:33:54 [exchangeMetadata] 收到 metadata: peerID=57ebb7ab79c3a442 headerNodeId=57ebb7ab79c3a442 headerConnId=b0aab72c-7292-4807-bacb-5f16b6659f5b headerRoute=/p2p/handshake-info payloadLen=110 hexPreview=7b22706565725f6964223a2235376562623761623739633361343432653062373732343362353633326165393765613163336138663631383436383163623836323031613232373765393038222c2272 asciiPreview="{\"peer_id\":\"57ebb7ab79c3a442e0b77243b5632ae97ea1c3a8f6184681cb86201a2277e908\",\"r"
+[入站连接] 来自 57ebb7ab79c3a442e0b77243b5632ae97ea1c3a8f6184681cb86201a2277e908
+[收到第10条] 14336 字节
+[FrameAdaptor] 吞吐稳定, 请求 增大 帧:  864  ->  933  (当前: 8 KB/s, 上次: 0 KB/s)
+2026/06/19 08:34:23 [TcpStream] 收到帧大小变更确认: newSize=933 confirmed=true
+[FrameAdaptor] ✅ 帧大小变更已同步:  864  ->  933
+[FrameAdaptor] 准备 减小 帧( 933 -> 849 ), 等待下次确认（防振荡 1 /2）
+[FrameAdaptor] 准备 增大 帧( 933 -> 1007 ), 等待下次确认（防振荡 1 /2）

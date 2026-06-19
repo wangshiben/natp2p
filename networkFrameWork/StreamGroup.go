@@ -31,6 +31,7 @@ type StreamGroup struct {
 	connectionMap         map[string]*connectionResource
 	frameRoutes           *frameRouteRegistry
 	beforeConnectionHook  BeforeStreamOnHook
+	forwardHookConfig     *ForwardHookConfig // 转发 hook 配置（可选）
 	lock                  sync.Mutex
 	cancelFunc            context.CancelFunc
 	ctx                   context.Context
@@ -89,6 +90,14 @@ func NewStreamGroup(relayStream network.Stream, beforeConnectionHook BeforeStrea
 		cancelFunc:           cancelFunc,
 		nodeId:               logicalRelayStream.NodeId(),
 	}
+}
+
+// SetForwardHook 设置转发 hook 配置。
+// 必须在 frame pump 启动前调用（即在任何 StreamOn 调用之前）。
+func (s *StreamGroup) SetForwardHook(config *ForwardHookConfig) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.forwardHookConfig = config
 }
 
 // AttachRelayStream 把另一条同 nodeId 的 relay leg 挂到本 group 的 relayStream 上。
@@ -168,11 +177,12 @@ func (s *StreamGroup) startFramePump(connectionId string, resource *connectionRe
 	ctx := resource.ctx
 	frame := resource.frame
 	relayFrame := s.relayFrame
+	hookConfig := s.forwardHookConfig
 	s.lock.Unlock()
 	if frame == nil || relayFrame == nil {
 		return
 	}
-	go pumpClientToRelay(ctx, frame, relayFrame, s.frameRoutes)
+	go pumpClientToRelay(ctx, frame, relayFrame, s.frameRoutes, hookConfig)
 }
 
 // startConnectionLoop 是 fallback 路径：当 frame relay 不可用时用 Message 语义中转。
@@ -228,7 +238,7 @@ func (s *StreamGroup) StartListen() {
 				return nil
 			}
 			return resource.frame
-		}, s.frameRoutes)
+		}, s.frameRoutes, s.forwardHookConfig)
 		return
 	}
 

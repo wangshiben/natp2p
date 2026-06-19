@@ -155,19 +155,23 @@ func TestRelayHashChainIsolation(t *testing.T) {
 	}
 
 	// 测试参数：监听地址、整体持续时长、客户端发送节奏、单次 IO 超时
+	// 监听地址使用 127.0.0.1:0 让系统自动分配空闲端口，避免与本机其他服务（如 docker）端口冲突
 	const (
-		relayAddr      = "127.0.0.1:9000"
-		testDuration   = time.Minute
-		clientSendPace = time.Second
-		ioTimeout      = 5 * time.Second
+		relayListenAddr = "127.0.0.1:0"
+		testDuration    = time.Minute
+		clientSendPace  = time.Second
+		ioTimeout       = 5 * time.Second
 	)
 
 	// 1. 启动 Relay 服务端：监听 TCP 端口，接收所有客户端 / Server 节点的接入
-	tcpListener, err := net.Listen("tcp", relayAddr)
+	tcpListener, err := net.Listen("tcp", relayListenAddr)
 	if err != nil {
 		t.Fatalf("Failed to start relay server: %v", err)
 	}
 	defer tcpListener.Close()
+
+	// 客户端拨号使用 listener 实际分配到的地址
+	relayAddr := tcpListener.Addr().String()
 
 	// 用 TransportCover 把每条 TCP 连接转换成 Stream，并维护 NodeId -> StreamGroup 映射
 	transport := NewTransportCover()

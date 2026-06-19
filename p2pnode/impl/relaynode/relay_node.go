@@ -80,6 +80,9 @@ type RelayNode struct {
 	// 避免重复拨向对端 relay、重复建桥导致握手错乱。
 	localLegs map[string]*localBridgeEntry
 
+	// forwardHookConfig 转发 hook 配置（可选）
+	forwardHookConfig *ForwardHookConfig
+
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -165,6 +168,18 @@ func (n *RelayNode) Addr() string { return n.addr }
 
 // ExportPrivateKeyHex 返回本节点私钥 hex。
 func (n *RelayNode) ExportPrivateKeyHex() string { return crypoto.GetPrivKeyStr(n.privKey) }
+
+// SetForwardHook 设置转发 hook 配置。
+// 必须在 Start() 之前调用，否则不生效。
+// 配置会下沉到底层 TransportCover，由它在新建 StreamGroup 时注入转发 pump。
+func (n *RelayNode) SetForwardHook(config *ForwardHookConfig) {
+	n.mu.Lock()
+	n.forwardHookConfig = config
+	n.mu.Unlock()
+	if n.starter != nil {
+		n.starter.Cover().SetForwardHook(config)
+	}
+}
 
 // Start 启动内嵌 relay 服务器（阻塞）。应在独立 goroutine 中调用。
 // 服务器开始监听后, 即可接受 NAT 节点注册与其它 relay 的控制链路接入。

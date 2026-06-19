@@ -33,6 +33,9 @@ type TransportCover struct {
 	// 参数是该被托管节点的 NodeId 及其底层连接的远端地址（用于排障 / 展示托管来源 IP）。
 	// relayNode 用它把本地托管的 nat 节点登记进 natNodes DHT 并记录来源地址。
 	onRegister func(nodeId, remoteAddr string)
+
+	// forwardHookConfig 转发 hook 配置（可选），传递给新创建的 StreamGroup
+	forwardHookConfig *ForwardHookConfig
 }
 
 // SetMissingGroupHandler 安装「业务连接未命中本地 group」的回调。传 nil 卸载，恢复默认报错行为。
@@ -47,6 +50,14 @@ func (t *TransportCover) SetMissingGroupHandler(h func(stream network.Stream, fi
 func (t *TransportCover) SetRegisterHook(h func(nodeId, remoteAddr string)) {
 	t.lock.Lock()
 	t.onRegister = h
+	t.lock.Unlock()
+}
+
+// SetForwardHook 设置转发 hook 配置，将传递给后续创建的所有 StreamGroup。
+// 必须在任何连接建立前调用（通常在 RelayStarter 启动前）。
+func (t *TransportCover) SetForwardHook(config *ForwardHookConfig) {
+	t.lock.Lock()
+	t.forwardHookConfig = config
 	t.lock.Unlock()
 }
 
@@ -143,6 +154,10 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			if group == nil {
 				log.Printf("[relay] 新建 StreamGroup: nodeId=%.16s", stream.NodeId())
 				group = NewStreamGroup(stream, defaultHookfunc)
+				// 把 TransportCover 上配置的转发 hook 传递给新建的 StreamGroup
+				if t.forwardHookConfig != nil {
+					group.SetForwardHook(t.forwardHookConfig)
+				}
 				t.StreamGroup[stream.NodeId()] = group
 				registerHook := t.onRegister
 				registeredNodeId := stream.NodeId()
