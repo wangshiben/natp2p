@@ -1,0 +1,70 @@
+mode: server, address: 0.0.0.0:9000, targetId: targetId, size: 14336, duration: 5m0s, floodDelay: 3s, elephantMB: 2
+ForwardHook 已装: 每 512.00 KB 累计上报一次
+RelayStarter Start AT 0.0.0.0:9000
+2026/06/19 19:10:52 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.2:59816
+2026/06/19 19:10:52 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 19:10:52 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 19:10:52 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.2:59816): nodeId=ce89b1ff2fdcb345 connId=
+2026/06/19 19:10:52 [relay] 新建 StreamGroup: nodeId=ce89b1ff2fdcb345
+2026/06/19 19:11:11 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.3:51034
+2026/06/19 19:11:11 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 19:11:11 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 19:11:11 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.3:51034): nodeId=ce89b1ff2fdcb345 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da
+2026/06/19 19:11:11 [relay] StreamOn 成功: targetNodeId=ce89b1ff2fdcb345 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da forward=true
+2026/06/19 19:11:20 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.4:22408
+2026/06/19 19:11:20 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 19:11:20 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 19:11:20 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.4:22408): nodeId=ce89b1ff2fdcb345 connId=cd52d189-f719-40fc-b220-941006c12412
+2026/06/19 19:11:20 [relay] StreamOn 成功: targetNodeId=ce89b1ff2fdcb345 connId=cd52d189-f719-40fc-b220-941006c12412 forward=true
+[ForwardHook] +512.18 KB (680 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=512.18 KB
+[ForwardHook] +512.18 KB (680 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=1.00 MB
+[ForwardHook] +512.48 KB (680 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=1.50 MB
+[ForwardHook] +512.44 KB (681 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=2.00 MB
+[ForwardHook] +512.48 KB (680 帧) connId=cd52d189-f719-40fc-b220-941006c12412 | server端累计转发=2.50 MB
+[ForwardHook] +512.18 KB (680 帧) connId=cd52d189-f719-40fc-b220-941006c12412 | server端累计转发=3.00 MB
+[ForwardHook] +512.48 KB (680 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=3.50 MB
+[ForwardHook] +512.22 KB (679 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=4.00 MB
+[ForwardHook] +512.48 KB (680 帧) connId=cd52d189-f719-40fc-b220-941006c12412 | server端累计转发=4.50 MB
+[ForwardHook] +512.48 KB (680 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=5.00 MB
+[ForwardHook] +512.48 KB (680 帧) connId=cd52d189-f719-40fc-b220-941006c12412 | server端累计转发=5.50 MB
+[ForwardHook] +512.48 KB (680 帧) connId=cd52d189-f719-40fc-b220-941006c12412 | server端累计转发=6.00 MB
+2026/06/19 19:12:23 [TcpStream] 收到帧大小变更请求: 800 -> 864
+2026/06/19 19:12:24 [TcpStream] ✅ 已应用对端请求的帧大小: 864
+2026/06/19 19:12:25 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.2:54750
+2026/06/19 19:12:25 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 19:12:25 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 19:12:25 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.2:54750): nodeId=652e80b7e9638380 connId=
+2026/06/19 19:12:25 [relay] 新建 StreamGroup: nodeId=652e80b7e9638380
+[ForwardHook] +512.48 KB (680 帧) connId=cd52d189-f719-40fc-b220-941006c12412 | server端累计转发=6.50 MB
+[ForwardHook] +512.48 KB (680 帧) connId=cd52d189-f719-40fc-b220-941006c12412 | server端累计转发=7.01 MB
+[ForwardHook] +512.22 KB (679 帧) connId=e2f7483b-4201-41c8-abcf-1c98d50d04da | server端累计转发=7.51 MB
+2026/06/19 19:12:38 [FrameRelay] TCP NextFrame 失败: nodeId=f62c7727d1360980 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da isCurrent=true ctxErr=<nil> err=read tcp 10.10.0.1:9000->10.10.0.3:51034: read: connection reset by peer
+2026/06/19 19:12:38 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=f62c7727d1360980 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da
+2026/06/19 19:12:38 [DualStream] TCP startPump NextMessage 失败: nodeId=f62c7727d1360980 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da err=read tcp 10.10.0.1:9000->10.10.0.3:51034: read: connection reset by peer
+2026/06/19 19:12:38 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=f62c7727d1360980 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da
+2026/06/19 19:12:40 [relay] 新连接: local=10.10.0.1:9000 remote=10.10.0.3:39366
+2026/06/19 19:12:40 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 19:12:40 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 19:12:40 [relay] AcceptTcpStream 成功 (local=10.10.0.1:9000 remote=10.10.0.3:39366): nodeId=652e80b7e9638380 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4
+2026/06/19 19:12:40 [relay] StreamOn 成功: targetNodeId=652e80b7e9638380 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4 forward=true
+2026/06/19 19:12:40 [FrameRelay] TCP HandleFrame 写入失败, 触发 replayRoute: nodeId=f62c7727d1360980 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da err=read tcp 10.10.0.1:9000->10.10.0.3:51034: read: connection reset by peer
+2026/06/19 19:12:40 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=f62c7727d1360980 connId=e2f7483b-4201-41c8-abcf-1c98d50d04da
+[ForwardHook] +512.18 KB (680 帧) connId=331df2f3-4b98-4963-819a-48fcb7aaadd4 | server端累计转发=8.01 MB
+[ForwardHook] +512.18 KB (680 帧) connId=331df2f3-4b98-4963-819a-48fcb7aaadd4 | server端累计转发=8.51 MB
+2026/06/19 19:13:14 [FrameRelay] TCP NextFrame 失败: nodeId=bb44cbd06b613aa5 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4 isCurrent=true ctxErr=<nil> err=write tcp 10.10.0.1:9000->10.10.0.3:39366: write: connection reset by peer
+2026/06/19 19:13:14 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bb44cbd06b613aa5 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4
+2026/06/19 19:13:14 [FrameRelay] TCP HandleFrame 写入失败, 触发 replayRoute: nodeId=bb44cbd06b613aa5 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4 err=write tcp 10.10.0.1:9000->10.10.0.3:39366: write: connection reset by peer
+2026/06/19 19:13:14 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bb44cbd06b613aa5 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4
+2026/06/19 19:13:14 [DualStream] TCP startPump NextMessage 失败: nodeId=bb44cbd06b613aa5 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4 err=write tcp 10.10.0.1:9000->10.10.0.3:39366: write: connection reset by peer
+2026/06/19 19:13:14 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=bb44cbd06b613aa5 connId=331df2f3-4b98-4963-819a-48fcb7aaadd4
+2026/06/19 19:13:22 [DualStream] TCP startPump NextMessage 失败: nodeId=652e80b7e9638380 connId= err=EOF
+2026/06/19 19:13:22 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=652e80b7e9638380 connId=
+2026/06/19 19:13:29 [FrameRelay] TCP NextFrame 失败: nodeId=2db84760fbea9041 connId=cd52d189-f719-40fc-b220-941006c12412 isCurrent=true ctxErr=<nil> err=EOF
+2026/06/19 19:13:29 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2db84760fbea9041 connId=cd52d189-f719-40fc-b220-941006c12412
+2026/06/19 19:13:29 [DualStream] TCP startPump NextMessage 失败: nodeId=2db84760fbea9041 connId=cd52d189-f719-40fc-b220-941006c12412 err=EOF
+2026/06/19 19:13:29 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2db84760fbea9041 connId=cd52d189-f719-40fc-b220-941006c12412

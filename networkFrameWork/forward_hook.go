@@ -61,13 +61,26 @@ func newForwardHookState(config *ForwardHookConfig) *forwardHookState {
 }
 
 // onFrame 在每个帧转发前调用，返回 true 表示可以继续转发，false 表示需要停止
+//
+// 统计口径 = 净荷（goodput），不是带宽（throughput）：
+//   - 只累计「首发数据帧」`FrameTypeData` 的 payload 字节；
+//   - **不含帧头**（每帧 39B 头不计）；
+//   - **跳过** ACK(`FrameTypeAck`) / 重传(`FrameTypeRetransmit`) / 帧大小控制帧(`FrameTypeFrameSizeChange`)，
+//     它们既不携带新的业务净荷（重传是丢包重发的同一份数据），又会在 WAN 上把计数顶高，
+//     不计入才能贴近应用层「成功送达的有效载荷」。
+// 这样 relay 累计 ≈ 应用层 payload 总量；带宽口径（含双向/重传/头/ACK）见 git 历史。
 func (s *forwardHookState) onFrame(ctx context.Context, f *network.Frame, direction string) bool {
 	if s == nil || s.config == nil {
 		return true
 	}
 
-	// 累计字节数和帧数
-	frameSize := int64(network.FrameHeaderLength + len(f.Payload))
+	// 非首发数据帧（ACK/重传/控制帧）不携带新净荷，直接放行不计数。
+	if f == nil || f.FrameType != network.FrameTypeData {
+		return true
+	}
+
+	// 只累计净荷字节（不含帧头）。
+	frameSize := int64(len(f.Payload))
 	s.accumulatedBytes += frameSize
 	s.accumulatedFrames++
 	s.lastFrame = f
