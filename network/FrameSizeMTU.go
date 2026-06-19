@@ -65,64 +65,38 @@ func GetOptimalMaxFrameSize(conn net.Conn) int {
 		return defaultMax
 	}
 
-	// 计算安全的最大帧大小
-	// MTU通常是1500（以太网）、9000（Jumbo Frame）
+	// 计算安全的最大帧大小（不再使用任何"验证最优值"硬编码）。
 	//
-	// 协议栈开销分析：
-	// - 以太网层：MTU已经是IP层的大小，不含以太网头
-	// - IP头：20字节（IPv4）或40字节（IPv6）
-	// - TCP头：20-60字节（通常20-32）
-	// - TLS Record：5字节头 + 16-32字节MAC/Tag
-	// - 我们的Frame头：37字节
-	//
-	// 但实际上，TCP层的MTU已经考虑了IP头，我们只需考虑：
-	// TCP payload = MTU - IP头 - TCP头
-	// 可用于应用 = TCP payload - TLS开销 - Frame头 - 安全余量
-
+	// 标准最优 = MTU 扣除各层协议开销后的可用 payload 上限：
+	//   TCP payload = MTU - IP头 - TCP头        （MTU 已是 IP 层大小，不含以太网头）
+	//   可用应用层 = TCP payload - TLS开销 - 我们的Frame头 - 帧头携带的 connectionId
+	// 然后统一在「标准最优」基础上留 10% 安全余量（应对路径 MTU 抖动、TLS/TCP 选项浮动等）：
+	//   标准多大，最优就是「标准最优」的 90%。
 	const (
-		ipHeader     = 20  // IP头（IPv4，IPv6为40）
-		tcpHeader    = 32  // TCP头（含常见选项）
-		tlsOverhead  = 32  // TLS Record头(5) + Tag(16) + 预留(11)
-		frameHeader  = 37  // 我们的Frame头大小
-		safetyMargin = 20  // 安全余量（应对路径MTU发现等）
+		ipHeader    = 20 // IP头（IPv4，IPv6为40）
+		tcpHeader   = 32 // TCP头（含常见选项）
+		tlsOverhead = 32 // TLS Record头(5) + Tag(16) + 预留(11)
+		// connIdBytes：帧头之外还携带业务 connectionId（UUID ~36B；FrameHeaderLength 仅含其 2B 长度前缀）。
+		connIdBytes = 40
 	)
 
-	maxPayload := mtu - ipHeader - tcpHeader - tlsOverhead - frameHeader - safetyMargin
+	// 标准最优：MTU 扣除全部协议开销后的可用 payload。
+	standardOptimal := mtu - ipHeader - tcpHeader - tlsOverhead - FrameHeaderLength - connIdBytes
+	// 留 10% 安全余量。
+	optimal := standardOptimal - standardOptimal/10
 
-	// 确保在合理范围内
-	if maxPayload < 800 {
-		log.Printf("[FrameSize] 计算的payload(%d)过小，使用最小值800", maxPayload)
+	if optimal < 800 {
+		log.Printf("[FrameSize] MTU(%d) 标准最优=%d 过小，使用最小值800", mtu, standardOptimal)
 		return 800
 	}
-
-	// 对于标准MTU 1500，理论计算约1359字节
-	// 但我们已经验证1400字节工作完美，所以：
-	// - MTU == 1500：直接使用验证的1400字节（最优）
-	// - MTU > 1500：使用计算值（可能更大）
-	// - MTU < 1500：使用计算值（避免分片）
-	if mtu == 1500 {
-		log.Printf("[FrameSize] 标准MTU(1500)，使用验证最优值1400")
-		return 1400
+	// 上限保护：避免 Jumbo Frame 下单帧过大。
+	if optimal > 8192 {
+		log.Printf("[FrameSize] MTU(%d) 标准最优=%d 减10%%=%d，限制为8192", mtu, standardOptimal, optimal)
+		return 8192
 	}
 
-	// Jumbo Frame：可以使用更大的帧
-	if mtu >= 9000 {
-		if maxPayload > 8192 {
-			log.Printf("[FrameSize] Jumbo Frame MTU(%d)，限制payload为8192", mtu)
-			return 8192
-		}
-		log.Printf("[FrameSize] Jumbo Frame MTU(%d)，使用计算帧: %d", mtu, maxPayload)
-		return maxPayload
-	}
-
-	// 其他MTU：使用计算值
-	if maxPayload > 1400 {
-		log.Printf("[FrameSize] 基于MTU(%d)计算得%d，限制为1400（已验证）", mtu, maxPayload)
-		return 1400
-	}
-
-	log.Printf("[FrameSize] 基于MTU(%d)计算帧大小: %d", mtu, maxPayload)
-	return maxPayload
+	log.Printf("[FrameSize] MTU(%d) 标准最优=%d，减10%%安全余量 → 最优帧大小=%d", mtu, standardOptimal, optimal)
+	return optimal
 }
 
 // DetectMaxFrameSize 自动探测最优最大帧大小
