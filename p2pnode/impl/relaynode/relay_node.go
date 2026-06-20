@@ -84,6 +84,13 @@ type RelayNode struct {
 	// forwardHookConfig 转发 hook 配置（可选）
 	forwardHookConfig *ForwardHookConfig
 
+	// indexAddr 是本 relay 注册到的 index 地址（RegisterToIndex 设置, 可空）。
+	// onIndexRegistered 在与该 index 完成 HELLO、自动获知其真实 NodeID 后回调一次,
+	// 供上层（如 cmd）打印「已注册到 index: id=… addr=…」确认。
+	indexAddr         string
+	onIndexRegistered func(indexID, indexAddr string)
+	indexAckedOnce    sync.Once
+
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -207,12 +214,20 @@ func (n *RelayNode) ConnectPeer(addr string) {
 // index 本质是一台没有上级的 RelayNode, 因此「向 index 注册」= 与 index 建立一条可重试的
 // 控制链路（ConnectPeer）。链路建立后双方经 HELLO 互相登记进各自的 relayNodes DHT,
 // 之后 NAT 节点查询 index 即可在 relay 列表中看到本 relay; 跨中继 FIND 也经此链路转发。
+//
+// 调用方只需提供 index 的【地址】——index 的真实 NodeID 会在 HELLO 握手后自动获知,
+// 无需手填。onRegistered 可选, 在首次与该 index 完成 HELLO（拿到其真实 NodeID）后回调一次,
+// 便于上层打印「已注册到 index: id=… addr=…」之类的确认信息; 不需要可传 nil。
 // indexAddr 为空则不做任何事。重复调用同一地址幂等。
-func (n *RelayNode) RegisterToIndex(indexAddr string) {
+func (n *RelayNode) RegisterToIndex(indexAddr string, onRegistered func(indexID, indexAddr string)) {
 	if indexAddr == "" {
 		return
 	}
-	log.Printf("[relaynode] 向 index 注册(建控制链路): %s", indexAddr)
+	n.mu.Lock()
+	n.indexAddr = indexAddr
+	n.onIndexRegistered = onRegistered
+	n.mu.Unlock()
+	log.Printf("[relaynode] 向 index 注册(建控制链路, ID 将在 HELLO 后自动获知): %s", indexAddr)
 	n.ConnectPeer(indexAddr)
 }
 
@@ -253,16 +268,29 @@ func (n *RelayNode) hostsLocally(nodeId string) bool {
 }
 
 // onPeerHello 在收到对端 relay 的 HELLO 后被调用：登记对端 relay 身份与地址（需求 1、2）。
-func (n *RelayNode) onPeerHello(peerID, peerAddr string) {
+// dialAddr 是本端主动拨号该对端的地址（被动接入链路为空）, 用于识别「这条正是注册到 index
+// 的链路」, 进而在自动获知 index 真实 NodeID 后回调确认。
+func (n *RelayNode) onPeerHello(peerID, peerAddr, dialAddr string) {
 	if peerID == "" || peerID == n.idStr() {
 		return
 	}
 	n.mu.Lock()
 	n.peerIDToAddr[peerID] = peerAddr
 	n.relayAddrIndex[p2pnode.NodeID(peerID)] = []string{peerAddr}
+	isIndexLink := dialAddr != "" && dialAddr == n.indexAddr
+	cb := n.onIndexRegistered
 	n.mu.Unlock()
 	n.relayNodes.AddNode(DHTable.NewNodeFromPeerID(peerID))
 	log.Printf("[relaynode] 登记对端 relay: id=%.16s addr=%s", peerID, peerAddr)
+
+	// 这条链路就是注册到 index 的那条：index 的真实 NodeID 现已自动获知, 回调确认一次。
+	if isIndexLink {
+		log.Printf("[relaynode] 已注册到 index(自动获知其 ID): id=%.16s addr=%s", peerID, dialAddr)
+		if cb != nil {
+			indexAddr := dialAddr
+			n.indexAckedOnce.Do(func() { cb(peerID, indexAddr) })
+		}
+	}
 }
 
 // deliverFindResp 把 FIND_RESP 投递给等待中的发起者, 附带回应的控制链路。
