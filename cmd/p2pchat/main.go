@@ -3,8 +3,7 @@
 // 启动后选择模式:
 //
 //	index <listen> [public]            启动 index 节点(中继中心)
-//	relay <listen> [public] [indexAddr] 启动中转服务器; indexAddr 非空则向该 index 地址注册
-//	                                   成邻居(只需地址, index 的 ID 会自动获知)
+//	relay <listen> 启动中转服务器;
 //	node  <addr> [keyFile]        启动 NAT 节点; addr 为 index 时 bootstrap 就近选 relay；
 //	                              keyFile 可选，指向之前 /save 导出的私钥文件，
 //	                              用于以同一身份再次上线。
@@ -43,8 +42,7 @@ func main() {
 	for {
 		fmt.Println()
 		fmt.Println("可用模式:")
-		fmt.Println("  index <listen> [public]       启动 index 节点(中继中心)  (例: index :9000)")
-		fmt.Println("  relay <listen> [public] [indexAddr] 启动中转服务器; indexAddr 非空则注册到该 index 地址(ID 自动获知)")
+		fmt.Println("  relay <listen> 启动中转服务器; ")
 		fmt.Println("  node  <addr> [keyFile]        启动 NAT 节点; addr 为 index 则 bootstrap 就近选 relay")
 		fmt.Println("  quit                          退出程序")
 		fmt.Print("> ")
@@ -76,7 +74,7 @@ func main() {
 			if len(fields) > 1 {
 				listen = fields[1]
 			}
-			public := ""
+			public := "p2p.stationchange.cn:9000"
 			if len(fields) > 2 {
 				public = fields[2]
 			}
