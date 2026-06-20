@@ -172,7 +172,47 @@ func (n *RelayNode) pubKeyHex() string { return n.identity.Pubkey() }
 func (n *RelayNode) controlTargetID() string { return n.idStr() }
 
 // Addr 返回本 relay 的公网业务地址。
-func (n *RelayNode) Addr() string { return n.addr }
+func (n *RelayNode) Addr() string { return n.getAddr() }
+
+// getAddr 并发安全地读取本 relay 当前对外地址。
+func (n *RelayNode) getAddr() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.addr
+}
+
+// adoptObservedAddr 采纳「对端(如 index)观察到的本端公网可路由地址」作为自己的对外地址。
+//
+// 仅当当前对外地址不可路由(host 为空 / 0.0.0.0 等占位, 典型如启动时没配 -public 而自报 ":9000")
+// 时才覆盖; 若本端已显式配置了可路由的 -public, 则尊重既有配置不动。
+// 这样 relay 上报给 natNode 的 relay 列表地址是可拨的, natNode 不必回退到 index。
+func (n *RelayNode) adoptObservedAddr(observed string) {
+	if observed == "" {
+		return
+	}
+	n.mu.Lock()
+	old := n.addr
+	if isRoutableAddr(old) {
+		n.mu.Unlock()
+		return
+	}
+	n.addr = observed
+	n.mu.Unlock()
+	logx.Infof("[relaynode] 采纳 index 观察到的对外地址: %s -> %s", old, observed)
+}
+
+// isRoutableAddr 粗略判断地址的 host 部分是否可路由(非空、非通配 0.0.0.0/::)。
+func isRoutableAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		return false
+	}
+	return true
+}
 
 // ExportPrivateKeyHex 返回本节点私钥 hex。
 func (n *RelayNode) ExportPrivateKeyHex() string { return crypoto.GetPrivKeyStr(n.privKey) }
@@ -336,7 +376,7 @@ func (n *RelayNode) onMissingGroup(stream network.Stream, firstMsg *network.Mess
 func (n *RelayNode) answerRelayQuery(stream network.Stream, firstMsg *network.Message) error {
 	resp := &relayquery.ListResp{}
 	// 本节点自身作为首个候选（最终回退目标）。
-	resp.Relays = append(resp.Relays, relayquery.Info{NodeID: n.idStr(), Addr: n.addr})
+	resp.Relays = append(resp.Relays, relayquery.Info{NodeID: n.idStr(), Addr: n.getAddr()})
 	// 已知的对端 relay 邻居（含地址）。
 	for _, p := range n.RelayNeighbors() {
 		addr := ""

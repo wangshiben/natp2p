@@ -28,13 +28,17 @@ const (
 //	Addr        HELLO: 发送方 relay 的公网业务监听地址；FIND_RESP: 托管目标的 relay 地址。
 //	Target      FIND: 要查找的 nat 节点 NodeId。
 //	Hosts       FIND_RESP: 对端是否托管该 nat 节点。
+//	ObservedAddr HELLO(被动回应): 本端(如 index)从底层连接观察到的【对端公网可路由地址】
+//	             (observedRemoteIP + 对端自报端口)。relay 收到后用它覆盖自己的对外地址,
+//	             使其后续上报给 natNode 的 relay 列表是可路由的, 而非 ":9000" 占位。
 type controlMessage struct {
-	Type   string `json:"type"`
-	ReqID  uint64 `json:"req_id,omitempty"`
-	NodeId string `json:"node_id,omitempty"`
-	Addr   string `json:"addr,omitempty"`
-	Target string `json:"target,omitempty"`
-	Hosts  bool   `json:"hosts,omitempty"`
+	Type         string `json:"type"`
+	ReqID        uint64 `json:"req_id,omitempty"`
+	NodeId       string `json:"node_id,omitempty"`
+	Addr         string `json:"addr,omitempty"`
+	Target       string `json:"target,omitempty"`
+	Hosts        bool   `json:"hosts,omitempty"`
+	ObservedAddr string `json:"observed_addr,omitempty"`
 }
 
 // encodeControl 把控制消息编码为一条 network.Message。
