@@ -1,9 +1,9 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"fmt"
 	"github.com/xtaci/kcp-go/v5"
-	"log"
 	"net"
 )
 
@@ -41,7 +41,7 @@ func (r *RelayStarter) StartListen() {
 			}
 			err = r.netGroup.ListenTCPConnection(tcpConn)
 			if err != nil {
-				log.Println("ListenTCPConnection error:", err)
+				logx.Errorf("[relay] ListenTCPConnection error: %v", err)
 				continue
 			}
 		}
@@ -65,7 +65,7 @@ func (r *RelayStarter) StartListen() {
 			session.SetWindowSize(256, 1024)
 			err = r.netGroup.ListenTCPConnection(kcpConn)
 			if err != nil {
-				log.Println("ListenKCPConnection error:", err)
+				logx.Errorf("[relay] ListenKCPConnection error: %v", err)
 				continue
 			}
 		}

@@ -1,12 +1,12 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"bytes"
 	"context"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -139,7 +139,7 @@ func (m *EndpointFrameMux) dispatch(f *network.Frame) {
 	connId := f.ConnectionId
 	if connId == "" {
 		// 没有 connectionId 无法归属——理论上 callee 收到的业务帧都带戳，留日志兜底。
-		log.Printf("[EndpointMux] 丢弃无 connectionId 的帧: msgId=%d seq=%d type=%d", f.MessageId, f.SeqId, f.FrameType)
+		logx.Warnf("[EndpointMux] 丢弃无 connectionId 的帧: msgId=%d seq=%d type=%d", f.MessageId, f.SeqId, f.FrameType)
 		return
 	}
 	m.mu.Lock()
@@ -152,13 +152,13 @@ func (m *EndpointFrameMux) dispatch(f *network.Frame) {
 	m.mu.Unlock()
 
 	if isNew {
-		log.Printf("[EndpointMux] 新逻辑连接: connId=%s", connId)
+		logx.Infof("[EndpointMux] 新逻辑连接: connId=%s", connId)
 		m.onNew(connId, c)
 	}
 
 	bs, err := f.ParseToBytes()
 	if err != nil {
-		log.Printf("[EndpointMux] 帧序列化失败 connId=%s: %v", connId, err)
+		logx.Errorf("[EndpointMux] 帧序列化失败 connId=%s: %v", connId, err)
 		return
 	}
 	// push 永不阻塞 readLeg：一条逻辑连接消费慢只会让它自己的队列增长（满则丢最旧、
@@ -263,7 +263,7 @@ func (c *muxConn) push(b []byte) {
 	}
 	if len(c.queue) >= muxConnMaxQueue {
 		c.queue = c.queue[1:]
-		log.Printf("[EndpointMux] connId=%s 入站队列超限, 丢最旧帧(靠重传补回)", c.connId)
+		logx.Warnf("[EndpointMux] connId=%s 入站队列超限, 丢最旧帧(靠重传补回)", c.connId)
 	}
 	c.queue = append(c.queue, b)
 	c.mu.Unlock()

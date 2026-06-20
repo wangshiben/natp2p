@@ -1,9 +1,9 @@
 package network
 
 import (
+	"bnfs_p2p/logx"
 	"encoding/binary"
 	"errors"
-	"log"
 	"strings"
 )
 
@@ -183,7 +183,7 @@ func (m *Message) ParseToBytes() ([]byte, error) {
 	defer func() {
 		err := recover()
 		if err != nil {
-			log.Println("ERROR:" + err.(string))
+			logx.Errorf("Message.ParseToBytes panic: %v", err)
 			panic(err)
 		}
 	}()

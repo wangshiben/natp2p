@@ -1,12 +1,12 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"log"
 	"net"
 	"os"
 	"sync"
@@ -285,7 +285,7 @@ func (t *TcpStream) getConnectionId() string {
 func (t *TcpStream) setConnectionId(s string) { t.connectionId.Store(&s) }
 
 func (t *TcpStream) SetCryptoSuite(suite network.EncrypSuite) {
-	log.Printf("[TcpStream] SetCryptoSuite: nodeId=%.16s connId=%s suite=%T", t.getNodeId(), t.getConnectionId(), suite)
+	logx.Debugf("[TcpStream] SetCryptoSuite: nodeId=%.16s connId=%s suite=%T", t.getNodeId(), t.getConnectionId(), suite)
 	t.setCrypto(suite)
 }
 
@@ -347,7 +347,7 @@ func (t *TcpStream) keepLive() {
 			})
 			cancel()
 			if err != nil && t.streamCtx.Err() == nil && !isContextError(err) {
-				log.Printf("[%s] keepLive 心跳失败, 关闭连接: nodeId=%.16s connId=%s err=%v",
+				logx.Warnf("[%s] keepLive 心跳失败, 关闭连接: nodeId=%.16s connId=%s err=%v",
 					connType, t.getNodeId(), t.getConnectionId(), err)
 				t.failAndClose(err)
 				return
@@ -385,7 +385,7 @@ func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
 						if previewLen > 32 {
 							previewLen = 32
 						}
-						log.Printf("[TcpStream] NextMessage 延迟解密失败(E2E), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
+						logx.Warnf("[TcpStream] NextMessage 延迟解密失败(E2E), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
 							t.getNodeId(), t.getConnectionId(), len(msg.Payload), msg.Payload[:previewLen], err)
 						return msg, nil
 					}
@@ -401,7 +401,7 @@ func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
 						if previewLen > 32 {
 							previewLen = 32
 						}
-						log.Printf("[TcpStream] NextMessage 延迟解密失败(plain), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
+						logx.Warnf("[TcpStream] NextMessage 延迟解密失败(plain), 原样投递: nodeId=%.16s connId=%s payloadLen=%d hexPreview=%x err=%v",
 							t.getNodeId(), t.getConnectionId(), len(msg.Payload), msg.Payload[:previewLen], err)
 						return msg, nil
 					}
@@ -904,7 +904,7 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 			if previewLen > 32 {
 				previewLen = 32
 			}
-			log.Printf("[TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=%.16s connId=%s msgId=%d route=%s payloadLen=%d hexPreview=%x",
+			logx.Debugf("[TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=%.16s connId=%s msgId=%d route=%s payloadLen=%d hexPreview=%x",
 				t.getNodeId(), t.getConnectionId(), f.MessageId, msg.Header.RouteName, len(msg.Payload), msg.Payload[:previewLen])
 		}
 		select {
@@ -1062,7 +1062,7 @@ func (t *TcpStream) requestFrameSizeChange(newSize int) bool {
 	}
 
 	if err := t.writeFrame(frame); err != nil {
-		log.Printf("[TcpStream] 发送帧大小变更请求失败: newSize=%d err=%v", newSize, err)
+		logx.Errorf("[TcpStream] 发送帧大小变更请求失败: newSize=%d err=%v", newSize, err)
 		t.frameSizeChangeMu.Lock()
 		delete(t.frameSizeChangeAcks, newSize)
 		t.frameSizeChangeMu.Unlock()
@@ -1076,7 +1076,7 @@ func (t *TcpStream) requestFrameSizeChange(newSize int) bool {
 		t.frameSizeChangeMu.Unlock()
 		return confirmed
 	case <-time.After(3 * time.Second):
-		log.Printf("[TcpStream] 帧大小变更确认超时: newSize=%d", newSize)
+		logx.Warnf("[TcpStream] 帧大小变更确认超时: newSize=%d", newSize)
 		t.frameSizeChangeMu.Lock()
 		delete(t.frameSizeChangeAcks, newSize)
 		t.frameSizeChangeMu.Unlock()
@@ -1093,22 +1093,22 @@ func (t *TcpStream) handleFrameSizeChangeRequest(frame *network.Frame) {
 		currentSize = t.frameSizeAdaptor.GetFrameSize()
 	}
 
-	log.Printf("[TcpStream] 收到帧大小变更请求: %d -> %d", currentSize, newSize)
+	logx.Debugf("[TcpStream] 收到帧大小变更请求: %d -> %d", currentSize, newSize)
 
 	if newSize < 500 || newSize > 2800 {
-		log.Printf("[TcpStream] 拒绝不合理的帧大小: %d", newSize)
+		logx.Warnf("[TcpStream] 拒绝不合理的帧大小: %d", newSize)
 		t.sendFrameSizeChangeAck(newSize, false)
 		return
 	}
 
 	if err := t.sendFrameSizeChangeAck(newSize, true); err != nil {
-		log.Printf("[TcpStream] 发送帧大小变更确认失败: %v", err)
+		logx.Errorf("[TcpStream] 发送帧大小变更确认失败: %v", err)
 		return
 	}
 
 	if t.frameSizeAdaptor != nil {
 		t.frameSizeAdaptor.SetFrameSize(newSize)
-		log.Printf("[TcpStream] ✅ 已应用对端请求的帧大小: %d", newSize)
+		logx.Debugf("[TcpStream] ✅ 已应用对端请求的帧大小: %d", newSize)
 	}
 }
 
@@ -1116,7 +1116,7 @@ func (t *TcpStream) handleFrameSizeChangeAck(frame *network.Frame) {
 	newSize := int(frame.AckId)
 	confirmed := frame.SeqId == 1
 
-	log.Printf("[TcpStream] 收到帧大小变更确认: newSize=%d confirmed=%v", newSize, confirmed)
+	logx.Debugf("[TcpStream] 收到帧大小变更确认: newSize=%d confirmed=%v", newSize, confirmed)
 
 	t.frameSizeChangeMu.Lock()
 	if ch, ok := t.frameSizeChangeAcks[newSize]; ok {

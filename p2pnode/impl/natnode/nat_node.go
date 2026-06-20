@@ -4,6 +4,7 @@ import (
 	"bnfs_p2p/DHTable"
 	"bnfs_p2p/crypoto"
 	"bnfs_p2p/interfaces"
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
@@ -13,7 +14,6 @@ import (
 	"crypto/ecdh"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -262,7 +262,7 @@ func (n *NATNode) exchangeMetadata(sc *client.StreamClient, expectedPeerID p2pno
 	if len(hsPayloadPreview) > 80 {
 		hsPayloadPreview = hsPayloadPreview[:80] + "..."
 	}
-	log.Printf("[exchangeMetadata] 发送 metadata: peerID=%.16s connId=%s payloadLen=%d preview=%q",
+	logx.Debugf("[exchangeMetadata] 发送 metadata: peerID=%.16s connId=%s payloadLen=%d preview=%q",
 		expectedPeerID, sc.ConnectionId(), len(hsMsg.Payload), hsPayloadPreview)
 	if err := sc.SendMessage(n.ctx, hsMsg); err != nil {
 		return nil, fmt.Errorf("发送元数据: %w", err)
@@ -287,7 +287,7 @@ func (n *NATNode) exchangeMetadata(sc *client.StreamClient, expectedPeerID p2pno
 			break
 		}
 	}
-	log.Printf("[exchangeMetadata] 收到 metadata: peerID=%.16s headerNodeId=%.16s headerConnId=%s headerRoute=%s payloadLen=%d hexPreview=%x asciiPreview=%q",
+	logx.Debugf("[exchangeMetadata] 收到 metadata: peerID=%.16s headerNodeId=%.16s headerConnId=%s headerRoute=%s payloadLen=%d hexPreview=%x asciiPreview=%q",
 		expectedPeerID, msg.Header.NodeId, msg.Header.ConnectionId, msg.Header.RouteName,
 		len(msg.Payload), rawPreview, asciiPreview)
 

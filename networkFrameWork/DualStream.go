@@ -1,11 +1,11 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"context"
 	"errors"
 	"github.com/xtaci/kcp-go/v5"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -150,7 +150,7 @@ func (d *DualStream) NextMessage(ctx context.Context) (*network.Message, error) 
 						if previewLen > 16 {
 							previewLen = 16
 						}
-						log.Printf("[DualStream] NextMessage 兜底解密成功(E2E): nodeId=%.16s connId=%s 原密文前16字节=%x → 明文长度=%d",
+						logx.Debugf("[DualStream] NextMessage 兜底解密成功(E2E): nodeId=%.16s connId=%s 原密文前16字节=%x → 明文长度=%d",
 							d.NodeId(), d.ConnectionId(), msg.Payload[:previewLen], len(decrypted))
 						msg.Payload = decrypted
 						if hasMessageID {
@@ -218,7 +218,7 @@ func (d *DualStream) SendMessageAsync(ctx context.Context, message *network.Mess
 func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) error {
 	primaryKind, primary, backupKind, backup := d.sendOrder()
 	if primary == nil && backup == nil {
-		log.Printf("[DualStream] SendMessage 失败: 双 leg 均不可用, nodeId=%.16s connId=%s",
+		logx.Errorf("[DualStream] SendMessage 失败: 双 leg 均不可用, nodeId=%.16s connId=%s",
 			d.NodeId(), d.ConnectionId())
 		return errors.New("stream closed")
 	}
@@ -245,12 +245,12 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 		stillCurrent := d.streamLocked(primaryKind) == primary
 		d.mu.RUnlock()
 		if stillCurrent {
-			log.Printf("[DualStream] SendMessage primary %s 失败, 尝试 backup: nodeId=%.16s connId=%s err=%v",
+			logx.Warnf("[DualStream] SendMessage primary %s 失败, 尝试 backup: nodeId=%.16s connId=%s err=%v",
 				primaryKindStr, d.NodeId(), d.ConnectionId(), err)
 			d.handleLegFailure(primaryKind, primary)
 		}
 		if backup == nil {
-			log.Printf("[DualStream] SendMessage 无 backup leg, 返回错误: nodeId=%.16s connId=%s",
+			logx.Errorf("[DualStream] SendMessage 无 backup leg, 返回错误: nodeId=%.16s connId=%s",
 				d.NodeId(), d.ConnectionId())
 			return err
 		}
@@ -264,7 +264,7 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 				stillCurrentBackup := d.streamLocked(backupKind) == backup
 				d.mu.RUnlock()
 				if stillCurrentBackup {
-					log.Printf("[DualStream] SendMessage backup %s 也失败: nodeId=%.16s connId=%s err=%v",
+					logx.Warnf("[DualStream] SendMessage backup %s 也失败: nodeId=%.16s connId=%s err=%v",
 						backupKindStr, d.NodeId(), d.ConnectionId(), retryErr)
 					d.handleLegFailure(backupKind, backup)
 				}
@@ -466,7 +466,7 @@ func (d *DualStream) startPump(kind streamTransport, stream network.Stream) {
 				if current != stream {
 					return
 				}
-				log.Printf("[DualStream] %s startPump NextMessage 失败: nodeId=%.16s connId=%s err=%v",
+				logx.Warnf("[DualStream] %s startPump NextMessage 失败: nodeId=%.16s connId=%s err=%v",
 					kindStr, d.NodeId(), d.ConnectionId(), err)
 				d.handleLegFailure(kind, stream)
 				return
@@ -523,10 +523,10 @@ func (d *DualStream) handleLegFailure(kind streamTransport, stream network.Strea
 	d.reconnectMu.Unlock()
 
 	if hasDialer {
-		log.Printf("[DualStream] %s leg 失败, 关闭并触发重连: nodeId=%.16s connId=%s",
+		logx.Warnf("[DualStream] %s leg 失败, 关闭并触发重连: nodeId=%.16s connId=%s",
 			kindStr, d.NodeId(), d.ConnectionId())
 	} else {
-		log.Printf("[DualStream] %s leg 失败, 关闭(relay 端不重连): nodeId=%.16s connId=%s",
+		logx.Warnf("[DualStream] %s leg 失败, 关闭(relay 端不重连): nodeId=%.16s connId=%s",
 			kindStr, d.NodeId(), d.ConnectionId())
 	}
 
@@ -629,16 +629,16 @@ func (d *DualStream) runReconnect(kind streamTransport, dial streamReconnectDial
 		stream, err := dial(d.ctx)
 		if err == nil && stream != nil {
 			if attachErr := d.attach(kind, stream); attachErr == nil {
-				log.Printf("[DualStream] %s 重连成功: nodeId=%.16s connId=%s 第%d次尝试",
+				logx.Infof("[DualStream] %s 重连成功: nodeId=%.16s connId=%s 第%d次尝试",
 					kindStr, d.nodeId, d.connectionId, attempt)
 				return
 			} else {
-				log.Printf("[DualStream] %s 重连 attach 失败: nodeId=%.16s connId=%s 第%d次尝试 err=%v",
+				logx.Warnf("[DualStream] %s 重连 attach 失败: nodeId=%.16s connId=%s 第%d次尝试 err=%v",
 					kindStr, d.nodeId, d.connectionId, attempt, attachErr)
 			}
 			_ = stream.Close()
 		} else {
-			log.Printf("[DualStream] %s 重连拨号失败: nodeId=%.16s connId=%s 第%d/%d次尝试 err=%v",
+			logx.Warnf("[DualStream] %s 重连拨号失败: nodeId=%.16s connId=%s 第%d/%d次尝试 err=%v",
 				kindStr, d.nodeId, d.connectionId, attempt, maxReconnectAttempts, err)
 		}
 
@@ -655,7 +655,7 @@ func (d *DualStream) runReconnect(kind streamTransport, dial streamReconnectDial
 	d.mu.RLock()
 	empty := d.kcp == nil && d.tcp == nil
 	d.mu.RUnlock()
-	log.Printf("[DualStream] %s 重连彻底失败(已达%d次上限, 标记永久禁用): nodeId=%.16s connId=%s 另一leg是否也已断开=%v",
+	logx.Errorf("[DualStream] %s 重连彻底失败(已达%d次上限, 标记永久禁用): nodeId=%.16s connId=%s 另一leg是否也已断开=%v",
 		kindStr, maxReconnectAttempts, d.nodeId, d.connectionId, empty)
 	if empty {
 		d.Close()

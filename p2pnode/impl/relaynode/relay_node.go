@@ -19,6 +19,7 @@ import (
 	"bnfs_p2p/DHTable"
 	"bnfs_p2p/crypoto"
 	"bnfs_p2p/interfaces"
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
@@ -30,7 +31,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -206,7 +206,7 @@ func (n *RelayNode) ConnectPeer(addr string) {
 	pl := startOutboundPeerLink(n, addr)
 	n.peerLinks[addr] = pl
 	n.mu.Unlock()
-	log.Printf("[relaynode] 开始维持到 relay %s 的控制链路", addr)
+	logx.Infof("[relaynode] 开始维持到 relay %s 的控制链路", addr)
 }
 
 // RegisterToIndex 让本 relay 启动后主动向 index 节点注册成为其邻居。
@@ -227,7 +227,7 @@ func (n *RelayNode) RegisterToIndex(indexAddr string, onRegistered func(indexID,
 	n.indexAddr = indexAddr
 	n.onIndexRegistered = onRegistered
 	n.mu.Unlock()
-	log.Printf("[relaynode] 向 index 注册(建控制链路, ID 将在 HELLO 后自动获知): %s", indexAddr)
+	logx.Infof("[relaynode] 向 index 注册(建控制链路, ID 将在 HELLO 后自动获知): %s", indexAddr)
 	n.ConnectPeer(indexAddr)
 }
 
@@ -238,7 +238,7 @@ func (n *RelayNode) onRegister(nodeId, remoteAddr string) {
 	n.mu.Lock()
 	n.hostedNatAddr[nodeId] = remoteAddr
 	n.mu.Unlock()
-	log.Printf("[relaynode] 本地托管的 NAT 节点登记到 natNodes: %.16s 来源=%s", nodeId, remoteAddr)
+	logx.Infof("[relaynode] 本地托管的 NAT 节点登记到 natNodes: %.16s 来源=%s", nodeId, remoteAddr)
 }
 
 // HostedNatInfo 描述本 relay 托管的一个 NAT 节点的状态信息。
@@ -281,11 +281,11 @@ func (n *RelayNode) onPeerHello(peerID, peerAddr, dialAddr string) {
 	cb := n.onIndexRegistered
 	n.mu.Unlock()
 	n.relayNodes.AddNode(DHTable.NewNodeFromPeerID(peerID))
-	log.Printf("[relaynode] 登记对端 relay: id=%.16s addr=%s", peerID, peerAddr)
+	logx.Infof("[relaynode] 登记对端 relay: id=%.16s addr=%s", peerID, peerAddr)
 
 	// 这条链路就是注册到 index 的那条：index 的真实 NodeID 现已自动获知, 回调确认一次。
 	if isIndexLink {
-		log.Printf("[relaynode] 已注册到 index(自动获知其 ID): id=%.16s addr=%s", peerID, dialAddr)
+		logx.Infof("[relaynode] 已注册到 index(自动获知其 ID): id=%.16s addr=%s", peerID, dialAddr)
 		if cb != nil {
 			indexAddr := dialAddr
 			n.indexAckedOnce.Do(func() { cb(peerID, indexAddr) })
@@ -351,7 +351,7 @@ func (n *RelayNode) answerRelayQuery(stream network.Stream, firstMsg *network.Me
 		_ = stream.Close()
 		return fmt.Errorf("relaynode: 应答 relay 列表查询失败: %w", err)
 	}
-	log.Printf("[relaynode] 应答 relay 列表查询: 返回 %d 个 relay", len(resp.Relays))
+	logx.Infof("[relaynode] 应答 relay 列表查询: 返回 %d 个 relay", len(resp.Relays))
 	_ = stream.Close()
 	return nil
 }
@@ -379,7 +379,7 @@ func (n *RelayNode) acceptControlLink(stream network.Stream, firstMsg *network.M
 	n.inboundLinks = append(n.inboundLinks, pl)
 	n.mu.Unlock()
 	pl.adoptInbound(sc)
-	log.Printf("[relaynode] 控制链路已建立(被动): peerNodeId=%.16s remoteIP=%s", peerNodeId, pl.observedRemoteIP)
+	logx.Infof("[relaynode] 控制链路已建立(被动): peerNodeId=%.16s remoteIP=%s", peerNodeId, pl.observedRemoteIP)
 	return nil
 }
 
@@ -436,7 +436,7 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 	n.mu.Lock()
 	entry.bridge = br
 	n.mu.Unlock()
-	log.Printf("[relaynode] 跨中继桥接建立: target=%.16s via relay=%s connId=%s leg=%s",
+	logx.Infof("[relaynode] 跨中继桥接建立: target=%.16s via relay=%s connId=%s leg=%s",
 		target, hostAddr, connID, networkFrameWork.LegTransport(stream))
 	return nil
 }
