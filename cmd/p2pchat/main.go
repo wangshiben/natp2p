@@ -36,6 +36,13 @@ import (
 	"bnfs_p2p/p2pnode/impl/relaynode"
 )
 
+// defaultIndexAddr 是默认的 index 节点地址(中继中心)。
+// p2p.stationchange.cn 当前解析到作为 index server 的那台机器。
+//   - relay 启动后默认向它注册自己为 relay 邻居(可由 relay 命令第 4 个参数覆盖);
+//   - node 启动后默认经它 bootstrap 就近选 relay(可由 node 命令第 1 个参数覆盖);
+//   - index 自身不向任何节点注册。
+const defaultIndexAddr = "p2p.stationchange.cn:9000"
+
 // stdinScanner 是全进程共享的标准输入扫描器。
 // 必须全局唯一: bufio.Scanner 会按块缓冲读取, 若 main 与各子控制台(relay/node)各建一个,
 // 先读的那个可能把后续行也缓冲进去, 导致另一个 Scanner 丢失输入(管道输入下尤其明显)。
@@ -48,9 +55,9 @@ func main() {
 	for {
 		fmt.Println()
 		fmt.Println("可用模式:")
-		fmt.Println("  index <listen> [public]            启动 index 节点(中继中心); 启动后 /list 查看状态")
-		fmt.Println("  relay <listen> [public] [indexAddr] 启动中转服务器; 启动后 /list 查看状态")
-		fmt.Println("  node  <addr> [keyFile]             启动 NAT 节点; addr 为 index 则 bootstrap 就近选 relay")
+		fmt.Println("  index <listen> [public]            启动 index 节点(中继中心, 不向任何节点注册); 启动后 /list 查看状态")
+		fmt.Println("  relay <listen> [public] [indexAddr] 启动中转服务器; 默认自动注册到 " + defaultIndexAddr + "; 启动后 /list 查看状态")
+		fmt.Println("  node  <addr> [keyFile]             启动 NAT 节点; 默认经 " + defaultIndexAddr + " bootstrap 就近选 relay")
 		fmt.Println("  quit                               退出程序")
 		fmt.Print("> ")
 		if !scanner.Scan() {
@@ -83,11 +90,13 @@ func main() {
 			if len(fields) > 1 {
 				listen = fields[1]
 			}
-			public := "p2p.stationchange.cn:9000"
+			// public 留空: 由框架按监听地址/对端观察到的 IP 推断, 不再误用 index 的地址。
+			public := ""
 			if len(fields) > 2 {
 				public = fields[2]
 			}
-			indexAddr := ""
+			// relay 默认自动注册到 index(defaultIndexAddr); 传第 4 个参数可覆盖目标 index。
+			indexAddr := defaultIndexAddr
 			if len(fields) > 3 {
 				indexAddr = fields[3]
 			}
@@ -95,7 +104,7 @@ func main() {
 			logx.SetLevel(logx.LevelInfo)
 			startRelay(listen, public, indexAddr)
 		case "node":
-			addr := "p2p.stationchange.cn:9000"
+			addr := defaultIndexAddr
 			if len(fields) > 1 {
 				addr = fields[1]
 			}
