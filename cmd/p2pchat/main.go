@@ -2,8 +2,9 @@
 //
 // 启动后选择模式:
 //
-//	relay <addr>                  启动中转服务器
-//	node  <relayAddr> [keyFile]   启动 NAT 节点并加入指定 relay；
+//	index <listen> [public]       启动 index 节点(中继中心)
+//	relay <listen> [public] [idx] 启动中转服务器, idx 非空则向其注册成邻居
+//	node  <addr> [keyFile]        启动 NAT 节点; addr 为 index 时 bootstrap 就近选 relay；
 //	                              keyFile 可选，指向之前 /save 导出的私钥文件，
 //	                              用于以同一身份再次上线。
 //	quit                          退出程序
@@ -29,9 +30,9 @@ import (
 	"sync"
 	"time"
 
-	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/p2pnode"
 	"bnfs_p2p/p2pnode/impl/natnode"
+	"bnfs_p2p/p2pnode/impl/relaynode"
 )
 
 func main() {
@@ -41,9 +42,10 @@ func main() {
 	for {
 		fmt.Println()
 		fmt.Println("可用模式:")
-		fmt.Println("  relay <addr>                启动中转服务器  (例: relay :9000)")
-		fmt.Println("  node  <relayAddr> [keyFile] 启动 NAT 节点；keyFile 可选, 用同一身份再次上线")
-		fmt.Println("  quit                        退出程序")
+		fmt.Println("  index <listen> [public]       启动 index 节点(中继中心)  (例: index :9000)")
+		fmt.Println("  relay <listen> [public] [idx] 启动中转服务器, idx 非空则向其注册")
+		fmt.Println("  node  <addr> [keyFile]        启动 NAT 节点; addr 为 index 则 bootstrap 就近选 relay")
+		fmt.Println("  quit                          退出程序")
 		fmt.Print("> ")
 		if !scanner.Scan() {
 			break
@@ -58,12 +60,30 @@ func main() {
 		case "quit":
 			fmt.Println("再见!")
 			return
-		case "relay":
-			addr := ":9000"
+		case "index":
+			listen := ":9000"
 			if len(fields) > 1 {
-				addr = fields[1]
+				listen = fields[1]
 			}
-			startRelay(addr)
+			public := ""
+			if len(fields) > 2 {
+				public = fields[2]
+			}
+			startRelay(listen, public, "")
+		case "relay":
+			listen := ":9000"
+			if len(fields) > 1 {
+				listen = fields[1]
+			}
+			public := ""
+			if len(fields) > 2 {
+				public = fields[2]
+			}
+			indexAddr := ""
+			if len(fields) > 3 {
+				indexAddr = fields[3]
+			}
+			startRelay(listen, public, indexAddr)
 		case "node":
 			addr := "127.0.0.1:9000"
 			if len(fields) > 1 {
@@ -133,11 +153,15 @@ func runNode(relayAddr string, keyFile string) {
 	})
 
 	fmt.Printf("本节点 ID: %s\n", node.ID())
-	fmt.Printf("注册到 relay: %s\n", relayAddr)
+
+	// 经 relayAddr bootstrap: 若它是 index 会返回就近可达的入口 relay(不可达回退次近/index);
+	// 若它本就是普通 relay, bootstrap 查询失败会原样回退到该地址。对两种情况都正确。
+	entryRelay, _ := node.Bootstrap(ctx, relayAddr)
+	fmt.Printf("注册到 relay: %s\n", entryRelay)
 
 	// 启动 Listen。
 	go func() {
-		if err := node.Listen(ctx, relayAddr); err != nil {
+		if err := node.Listen(ctx, entryRelay); err != nil {
 			fmt.Printf("\nListen 退出: %v\n", err)
 		}
 	}()
@@ -308,10 +332,21 @@ func (s *chatSession) receiveLoop(conn p2pnode.Connection) {
 	}
 }
 
-// -- 中转服务器 --
+// -- 中转服务器 / index --
 
-func startRelay(addr string) {
-	fmt.Printf("Relay 服务器已启动，监听 %s (按 Ctrl+C 退出)\n", addr)
-	relay := networkFrameWork.NewRelayStarter(addr)
-	relay.StartListen()
+// startRelay 启动一个 RelayNode(阻塞)。index 本质是无上级的 RelayNode。
+// indexAddr 非空时, 启动后向 index 注册成为其邻居。
+func startRelay(listen, public, indexAddr string) {
+	rn, err := relaynode.NewRelayNode(nil, listen, public)
+	if err != nil {
+		fmt.Printf("创建 relay 节点失败: %v\n", err)
+		return
+	}
+	fmt.Printf("RelayNode ID: %s\n", rn.ID())
+	fmt.Printf("监听: %s  对外地址: %s (按 Ctrl+C 退出)\n", listen, rn.Addr())
+	if indexAddr != "" {
+		rn.RegisterToIndex(indexAddr)
+		fmt.Printf("向 index 注册: %s\n", indexAddr)
+	}
+	rn.Start() // 阻塞
 }

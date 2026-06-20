@@ -23,6 +23,7 @@ import (
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
 	"bnfs_p2p/p2pnode"
+	"bnfs_p2p/p2pnode/relayquery"
 	"context"
 	"crypto/ecdh"
 	"crypto/sha256"
@@ -201,6 +202,20 @@ func (n *RelayNode) ConnectPeer(addr string) {
 	log.Printf("[relaynode] 开始维持到 relay %s 的控制链路", addr)
 }
 
+// RegisterToIndex 让本 relay 启动后主动向 index 节点注册成为其邻居。
+//
+// index 本质是一台没有上级的 RelayNode, 因此「向 index 注册」= 与 index 建立一条可重试的
+// 控制链路（ConnectPeer）。链路建立后双方经 HELLO 互相登记进各自的 relayNodes DHT,
+// 之后 NAT 节点查询 index 即可在 relay 列表中看到本 relay; 跨中继 FIND 也经此链路转发。
+// indexAddr 为空则不做任何事。重复调用同一地址幂等。
+func (n *RelayNode) RegisterToIndex(indexAddr string) {
+	if indexAddr == "" {
+		return
+	}
+	log.Printf("[relaynode] 向 index 注册(建控制链路): %s", indexAddr)
+	n.ConnectPeer(indexAddr)
+}
+
 // onRegister 是「新 NAT 节点注册流建立」回调：把它登记进 natNodes DHT（需求 1、2）,
 // 并记录它的来源地址（底层连接远端 IP:port）, 便于状态打印时展示托管来源。
 func (n *RelayNode) onRegister(nodeId, remoteAddr string) {
@@ -277,7 +292,40 @@ func (n *RelayNode) onMissingGroup(stream network.Stream, firstMsg *network.Mess
 	if firstMsg.Header.RouteName == RelayControlRoute {
 		return n.acceptControlLink(stream, firstMsg)
 	}
+	if firstMsg.Header.RouteName == relayquery.Route {
+		return n.answerRelayQuery(stream, firstMsg)
+	}
 	return n.findAndBridge(stream, firstMsg)
+}
+
+// answerRelayQuery 应答 NAT 节点的「relay 列表查询」(RelayQueryRoute)。
+//
+// 这是一次性短连接: 回一条 RelayListResp 后即关闭 stream（不像控制链路那样常驻 serve）。
+// 列表 = 本节点已知的对端 relay（含地址）外加本节点自身, 这样即便本 index 还没有任何子 relay,
+// natNode 也能拿到「index 自身」作为可注册目标。
+//
+// 返回 nil 表示已接管并处理完该 stream 的生命周期（已自行 Close）；返回非 nil 由框架兜底关闭。
+func (n *RelayNode) answerRelayQuery(stream network.Stream, firstMsg *network.Message) error {
+	resp := &relayquery.ListResp{}
+	// 本节点自身作为首个候选（最终回退目标）。
+	resp.Relays = append(resp.Relays, relayquery.Info{NodeID: n.idStr(), Addr: n.addr})
+	// 已知的对端 relay 邻居（含地址）。
+	for _, p := range n.RelayNeighbors() {
+		addr := ""
+		if len(p.Addresses) > 0 {
+			addr = p.Addresses[0].Relay
+		}
+		resp.Relays = append(resp.Relays, relayquery.Info{NodeID: string(p.ID), Addr: addr})
+	}
+
+	sc := client.NewStreamClient(stream)
+	if err := sc.SendMessage(n.ctx, relayquery.EncodeListResp(resp, n.idStr())); err != nil {
+		_ = stream.Close()
+		return fmt.Errorf("relaynode: 应答 relay 列表查询失败: %w", err)
+	}
+	log.Printf("[relaynode] 应答 relay 列表查询: 返回 %d 个 relay", len(resp.Relays))
+	_ = stream.Close()
+	return nil
 }
 
 // acceptControlLink 接管对端 relay 拨入的控制链路。

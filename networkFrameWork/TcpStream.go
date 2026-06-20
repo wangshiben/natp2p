@@ -904,8 +904,8 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 			if previewLen > 32 {
 				previewLen = 32
 			}
-			log.Printf("[TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=%.16s connId=%s route=%s payloadLen=%d hexPreview=%x",
-				t.getNodeId(), t.getConnectionId(), msg.Header.RouteName, len(msg.Payload), msg.Payload[:previewLen])
+			log.Printf("[TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=%.16s connId=%s msgId=%d route=%s payloadLen=%d hexPreview=%x",
+				t.getNodeId(), t.getConnectionId(), f.MessageId, msg.Header.RouteName, len(msg.Payload), msg.Payload[:previewLen])
 		}
 		select {
 		case t.inboxCh <- &pendingInboxMessage{msg: msg, needDecrypt: needDecrypt, cipherIsE2E: cipherIsE2E}:

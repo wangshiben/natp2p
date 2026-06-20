@@ -1,0 +1,40 @@
+NAT 节点 ID: abd55cb5b71a40ac703532ab63c6150955ab5a59406a5a6fba7c5f8ed65b1cca
+2026/06/20 06:56:56 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/20 06:56:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=abd55cb5b71a40ac connId=abee61d3-3a70-4640-8066-bd371fd8b991 route=/relay/query payloadLen=227 hexPreview=7b2272656c617973223a5b7b226e6f64655f6964223a22656136363931643933
+2026/06/20 06:56:56 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:56:56 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:56:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=abd55cb5b71a40ac connId=abee61d3-3a70-4640-8066-bd371fd8b991 route=/relay/query payloadLen=227 hexPreview=7b2272656c617973223a5b7b226e6f64655f6964223a22656136363931643933
+2026/06/20 06:56:56 [natnode] index 38.76.170.102:9000 返回 2 个 relay
+2026/06/20 06:56:56 [natnode] 选定就近可达的子 relay 作为入口: 104.252.30.204:9000
+注册到 relay: 104.252.30.204:9000
+2026/06/20 06:56:56 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:56:56 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+正在跨中继连接 target 8743aba3b2d6a79f11720da7056818c7cbd9256a1e7058d450cdefbb66de41a7 ...
+2026/06/20 06:56:57 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:56:57 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:56:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=8743aba3b2d6a79f connId=856f86a5-410f-48b5-a7fe-aba684056419 route= payloadLen=130 hexPreview=3034346364633633393364393138336230613435663132363961333963393665
+2026/06/20 06:56:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=8743aba3b2d6a79f connId=856f86a5-410f-48b5-a7fe-aba684056419 route= payloadLen=129 hexPreview=3537333337353966343830346261383666363933316635393564336266366630
+2026/06/20 06:56:59 [TcpStream] SetCryptoSuite: nodeId=8743aba3b2d6a79f connId=856f86a5-410f-48b5-a7fe-aba684056419 suite=*crypoto.TLSCrypto
+2026/06/20 06:56:59 [exchangeMetadata] 发送 metadata: peerID=8743aba3b2d6a79f connId=856f86a5-410f-48b5-a7fe-aba684056419 payloadLen=111 preview="{\"peer_id\":\"abd55cb5b71a40ac703532ab63c6150955ab5a59406a5a6fba7c5f8ed65b1cca\",\"r..."
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
