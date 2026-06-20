@@ -158,12 +158,21 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			return
 		}
 
-		// 非桥接路径：补发首包 ACK（readFirstMessageSync 未发）, 再启动读循环。
+		// 非桥接路径：补发首包 ACK（readFirstMessageSync 未发）。
+		//
+		// 注意：StartLoops() 不在此处统一启动，而是推迟到【流模式确定之后】各分支内启动。
+		// 原因（修复跨中继握手丢帧竞态）：业务连接 leg 在 StreamOn 里才会被切成 pure-forwarder
+		// 并装上 frameTap；若在此处提前 StartLoops，readLoop 可能在模式切换前就读到 client
+		// 紧跟首帧发来的下一帧（如 TLS pubkey），把它当普通消息组进【无人读取的死 inbox】，
+		// 该帧永不被 frame pump 转发 → 对端握手缺帧卡死。loopback 高速下高频触发，
+		// 真机因网络延迟使模式切换先完成而侥幸不现。见记忆 crossrelay-inprocess-hang-rootcause。
 		_ = stream.AckFirstMessage()
-		stream.StartLoops()
 
 		if len(message.Header.ConnectionId) == 0 {
-			// 注册流：ConnectionId 为空表示这是 relay 注册流
+			// 注册流：ConnectionId 为空表示这是 relay 注册流。
+			// 注册流不切 pure-forwarder（它就是被 StreamGroup 用 Message 语义消费/转发的载体），
+			// 故可立即启动读循环。
+			stream.StartLoops()
 			t.lock.Lock()
 			group := t.StreamGroup[stream.NodeId()]
 			if group == nil {
@@ -201,6 +210,9 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 				// 本地没有该目标的 group。若安装了 missing-group 回调（relayNode），
 				// 交给它处理：可能是另一台 relay 的控制链路接入，或需要跨中继桥接。
 				if missingHandler != nil {
+					// 控制链路 / relay 查询等：handler 会在该流上正常 NextMessage/SendMessage,
+					// 需先启动读循环。（桥接业务连接已在上方 isBridge 分支提前接管，不会到这里。）
+					stream.StartLoops()
 					if err := missingHandler(stream, message); err != nil {
 						log.Printf("[relay] MissingGroupHandler 处理失败: targetNodeId=%.16s connId=%s err=%v",
 							message.Header.NodeId, message.Header.ConnectionId, err)
@@ -228,6 +240,9 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			}
 			log.Printf("[relay] StreamOn 成功: targetNodeId=%.16s connId=%s forward=%v",
 				message.Header.NodeId, message.Header.ConnectionId, forwardFirstMessage)
+			// 现在 leg 已被 StreamOn 切成 pure-forwarder 并装好 frameTap，再启动读循环：
+			// 此后 readLoop 收到的每一帧都进 tap 被 frame pump 可靠转发，不会落入死 inbox。
+			stream.StartLoops()
 			if forwardFirstMessage {
 				if err := group.relayStream.SendMessage(context.Background(), message); err != nil {
 					log.Printf("[relay] 转发首条消息失败: targetNodeId=%.16s err=%v",
