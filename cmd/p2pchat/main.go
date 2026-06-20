@@ -55,7 +55,6 @@ func main() {
 	for {
 		fmt.Println()
 		fmt.Println("可用模式:")
-		fmt.Println("  index <listen> [public]            启动 index 节点(中继中心, 不向任何节点注册); 启动后 /list 查看状态")
 		fmt.Println("  relay <listen> [public] [indexAddr] 启动中转服务器; 默认自动注册到 " + defaultIndexAddr + "; 启动后 /list 查看状态")
 		fmt.Println("  node  <addr> [keyFile]             启动 NAT 节点; 默认经 " + defaultIndexAddr + " bootstrap 就近选 relay")
 		fmt.Println("  quit                               退出程序")
