@@ -165,8 +165,10 @@ func runRelay(listen, public, peer, index, keyFile string) {
 	fmt.Printf("监听: %s  对外地址: %s\n", listen, rn.Addr())
 
 	if index != "" {
-		rn.RegisterToIndex(index)
-		fmt.Printf("向 index 注册: %s\n", index)
+		fmt.Printf("正在向 index 注册(只需地址, 其 ID 将自动获知): %s\n", index)
+		rn.RegisterToIndex(index, func(indexID, addr string) {
+			fmt.Printf("已注册到 index: id=%s addr=%s\n", indexID, addr)
+		})
 	}
 
 	if peer != "" {

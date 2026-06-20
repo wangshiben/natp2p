@@ -192,7 +192,13 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 		pl.peerID = cm.NodeId
 		pl.peerAddr = cm.Addr
 		pl.mu.Unlock()
-		pl.owner.onPeerHello(cm.NodeId, cm.Addr)
+		// 带上本链路的主动拨号地址（accept 侧为空）, 让 owner 能识别「这条正是注册到 index 的链路」,
+		// 从而在自动获知 index 真实 NodeID 后回调确认。
+		dialAddr := ""
+		if pl.outbound {
+			dialAddr = pl.addr
+		}
+		pl.owner.onPeerHello(cm.NodeId, cm.Addr, dialAddr)
 		// accept 侧收到 HELLO 后回一个 HELLO, 让对端也获知本端身份与地址。
 		if !pl.outbound {
 			_ = pl.send(&controlMessage{Type: ctrlHello, NodeId: pl.owner.idStr(), Addr: pl.owner.addr})

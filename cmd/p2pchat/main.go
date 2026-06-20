@@ -2,8 +2,9 @@
 //
 // 启动后选择模式:
 //
-//	index <listen> [public]       启动 index 节点(中继中心)
-//	relay <listen> [public] [idx] 启动中转服务器, idx 非空则向其注册成邻居
+//	index <listen> [public]            启动 index 节点(中继中心)
+//	relay <listen> [public] [indexAddr] 启动中转服务器; indexAddr 非空则向该 index 地址注册
+//	                                   成邻居(只需地址, index 的 ID 会自动获知)
 //	node  <addr> [keyFile]        启动 NAT 节点; addr 为 index 时 bootstrap 就近选 relay；
 //	                              keyFile 可选，指向之前 /save 导出的私钥文件，
 //	                              用于以同一身份再次上线。
@@ -43,7 +44,7 @@ func main() {
 		fmt.Println()
 		fmt.Println("可用模式:")
 		fmt.Println("  index <listen> [public]       启动 index 节点(中继中心)  (例: index :9000)")
-		fmt.Println("  relay <listen> [public] [idx] 启动中转服务器, idx 非空则向其注册")
+		fmt.Println("  relay <listen> [public] [indexAddr] 启动中转服务器; indexAddr 非空则注册到该 index 地址(ID 自动获知)")
 		fmt.Println("  node  <addr> [keyFile]        启动 NAT 节点; addr 为 index 则 bootstrap 就近选 relay")
 		fmt.Println("  quit                          退出程序")
 		fmt.Print("> ")
@@ -345,8 +346,10 @@ func startRelay(listen, public, indexAddr string) {
 	fmt.Printf("RelayNode ID: %s\n", rn.ID())
 	fmt.Printf("监听: %s  对外地址: %s (按 Ctrl+C 退出)\n", listen, rn.Addr())
 	if indexAddr != "" {
-		rn.RegisterToIndex(indexAddr)
-		fmt.Printf("向 index 注册: %s\n", indexAddr)
+		fmt.Printf("正在向 index 注册(只需地址, 其 ID 将自动获知): %s\n", indexAddr)
+		rn.RegisterToIndex(indexAddr, func(indexID, addr string) {
+			fmt.Printf("已注册到 index: id=%s addr=%s\n", indexID, addr)
+		})
 	}
 	rn.Start() // 阻塞
 }
