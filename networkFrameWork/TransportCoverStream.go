@@ -15,6 +15,12 @@ import (
 // 否则循环依赖）。用于在 TransportCover 层区分「控制链路接入」与「需桥接的业务连接」。
 const relayControlRouteHint = "/relay/control"
 
+// relayQueryRouteHint 与 relaynode.RelayQueryRoute 取值一致（同样为避免循环依赖, 用常量副本,
+// 由注释保持同步）。natnode 向 index 拉取 relay 列表的一次性请求/应答走此 RouteName。
+// 它与控制链路一样必须排除出「桥接」判定: 桥接分支不启动读写循环, 而查询应答需要在同一条
+// stream 上正常 SendMessage/NextMessage（先 AckFirstMessage + StartLoops）。
+const relayQueryRouteHint = "/relay/query"
+
 // TransportCover 将 TCP/UDP 连接转换为 Stream。
 type TransportCover struct {
 	StreamGroup map[string]*StreamGroup
@@ -126,12 +132,21 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		missingHandlerPeek := t.onMissingGroup
 		t.lock.RUnlock()
 		isBridge := len(message.Header.ConnectionId) != 0 && !hasGroupPeek &&
-			missingHandlerPeek != nil && message.Header.RouteName != relayControlRouteHint
+			missingHandlerPeek != nil && message.Header.RouteName != relayControlRouteHint &&
+			message.Header.RouteName != relayQueryRouteHint
 
 		if isBridge {
-			// 裸字节级跨中继桥接：不启动 readLoop（否则会偷走后续裸字节）, 也不在本地 ACK 首包
-			// （首包 ACK 由对端真正的 nat 节点端到端回来）。直接把 (stream, 首条消息) 交给 handler,
-			// handler 会用 stream.RawConn() 做 io.Copy。
+			// 裸字节级跨中继桥接：不启动 readLoop（否则会偷走后续裸字节）。
+			//
+			// 但**必须**在本地补发首包 ACK：本入口 relay 已经把客户端的首帧（routing-hello,
+			// 含公钥）同步读走用于路由, 并改发自己合成的 hello 给对端 relay —— 客户端的这条
+			// 首帧根本不会到达真正的 nat 节点, 故端到端 ACK 永远回不来。若不在此本地 ACK,
+			// 客户端 recvAckTimer 超时后会重传该首帧, 重传帧经裸字节 splice 透传到 callee,
+			// 使 callee 在 TLS 握手里收到**两份公钥**, 错位成 "wrong Salt format"。
+			// 跨公网高延迟下必现, 进程内测试因 <1s 完成握手而侥幸不触发。
+			// 首帧之后的真实 TLS 负载仍由对端 nat 节点端到端 ACK, 不受影响。
+			_ = stream.AckFirstMessage()
+			// 直接把 (stream, 首条消息) 交给 handler, handler 会用 stream.RawConn() 做 io.Copy。
 			if err := missingHandlerPeek(stream, message); err != nil {
 				log.Printf("[relay] MissingGroupHandler(桥接) 处理失败: targetNodeId=%.16s connId=%s err=%v",
 					message.Header.NodeId, message.Header.ConnectionId, err)

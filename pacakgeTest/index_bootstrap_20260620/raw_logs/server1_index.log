@@ -1,0 +1,1286 @@
+RelayNode ID: ea6691d93ccdcace389325ebbe9ec2fe237942e3898c5d94d075a5cf0dd0dbb8
+监听: 0.0.0.0:9000  对外地址: 38.0.0.1:9000
+RelayStarter Start AT 0.0.0.0:9000
+[状态] relay邻居=0 托管NAT节点=0
+2026/06/20 06:51:58 [relay] 新连接: local=38.0.0.1:9000 remote=104.0.0.1:43600
+2026/06/20 06:51:58 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:51:58 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:51:58 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=104.0.0.1:43600): nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205
+2026/06/20 06:51:58 [relaynode] 控制链路已建立(被动): peerNodeId=931ba35e9df5c479 remoteIP=104.0.0.1
+2026/06/20 06:51:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/relay/control payloadLen=122 hexPreview=7b2274797065223a2248454c4c4f222c226e6f64655f6964223a223933316261
+2026/06/20 06:51:59 [relaynode] 登记对端 relay: id=931ba35e9df5c479 addr=104.0.0.1:9000
+2026/06/20 06:52:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+2026/06/20 06:52:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+2026/06/20 06:52:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+2026/06/20 06:52:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+2026/06/20 06:52:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+2026/06/20 06:52:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:24 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:58892
+2026/06/20 06:52:24 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:52:24 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:52:24 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:58892): nodeId=18b744e05e797bca connId=dfcdc6ff-4545-42b9-a57d-9f02af5827df
+2026/06/20 06:52:24 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 06:52:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:27 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:58896
+2026/06/20 06:52:27 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:52:27 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:52:27 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:58896): nodeId=18b744e05e797bca connId=
+2026/06/20 06:52:27 [relay] 新建 StreamGroup: nodeId=18b744e05e797bca
+2026/06/20 06:52:27 [relaynode] 本地托管的 NAT 节点登记到 natNodes: 18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:55 [relay] 新连接: local=[::]:9000 remote=38.0.0.1:41440
+2026/06/20 06:52:55 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/20 06:52:55 [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=38.0.0.1:41440): nodeId=892ba440dad08538 connId=b6d67230-a45b-4cc2-855c-92071160c5da
+2026/06/20 06:52:55 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 06:52:55 [relay] 新连接: local=38.0.0.1:9000 remote=38.0.0.1:58222
+2026/06/20 06:52:55 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:52:55 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:52:55 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=38.0.0.1:58222): nodeId=892ba440dad08538 connId=b6d67230-a45b-4cc2-855c-92071160c5da
+2026/06/20 06:52:55 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 06:52:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a332c227461726765
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+2026/06/20 06:52:57 [relay] 新连接: local=38.0.0.1:9000 remote=104.0.0.1:60476
+2026/06/20 06:52:57 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:52:57 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:52:57 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=104.0.0.1:60476): nodeId=18b744e05e797bca connId=fb7b4197-f6f7-477c-84fb-e3eb0a89e9c4
+2026/06/20 06:52:57 [relay] StreamOn 成功: targetNodeId=18b744e05e797bca connId=fb7b4197-f6f7-477c-84fb-e3eb0a89e9c4 forward=true
+2026/06/20 06:52:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:52:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:52:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:27 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:47670
+2026/06/20 06:53:27 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:53:27 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:53:27 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:47670): nodeId=18b744e05e797bca connId=
+2026/06/20 06:53:27 [relay] 附加 relay leg 到已有 StreamGroup: nodeId=18b744e05e797bca
+2026/06/20 06:53:27 [FrameRelay] TCP NextFrame 失败: nodeId=18b744e05e797bca connId= isCurrent=false ctxErr=<nil> err=stream closed
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:53:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:53:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:54:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:54:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:55:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:55:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:56:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:56:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:56:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:56:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:56:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:26 [FrameRelay] TCP NextFrame 失败: nodeId=18b744e05e797bca connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/06/20 06:56:26 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=18b744e05e797bca connId=
+2026/06/20 06:56:26 [DualStream] TCP startPump NextMessage 失败: nodeId=18b744e05e797bca connId= err=EOF
+2026/06/20 06:56:26 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=18b744e05e797bca connId=
+2026/06/20 06:56:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:56:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:30 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:50480
+2026/06/20 06:56:30 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:56:30 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:56:30 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:50480): nodeId=8743aba3b2d6a79f connId=8b45d41a-fd01-4f13-917c-3d613b604083
+2026/06/20 06:56:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:30 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 06:56:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+2026/06/20 06:56:33 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:50492
+2026/06/20 06:56:33 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:56:33 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:56:33 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:50492): nodeId=8743aba3b2d6a79f connId=
+2026/06/20 06:56:33 [relay] 新建 StreamGroup: nodeId=8743aba3b2d6a79f
+2026/06/20 06:56:33 [relaynode] 本地托管的 NAT 节点登记到 natNodes: 8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:56:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:56:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:56:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:56:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:56:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:56 [relay] 新连接: local=[::]:9000 remote=38.0.0.1:56780
+2026/06/20 06:56:56 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/20 06:56:56 [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=38.0.0.1:56780): nodeId=abd55cb5b71a40ac connId=abee61d3-3a70-4640-8066-bd371fd8b991
+2026/06/20 06:56:56 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 06:56:56 [relay] 新连接: local=38.0.0.1:9000 remote=38.0.0.1:37220
+2026/06/20 06:56:56 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:56:56 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:56:56 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=38.0.0.1:37220): nodeId=abd55cb5b71a40ac connId=abee61d3-3a70-4640-8066-bd371fd8b991
+2026/06/20 06:56:56 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 06:56:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/relay/control payloadLen=102 hexPreview=7b2274797065223a2246494e44222c227265715f6964223a342c227461726765
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+2026/06/20 06:56:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:56:58 [relay] 新连接: local=38.0.0.1:9000 remote=104.0.0.1:57554
+2026/06/20 06:56:58 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:56:58 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:56:58 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=104.0.0.1:57554): nodeId=8743aba3b2d6a79f connId=856f86a5-410f-48b5-a7fe-aba684056419
+2026/06/20 06:56:58 [relay] StreamOn 成功: targetNodeId=8743aba3b2d6a79f connId=856f86a5-410f-48b5-a7fe-aba684056419 forward=true
+2026/06/20 06:56:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:56:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:03 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:35594
+2026/06/20 06:57:03 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:57:03 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:57:03 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:35594): nodeId=8743aba3b2d6a79f connId=
+2026/06/20 06:57:03 [relay] 附加 relay leg 到已有 StreamGroup: nodeId=8743aba3b2d6a79f
+2026/06/20 06:57:03 [FrameRelay] TCP NextFrame 失败: nodeId=8743aba3b2d6a79f connId= isCurrent=false ctxErr=<nil> err=stream closed
+2026/06/20 06:57:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:57:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:57:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:58:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:58:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:59:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:59:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:59:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:59:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:59:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:59:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:30 [DualStream] TCP startPump NextMessage 失败: nodeId=8743aba3b2d6a79f connId= err=EOF
+2026/06/20 06:59:30 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=8743aba3b2d6a79f connId=
+2026/06/20 06:59:30 [FrameRelay] TCP NextFrame 失败: nodeId=8743aba3b2d6a79f connId= isCurrent=true ctxErr=context canceled err=EOF
+2026/06/20 06:59:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+2026/06/20 06:59:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:33 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:48306
+2026/06/20 06:59:33 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:59:33 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:59:33 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:48306): nodeId=f0ceab55e3df4315 connId=c9b134bd-e672-4ef6-b3e9-cfe676bead47
+2026/06/20 06:59:34 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 06:59:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:37 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:48310
+2026/06/20 06:59:37 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 06:59:37 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 06:59:37 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:48310): nodeId=f0ceab55e3df4315 connId=
+2026/06/20 06:59:37 [relay] 新建 StreamGroup: nodeId=f0ceab55e3df4315
+2026/06/20 06:59:37 [relaynode] 本地托管的 NAT 节点登记到 natNodes: f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 06:59:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 06:59:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 06:59:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 06:59:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 06:59:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 06:59:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 06:59:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 07:00:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 07:00:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:10 [FrameRelay] TCP NextFrame 失败: nodeId=f0ceab55e3df4315 connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/06/20 07:00:10 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=f0ceab55e3df4315 connId=
+2026/06/20 07:00:10 [DualStream] TCP startPump NextMessage 失败: nodeId=f0ceab55e3df4315 connId= err=EOF
+2026/06/20 07:00:10 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=f0ceab55e3df4315 connId=
+2026/06/20 07:00:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 07:00:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 07:00:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 07:00:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:27 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:45234
+2026/06/20 07:00:27 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:00:27 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 07:00:27 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:45234): nodeId=b7aeb023fcc6c308 connId=3c7d5076-4390-4b64-8197-d8467e937d89
+2026/06/20 07:00:27 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+[状态] relay邻居=1 托管NAT节点=3
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+2026/06/20 07:00:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:31 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:45236
+2026/06/20 07:00:31 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:00:31 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 07:00:31 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:45236): nodeId=b7aeb023fcc6c308 connId=
+2026/06/20 07:00:31 [relay] 新建 StreamGroup: nodeId=b7aeb023fcc6c308
+2026/06/20 07:00:31 [relaynode] 本地托管的 NAT 节点登记到 natNodes: b7aeb023fcc6c308 来源=129.0.0.1:45236
+2026/06/20 07:00:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=4
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+2026/06/20 07:00:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=4
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+2026/06/20 07:00:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:40 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:41252
+2026/06/20 07:00:40 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:00:40 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 07:00:40 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:41252): nodeId=3aaeeacb9c2a54fe connId=6276c7db-03a9-4d38-a777-1d5fd73f1822
+2026/06/20 07:00:40 [relaynode] 应答 relay 列表查询: 返回 2 个 relay
+2026/06/20 07:00:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=4
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+2026/06/20 07:00:43 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:41264
+2026/06/20 07:00:43 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:00:43 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 07:00:43 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:41264): nodeId=3aaeeacb9c2a54fe connId=
+2026/06/20 07:00:43 [relay] 新建 StreamGroup: nodeId=3aaeeacb9c2a54fe
+2026/06/20 07:00:43 [relaynode] 本地托管的 NAT 节点登记到 natNodes: 3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:00:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:44 [relay] 新连接: local=38.0.0.1:9000 remote=129.0.0.1:52944
+2026/06/20 07:00:44 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:00:44 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 07:00:44 [relay] AcceptTcpStream 成功 (local=38.0.0.1:9000 remote=129.0.0.1:52944): nodeId=b7aeb023fcc6c308 connId=316f60cd-a088-4a04-ae04-3a46d72cb961
+2026/06/20 07:00:44 [relay] StreamOn 成功: targetNodeId=b7aeb023fcc6c308 connId=316f60cd-a088-4a04-ae04-3a46d72cb961 forward=true
+2026/06/20 07:00:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:45 [FrameRelay] TCP NextFrame 失败: nodeId=3aaeeacb9c2a54fe connId=316f60cd-a088-4a04-ae04-3a46d72cb961 isCurrent=true ctxErr=<nil> err=EOF
+2026/06/20 07:00:45 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=3aaeeacb9c2a54fe connId=316f60cd-a088-4a04-ae04-3a46d72cb961
+2026/06/20 07:00:45 [FrameRelay] TCP NextFrame 失败: nodeId=3aaeeacb9c2a54fe connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/06/20 07:00:45 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=3aaeeacb9c2a54fe connId=
+2026/06/20 07:00:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:00:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:00:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:55 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:56 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:57 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:00:58 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:00:59 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:00 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:01 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:02 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:06 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:08 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:09 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:12 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:13 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:14 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:15 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:16 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:20 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:22 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:23 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:24 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:26 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:27 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:28 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:29 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:32 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:33 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:34 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:35 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:36 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:41 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:42 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:43 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:44 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:45 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:46 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:47 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:48 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:49 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:50 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:52 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+[状态] relay邻居=1 托管NAT节点=5
+    [relay邻居] id=931ba35e9df5c479 addr=104.0.0.1:9000
+    [托管NAT] id=18b744e05e797bca 来源=129.0.0.1:58896
+    [托管NAT] id=8743aba3b2d6a79f 来源=129.0.0.1:50492
+    [托管NAT] id=f0ceab55e3df4315 来源=129.0.0.1:48310
+    [托管NAT] id=b7aeb023fcc6c308 来源=129.0.0.1:45236
+    [托管NAT] id=3aaeeacb9c2a54fe 来源=129.0.0.1:41264
+2026/06/20 07:01:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=
+2026/06/20 07:01:54 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/ping payloadLen=0 hexPreview=

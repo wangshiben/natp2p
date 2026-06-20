@@ -1,0 +1,31 @@
+NAT 节点 ID: 3aaeeacb9c2a54fea98adfaf5f70945035efb24116e55be2cf75569388404973
+2026/06/20 07:01:19 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/20 07:01:21 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:01:21 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 07:01:21 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=3aaeeacb9c2a54fe connId=6276c7db-03a9-4d38-a777-1d5fd73f1822 route=/relay/query payloadLen=227 hexPreview=7b2272656c617973223a5b7b226e6f64655f6964223a22656136363931643933
+2026/06/20 07:01:21 [natnode] index 38.0.0.1:9000 返回 2 个 relay
+2026/06/20 07:01:24 [natnode] relay 104.0.0.1:9000 不可达: dial tcp 104.0.0.1:9000: i/o timeout
+2026/06/20 07:01:24 [natnode] 无可达子 relay, 回退注册到 index: 38.0.0.1:9000
+注册到 relay: 38.0.0.1:9000
+2026/06/20 07:01:24 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:01:24 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+正在跨中继连接 target b7aeb023fcc6c308c6b519edbf69e160352be1f8ff5d204cda77ad14bb14b236 ...
+2026/06/20 07:01:25 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 07:01:25 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 07:01:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=b7aeb023fcc6c308 connId=316f60cd-a088-4a04-ae04-3a46d72cb961 route= payloadLen=130 hexPreview=3034343839646162653437306131626164316666383132623833323431616235
+2026/06/20 07:01:25 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=b7aeb023fcc6c308 connId=316f60cd-a088-4a04-ae04-3a46d72cb961 route= payloadLen=129 hexPreview=3034656237383361663334613335303862373137366139646230343930343861
+2026/06/20 07:01:26 [TcpStream] SetCryptoSuite: nodeId=b7aeb023fcc6c308 connId=316f60cd-a088-4a04-ae04-3a46d72cb961 suite=*crypoto.TLSCrypto
+2026/06/20 07:01:26 [exchangeMetadata] 发送 metadata: peerID=b7aeb023fcc6c308 connId=316f60cd-a088-4a04-ae04-3a46d72cb961 payloadLen=110 preview="{\"peer_id\":\"3aaeeacb9c2a54fea98adfaf5f70945035efb24116e55be2cf75569388404973\",\"r..."
+2026/06/20 07:01:26 [exchangeMetadata] 收到 metadata: peerID=b7aeb023fcc6c308 headerNodeId=b7aeb023fcc6c308 headerConnId=316f60cd-a088-4a04-ae04-3a46d72cb961 headerRoute=/p2p/handshake-info payloadLen=110 hexPreview=7b22706565725f6964223a2262376165623032336663633663333038633662353139656462663639653136303335326265316638666635643230346364613737616431346262313462323336222c2272 asciiPreview="{\"peer_id\":\"b7aeb023fcc6c308c6b519edbf69e160352be1f8ff5d204cda77ad14bb14b236\",\"r"
+已连接到 b7aeb023fcc6c308c6b519edbf69e160352be1f8ff5d204cda77ad14bb14b236, 开始 3 轮通信
+→ 第 0 轮 发送: localfwd-0
+← 第 0 轮 收到: echo:localfwd-0
+→ 第 1 轮 发送: localfwd-1
+← 第 1 轮 收到: echo:localfwd-1
+→ 第 2 轮 发送: localfwd-2
+← 第 2 轮 收到: echo:localfwd-2
+通信完成: 成功 3/3 轮

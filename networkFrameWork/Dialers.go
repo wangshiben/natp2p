@@ -80,6 +80,28 @@ func TryConnectControlStream(addr, targetNodeId, originalPubkeyHex, routeName st
 	return stream, connectionId, err
 }
 
+// TryConnectControlStreamTCP 与 TryConnectControlStream 相同, 但只用单条 TCP leg(不走 dual KCP+TCP)。
+//
+// 用于一次性请求/应答(如 natnode 向 index 查询 relay 列表): dual 拨号会对同一 connId 产生
+// KCP+TCP 两条 leg, 两条都会带着同一首帧(hello/公钥)进入对端的 MissingGroupHandler, 一次性
+// 处理器只应答并关闭其中一条, 另一条 leg 残留并把重复首帧投递下去 —— 在跨中继桥接路径上这会让
+// 对端把同一公钥帧收两次, 端到端 TLS 握手错位(salt 处读到公钥)。单 TCP leg 彻底规避该竞态。
+func TryConnectControlStreamTCP(addr, targetNodeId, originalPubkeyHex, routeName string) (network.Stream, string, error) {
+	connectionId := uuid.New().String()
+	header := &network.Header{
+		RouteName:     routeName,
+		NodeId:        targetNodeId,
+		NodeIdVersion: 1,
+		ConnectionId:  connectionId,
+	}
+	body := &network.Message{
+		Header:  header,
+		Payload: []byte(originalPubkeyHex),
+	}
+	stream, err := clientStream(body, addr, targetNodeId, connectionId, false)
+	return stream, connectionId, err
+}
+
 // TryRegisterRelayStream 把本节点注册成一条可被中继的「relay 注册流」。
 // 此时 ConnectionId 为空，意味着这条流不绑业务连接，专门接受其他客户端通过它中转。
 // originalNodeId 由 pubKey 哈希派生，对端用它做身份校验。

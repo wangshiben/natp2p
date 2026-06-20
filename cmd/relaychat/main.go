@@ -71,25 +71,30 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "interactive", "运行模式: relay | listen | connect | interactive")
-	listen := flag.String("listen", ":9000", "relay 监听地址 (relay 模式)")
-	public := flag.String("public", "", "relay 对外可达地址 (relay 模式, 默认同 listen)")
+	mode := flag.String("mode", "interactive", "运行模式: index | relay | listen | connect | interactive")
+	listen := flag.String("listen", ":9000", "relay 监听地址 (index/relay 模式)")
+	public := flag.String("public", "", "relay 对外可达地址 (index/relay 模式, 默认同 listen)")
 	peer := flag.String("peer", "", "要建立控制链路的对端 relay 地址, 逗号分隔 (relay 模式)")
-	relayAddr := flag.String("relay", "127.0.0.1:9000", "要注册到的 relay 地址 (listen/connect 模式)")
+	index := flag.String("index", "", "index 节点地址: relay 模式下启动后向其注册; listen/connect 模式下经它 bootstrap 就近选 relay")
+	relayAddr := flag.String("relay", "127.0.0.1:9000", "直连的 relay 地址 (listen/connect 模式, 与 -index 二选一)")
 	target := flag.String("target", "", "目标 NodeID (connect 模式)")
 	rounds := flag.Int("rounds", 3, "通信轮数 (connect 模式)")
 	msg := flag.String("msg", "hello", "每轮消息前缀 (connect 模式)")
+	connTimeout := flag.Int("connTimeout", 15, "连接/每轮接收的超时秒数 (connect 模式; 跨境多跳链路可调大)")
 	keyFile := flag.String("key", "", "私钥文件, 用同一身份再次上线")
 	flag.Usage = printUsage
 	flag.Parse()
 
 	switch *mode {
+	case "index":
+		// index 本质 = 无上级(无 -peer)的 RelayNode。
+		runRelay(*listen, *public, "", "", *keyFile)
 	case "relay":
-		runRelay(*listen, *public, *peer, *keyFile)
+		runRelay(*listen, *public, *peer, *index, *keyFile)
 	case "listen":
-		runListen(*relayAddr, *keyFile)
+		runListen(*relayAddr, *index, *keyFile)
 	case "connect":
-		runConnect(*relayAddr, *target, *rounds, *msg, *keyFile)
+		runConnect(*relayAddr, *index, *target, *rounds, *msg, *keyFile, *connTimeout)
 	case "interactive":
 		runInteractive()
 	default:
@@ -104,26 +109,29 @@ func printUsage() {
 	fmt.Fprint(os.Stderr, `relaychat — relayNode 跨中继验证程序
 
 用法:
-  relaychat -mode relay   -listen :9000 [-public IP:9000] [-peer IP2:9000[,IP3:9000]] [-key file]
-  relaychat -mode listen  -relay IP:9000 [-key file]
-  relaychat -mode connect -relay IP:9000 -target <NodeID> [-rounds 3] [-msg hello] [-key file]
+  relaychat -mode index   -listen :9000 [-public IP:9000] [-key file]
+  relaychat -mode relay   -listen :9000 [-public IP:9000] [-index IDX:9000] [-peer IP2:9000[,IP3:9000]] [-key file]
+  relaychat -mode listen  (-index IDX:9000 | -relay IP:9000) [-key file]
+  relaychat -mode connect (-index IDX:9000 | -relay IP:9000) -target <NodeID> [-rounds 3] [-msg hello] [-key file]
   relaychat -mode interactive
 
 模式:
-  relay        启动公网中继节点; -peer 指定要建控制链路的对端 relay(逗号分隔)
+  index        启动 index 节点(无上级的中继中心), 接受 relay/NAT 节点注册
+  relay        启动公网中继节点; -index 指定启动后注册到的 index; -peer 指定要建链的对端 relay
   listen       注册到 relay 并回显收到的每条消息; 打印自身 NodeID; 阻塞至 Ctrl+C
-  connect      经 relay 跨中继连接 -target 并做 -rounds 轮请求/响应
+               给 -index 则先 bootstrap 就近选 relay(不可达回退次近/index), 否则直连 -relay
+  connect      经 relay 跨中继连接 -target 并做 -rounds 轮请求/响应(同样支持 -index bootstrap)
   interactive  交互式控制台(默认)
 
-跨中继端到端示例:
-  # 服务器1 (203.0.113.1)
-  relaychat -mode relay -listen 0.0.0.0:9000 -public 203.0.113.1:9000
-  # 服务器2 (198.51.100.1), 与服务器1 建控制链路
-  relaychat -mode relay -listen 0.0.0.0:9000 -public 198.51.100.1:9000 -peer 203.0.113.1:9000
-  # 本地节点2 注册到服务器2, 记下打印的 NodeID
-  relaychat -mode listen -relay 198.51.100.1:9000
-  # 本地节点1 经服务器1 跨中继连接节点2, 3 轮通信
-  relaychat -mode connect -relay 203.0.113.1:9000 -target <NodeID> -rounds 3 -msg hello
+三机端到端示例(server1=index, server2=relay, server3=server/callee, 本机=client):
+  # server1 (38.0.0.1) 起 index
+  relaychat -mode index -listen 0.0.0.0:9000 -public 38.0.0.1:9000
+  # server2 (104.0.0.1) 起 relay 并注册到 index
+  relaychat -mode relay -listen 0.0.0.0:9000 -public 104.0.0.1:9000 -index 38.0.0.1:9000
+  # server3 (129.0.0.1) 起 callee, 经 index bootstrap(试 server2 不可达→回退 index), 记下 NodeID
+  relaychat -mode listen -index 38.0.0.1:9000
+  # 本机 client 经 index bootstrap(命中 server2), 跨中继连接 callee, 3 轮通信
+  relaychat -mode connect -index 38.0.0.1:9000 -target <NodeID> -rounds 3 -msg hello
 
 flags:
 `)
@@ -141,7 +149,8 @@ func loadKey(path string) (*ecdh.PrivateKey, error) {
 }
 
 // runRelay 启动一个公网中继节点并维持到各对端 relay 的控制链路（阻塞）。
-func runRelay(listen, public, peer, keyFile string) {
+// index 非空时, 启动后向 index 注册成为其邻居（建可重试控制链路）。
+func runRelay(listen, public, peer, index, keyFile string) {
 	privKey, err := loadKey(keyFile)
 	if err != nil {
 		fmt.Printf("加载私钥失败: %v\n", err)
@@ -154,6 +163,11 @@ func runRelay(listen, public, peer, keyFile string) {
 	}
 	fmt.Printf("RelayNode ID: %s\n", rn.ID())
 	fmt.Printf("监听: %s  对外地址: %s\n", listen, rn.Addr())
+
+	if index != "" {
+		rn.RegisterToIndex(index)
+		fmt.Printf("向 index 注册: %s\n", index)
+	}
 
 	if peer != "" {
 		for _, addr := range strings.Split(peer, ",") {
@@ -197,13 +211,18 @@ func runRelay(listen, public, peer, keyFile string) {
 }
 
 // runListen 启动一个 NAT 节点, 注册到 relay, 对每条消息回显。
-func runListen(relayAddr, keyFile string) {
+// index 非空时先经 index bootstrap 就近选定入口 relay（不可达回退次近/index）; 否则直连 relayAddr。
+func runListen(relayAddr, index, keyFile string) {
 	privKey, err := loadKey(keyFile)
 	if err != nil {
 		fmt.Printf("加载私钥失败: %v\n", err)
 		os.Exit(1)
 	}
-	node, err := natnode.NewNATNode(privKey, relayAddr)
+	bootstrapAddr := relayAddr
+	if index != "" {
+		bootstrapAddr = index
+	}
+	node, err := natnode.NewNATNode(privKey, bootstrapAddr)
 	if err != nil {
 		fmt.Printf("创建节点失败: %v\n", err)
 		os.Exit(1)
@@ -219,14 +238,25 @@ func runListen(relayAddr, keyFile string) {
 	})
 
 	fmt.Printf("NAT 节点 ID: %s\n", node.ID())
-	fmt.Printf("注册到 relay: %s\n", relayAddr)
+
+	// 若给了 index, 先 bootstrap 选定入口 relay。
+	entryRelay := relayAddr
+	if index != "" {
+		entry, err := node.Bootstrap(ctx, index)
+		if err != nil {
+			fmt.Printf("bootstrap 失败: %v\n", err)
+			os.Exit(1)
+		}
+		entryRelay = entry
+	}
+	fmt.Printf("注册到 relay: %s\n", entryRelay)
 	fmt.Println("等待入站连接, 将对每条消息回显 echo:<原文> ...")
 
 	// 注意：natnode.Listen 在首个入站连接被消费后即返回（注册流被复用为该连接）,
 	// 但我们要持续为已建立的连接服务（echoLoop 在 OnConnection 回调里运行）, 因此 Listen 返回后
 	// 不能退出 runListen（否则 defer node.Close()/cancel 会关掉连接）。这里阻塞直到收到中断信号。
 	go func() {
-		if err := node.Listen(ctx, relayAddr); err != nil {
+		if err := node.Listen(ctx, entryRelay); err != nil {
 			fmt.Printf("Listen 退出: %v\n", err)
 		}
 	}()
@@ -255,7 +285,8 @@ func echoLoop(ctx context.Context, conn p2pnode.Connection) {
 }
 
 // runConnect 启动一个 NAT 节点, 注册到 relay, 连接 target 并发起 N 轮请求/响应通信。
-func runConnect(relayAddr, target string, rounds int, msgPrefix, keyFile string) {
+// index 非空时先经 index bootstrap 就近选定入口 relay; 否则直连 relayAddr。
+func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile string, connectTimeoutSec int) {
 	if len(target) != 64 {
 		fmt.Printf("无效的 target NodeID 长度: %d (应为64位hex)\n", len(target))
 		os.Exit(1)
@@ -265,7 +296,11 @@ func runConnect(relayAddr, target string, rounds int, msgPrefix, keyFile string)
 		fmt.Printf("加载私钥失败: %v\n", err)
 		os.Exit(1)
 	}
-	node, err := natnode.NewNATNode(privKey, relayAddr)
+	bootstrapAddr := relayAddr
+	if index != "" {
+		bootstrapAddr = index
+	}
+	node, err := natnode.NewNATNode(privKey, bootstrapAddr)
 	if err != nil {
 		fmt.Printf("创建节点失败: %v\n", err)
 		os.Exit(1)
@@ -274,15 +309,26 @@ func runConnect(relayAddr, target string, rounds int, msgPrefix, keyFile string)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// 必须启动 Listen：注册本节点到 relay 并运行节点连接机制（与进程内测试一致）。
-	go func() { _ = node.Listen(ctx, relayAddr) }()
 
 	fmt.Printf("NAT 节点 ID: %s\n", node.ID())
-	fmt.Printf("注册到 relay: %s\n", relayAddr)
+
+	entryRelay := relayAddr
+	if index != "" {
+		entry, err := node.Bootstrap(ctx, index)
+		if err != nil {
+			fmt.Printf("bootstrap 失败: %v\n", err)
+			os.Exit(1)
+		}
+		entryRelay = entry
+	}
+	// 必须启动 Listen：注册本节点到入口 relay 并运行节点连接机制（与进程内测试一致）。
+	go func() { _ = node.Listen(ctx, entryRelay) }()
+
+	fmt.Printf("注册到 relay: %s\n", entryRelay)
 	time.Sleep(1 * time.Second)
 
 	fmt.Printf("正在跨中继连接 target %s ...\n", target)
-	connCtx, connCancel := context.WithTimeout(ctx, 15*time.Second)
+	connCtx, connCancel := context.WithTimeout(ctx, time.Duration(connectTimeoutSec)*time.Second)
 	defer connCancel()
 	conn, err := node.Connect(connCtx, p2pnode.NodeID(target))
 	if err != nil {
@@ -299,7 +345,7 @@ func runConnect(relayAddr, target string, rounds int, msgPrefix, keyFile string)
 			break
 		}
 		fmt.Printf("→ 第 %d 轮 发送: %s\n", i, out)
-		recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
+		recvCtx, recvCancel := context.WithTimeout(ctx, time.Duration(connectTimeoutSec)*time.Second)
 		recv, err := conn.Receive(recvCtx)
 		recvCancel()
 		if err != nil {
@@ -361,7 +407,7 @@ func runInteractive() {
 			if len(fields) > 2 {
 				peer = fields[2]
 			}
-			runRelay(listen, "", peer, "")
+			runRelay(listen, "", peer, "", "")
 		case "node":
 			addr := "127.0.0.1:9000"
 			if len(fields) > 1 {

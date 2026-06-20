@@ -1,0 +1,52 @@
+NAT 节点 ID: 99d425ef7558b741a30e517a26a7dd0549258d9e60e59602119cd953aa74d33a
+2026/06/20 09:15:11 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 09:15:11 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 09:15:11 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=99d425ef7558b741 connId=4322039e-321c-4408-85c2-dfbe29507ecd msgId=1 route=/relay/query payloadLen=227 hexPreview=7b2272656c617973223a5b7b226e6f64655f6964223a22316666613634373737
+2026/06/20 09:15:11 [natnode] index 38.0.0.1:9000 返回 2 个 relay
+2026/06/20 09:15:14 [natnode] relay 104.0.0.1:9000 不可达: dial tcp 104.0.0.1:9000: i/o timeout
+2026/06/20 09:15:14 [natnode] 无可达子 relay, 回退注册到 index: 38.0.0.1:9000
+注册到 relay: 38.0.0.1:9000
+等待入站连接, 将对每条消息回显 echo:<原文> ...
+2026/06/20 09:15:14 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/20 09:15:14 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/20 09:15:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=99d425ef7558b741 connId= msgId=1 route= payloadLen=130 hexPreview=3034353162653630346537373565656530323562646632373732633662353662
+2026/06/20 09:15:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=daa6c1b71648c3dd connId=c9545406-fda7-41fc-a395-fd2aab285ebc msgId=2 route= payloadLen=130 hexPreview=3034353162653630346537373565656530323562646632373732633662353662
+2026/06/20 09:15:30 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=daa6c1b71648c3dd connId=c9545406-fda7-41fc-a395-fd2aab285ebc msgId=3 route= payloadLen=129 hexPreview=3933343265346134393734636334323835326639663231386639623639663664
+2026/06/20 09:15:31 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=daa6c1b71648c3dd connId=c9545406-fda7-41fc-a395-fd2aab285ebc msgId=4 route=/p2p/handshake-info payloadLen=187 hexPreview=4ce2d61455c9cbf9830d2bd2df28bfde0cfcd8860d28fefcfa15f5a5b5a7b99c
+2026/06/20 09:15:31 [TcpStream] SetCryptoSuite: nodeId=daa6c1b71648c3dd connId=c9545406-fda7-41fc-a395-fd2aab285ebc suite=*crypoto.TLSCrypto
+2026/06/20 09:15:31 [exchangeMetadata] 发送 metadata: peerID=daa6c1b71648c3dd connId=c9545406-fda7-41fc-a395-fd2aab285ebc payloadLen=110 preview="{\"peer_id\":\"99d425ef7558b741a30e517a26a7dd0549258d9e60e59602119cd953aa74d33a\",\"r..."
+2026/06/20 09:15:31 [exchangeMetadata] 收到 metadata: peerID=daa6c1b71648c3dd headerNodeId=daa6c1b71648c3dd headerConnId=c9545406-fda7-41fc-a395-fd2aab285ebc headerRoute=/p2p/handshake-info payloadLen=111 hexPreview=7b22706565725f6964223a2264616136633162373136343863336464303664373233313233653737653363633665306339323064323433316236613263346662656436653266326466323264222c2272 asciiPreview="{\"peer_id\":\"daa6c1b71648c3dd06d723123e77e3cc6e0c920d2431b6a2c4fbed6e2f2df22d\",\"r"
+[入站连接] 来自 daa6c1b71648c3dd06d723123e77e3cc6e0c920d2431b6a2c4fbed6e2f2df22d
+[收到] daa6c1b71648c3dd06d723123e77e3cc6e0c920d2431b6a2c4fbed6e2f2df22d: bridgefix-0
+[收到] daa6c1b71648c3dd06d723123e77e3cc6e0c920d2431b6a2c4fbed6e2f2df22d: bridgefix-1
+[收到] daa6c1b71648c3dd06d723123e77e3cc6e0c920d2431b6a2c4fbed6e2f2df22d: bridgefix-2
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[断开] daa6c1b71648c3dd06d723123e77e3cc6e0c920d2431b6a2c4fbed6e2f2df22d: EOF
+
+收到中断信号, 退出
