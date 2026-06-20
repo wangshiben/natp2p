@@ -1,10 +1,10 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"context"
 	"errors"
-	"log"
 	"net"
 	"os"
 	"sync"
@@ -13,7 +13,7 @@ import (
 var bridgeDebug = os.Getenv("BRIDGE_DEBUG") != ""
 
 func logBridge(format string, args ...interface{}) {
-	log.Printf("[BRIDGE] "+format, args...)
+	logx.Debugf("[BRIDGE] "+format, args...)
 }
 
 var errInvalidBridgeLeg = errors.New("relaynode bridge: leg 非 TcpStream")

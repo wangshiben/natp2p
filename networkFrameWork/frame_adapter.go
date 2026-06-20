@@ -1,10 +1,10 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"context"
 	"errors"
-	"log"
 	"sort"
 	"sync"
 )
@@ -286,7 +286,7 @@ func (e *DualFrameRelayEndpoint) collect(kind streamTransport, adapter *TcpFrame
 		if err != nil {
 			isCurrent := e.isCurrent(kind, adapter)
 			ctxErr := e.stream.ctx.Err()
-			log.Printf("[FrameRelay] %s NextFrame 失败: nodeId=%.16s connId=%s isCurrent=%v ctxErr=%v err=%v",
+			logx.Warnf("[FrameRelay] %s NextFrame 失败: nodeId=%.16s connId=%s isCurrent=%v ctxErr=%v err=%v",
 				kindStr, e.stream.NodeId(), e.stream.ConnectionId(), isCurrent, ctxErr, err)
 			if ctxErr == nil && isCurrent {
 				e.stream.handleLegFailure(kind, adapter.stream)
@@ -435,7 +435,7 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 		if route.kind == streamTransportTCP {
 			kindStr = "TCP"
 		}
-		log.Printf("[FrameRelay] %s HandleFrame 写入失败, 触发 replayRoute: nodeId=%.16s connId=%s err=%v",
+		logx.Warnf("[FrameRelay] %s HandleFrame 写入失败, 触发 replayRoute: nodeId=%.16s connId=%s err=%v",
 			kindStr, e.stream.NodeId(), e.stream.ConnectionId(), err)
 		return e.replayRoute(ctx, logicalID, route.kind, endpoint)
 	}

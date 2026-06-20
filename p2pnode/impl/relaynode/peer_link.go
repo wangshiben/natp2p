@@ -1,10 +1,10 @@
 package relaynode
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
 	"context"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -100,7 +100,7 @@ func (pl *peerLink) manage() {
 
 		sc, err := pl.dial()
 		if err != nil {
-			log.Printf("[relaynode] 拨号对端 relay %s 失败, %v 后重试: %v", pl.addr, backoff, err)
+			logx.Warnf("[relaynode] 拨号对端 relay %s 失败, %v 后重试: %v", pl.addr, backoff, err)
 			if !pl.sleep(backoff) {
 				return
 			}
@@ -111,7 +111,7 @@ func (pl *peerLink) manage() {
 		pl.setStream(sc)
 		// 发送 HELLO，交换身份。
 		if err := pl.sendHello(); err != nil {
-			log.Printf("[relaynode] 向 %s 发送 HELLO 失败: %v", pl.addr, err)
+			logx.Warnf("[relaynode] 向 %s 发送 HELLO 失败: %v", pl.addr, err)
 			sc.Close()
 			if !pl.sleep(backoff) {
 				return
@@ -120,12 +120,12 @@ func (pl *peerLink) manage() {
 			continue
 		}
 
-		log.Printf("[relaynode] 控制链路已建立(主动): peer=%s", pl.addr)
+		logx.Infof("[relaynode] 控制链路已建立(主动): peer=%s", pl.addr)
 		backoff = peerLinkRedialInitial // 成功后重置退避
 
 		// serve 阻塞直到链路断开。
 		pl.serve(sc)
-		log.Printf("[relaynode] 控制链路断开(主动), 准备重连: peer=%s", pl.addr)
+		logx.Infof("[relaynode] 控制链路断开(主动), 准备重连: peer=%s", pl.addr)
 
 		if !pl.sleep(backoff) {
 			return
@@ -177,7 +177,7 @@ func (pl *peerLink) serve(sc *client.StreamClient) {
 		}
 		cm, err := decodeControl(msg)
 		if err != nil {
-			log.Printf("[relaynode] 解码控制消息失败: %v", err)
+			logx.Warnf("[relaynode] 解码控制消息失败: %v", err)
 			continue
 		}
 		pl.dispatch(sc, cm)
@@ -213,7 +213,7 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 	case ctrlFindResp:
 		pl.owner.deliverFindResp(pl, cm)
 	default:
-		log.Printf("[relaynode] 未知控制消息类型: %s", cm.Type)
+		logx.Infof("[relaynode] 未知控制消息类型: %s", cm.Type)
 	}
 }
 

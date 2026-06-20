@@ -1,11 +1,11 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -82,7 +82,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		localAddr = connection.LocalAddr().String()
 		remoteAddr = connection.RemoteAddr().String()
 	}
-	log.Printf("[relay] 新连接: local=%s remote=%s", localAddr, remoteAddr)
+	logx.Infof("[relay] 新连接: local=%s remote=%s", localAddr, remoteAddr)
 
 	// TCP 优化：服务端接受连接后立即设置 NoDelay 和缓冲区
 	if tcpConn, ok := connection.(*net.TCPConn); ok {
@@ -106,7 +106,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 				default:
 					err = fmt.Errorf("panic: %v", v)
 				}
-				log.Printf("[relay] panic (local=%s remote=%s): %v", localAddr, remoteAddr, err)
+				logx.Errorf("[relay] panic (local=%s remote=%s): %v", localAddr, remoteAddr, err)
 				select {
 				case errChan <- err:
 				default:
@@ -118,12 +118,12 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		}()
 		stream, message, err := AcceptTcpStreamSync(connection)
 		if err != nil {
-			log.Printf("[relay] AcceptTcpStream 失败 (local=%s remote=%s): %v", localAddr, remoteAddr, err)
+			logx.Errorf("[relay] AcceptTcpStream 失败 (local=%s remote=%s): %v", localAddr, remoteAddr, err)
 			connection.Close()
 			errChan <- err
 			return
 		}
-		log.Printf("[relay] AcceptTcpStream 成功 (local=%s remote=%s): nodeId=%.16s connId=%s",
+		logx.Infof("[relay] AcceptTcpStream 成功 (local=%s remote=%s): nodeId=%.16s connId=%s",
 			localAddr, remoteAddr, message.Header.NodeId, message.Header.ConnectionId)
 
 		// 预判：是否为「需桥接的业务连接且本地无 group」。
@@ -148,7 +148,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			_ = stream.AckFirstMessage()
 			// 直接把 (stream, 首条消息) 交给 handler, handler 会用 stream.RawConn() 做 io.Copy。
 			if err := missingHandlerPeek(stream, message); err != nil {
-				log.Printf("[relay] MissingGroupHandler(桥接) 处理失败: targetNodeId=%.16s connId=%s err=%v",
+				logx.Errorf("[relay] MissingGroupHandler(桥接) 处理失败: targetNodeId=%.16s connId=%s err=%v",
 					message.Header.NodeId, message.Header.ConnectionId, err)
 				stream.Close()
 				errChan <- err
@@ -176,7 +176,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			t.lock.Lock()
 			group := t.StreamGroup[stream.NodeId()]
 			if group == nil {
-				log.Printf("[relay] 新建 StreamGroup: nodeId=%.16s", stream.NodeId())
+				logx.Infof("[relay] 新建 StreamGroup: nodeId=%.16s", stream.NodeId())
 				group = NewStreamGroup(stream, defaultHookfunc)
 				// 把 TransportCover 上配置的转发 hook 传递给新建的 StreamGroup
 				if t.forwardHookConfig != nil {
@@ -192,9 +192,9 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 				}
 			} else {
 				t.lock.Unlock()
-				log.Printf("[relay] 附加 relay leg 到已有 StreamGroup: nodeId=%.16s", stream.NodeId())
+				logx.Infof("[relay] 附加 relay leg 到已有 StreamGroup: nodeId=%.16s", stream.NodeId())
 				if err := group.AttachRelayStream(stream); err != nil {
-					log.Printf("[relay] AttachRelayStream 失败: nodeId=%.16s err=%v", stream.NodeId(), err)
+					logx.Errorf("[relay] AttachRelayStream 失败: nodeId=%.16s err=%v", stream.NodeId(), err)
 					stream.Close()
 					errChan <- err
 					return
@@ -214,7 +214,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 					// 需先启动读循环。（桥接业务连接已在上方 isBridge 分支提前接管，不会到这里。）
 					stream.StartLoops()
 					if err := missingHandler(stream, message); err != nil {
-						log.Printf("[relay] MissingGroupHandler 处理失败: targetNodeId=%.16s connId=%s err=%v",
+						logx.Errorf("[relay] MissingGroupHandler 处理失败: targetNodeId=%.16s connId=%s err=%v",
 							message.Header.NodeId, message.Header.ConnectionId, err)
 						stream.Close()
 						errChan <- err
@@ -224,7 +224,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 					errChan <- nil
 					return
 				}
-				log.Printf("[relay] StreamGroup 未找到: targetNodeId=%.16s connId=%s",
+				logx.Errorf("[relay] StreamGroup 未找到: targetNodeId=%.16s connId=%s",
 					message.Header.NodeId, message.Header.ConnectionId)
 				stream.Close()
 				errChan <- fmt.Errorf("relay group not found for nodeId %s", message.Header.NodeId)
@@ -232,20 +232,20 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			}
 			forwardFirstMessage, err := group.StreamOn(stream, message)
 			if err != nil {
-				log.Printf("[relay] StreamOn 失败: targetNodeId=%.16s connId=%s err=%v",
+				logx.Errorf("[relay] StreamOn 失败: targetNodeId=%.16s connId=%s err=%v",
 					message.Header.NodeId, message.Header.ConnectionId, err)
 				stream.Close()
 				errChan <- err
 				return
 			}
-			log.Printf("[relay] StreamOn 成功: targetNodeId=%.16s connId=%s forward=%v",
+			logx.Infof("[relay] StreamOn 成功: targetNodeId=%.16s connId=%s forward=%v",
 				message.Header.NodeId, message.Header.ConnectionId, forwardFirstMessage)
 			// 现在 leg 已被 StreamOn 切成 pure-forwarder 并装好 frameTap，再启动读循环：
 			// 此后 readLoop 收到的每一帧都进 tap 被 frame pump 可靠转发，不会落入死 inbox。
 			stream.StartLoops()
 			if forwardFirstMessage {
 				if err := group.relayStream.SendMessage(context.Background(), message); err != nil {
-					log.Printf("[relay] 转发首条消息失败: targetNodeId=%.16s err=%v",
+					logx.Errorf("[relay] 转发首条消息失败: targetNodeId=%.16s err=%v",
 						message.Header.NodeId, err)
 					stream.Close()
 					errChan <- err
@@ -258,7 +258,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 
 	select {
 	case <-timeout.Done():
-		log.Printf("[relay] 超时 1 分钟未收到首条消息 (local=%s remote=%s), 关闭连接", localAddr, remoteAddr)
+		logx.Errorf("[relay] 超时 1 分钟未收到首条消息 (local=%s remote=%s), 关闭连接", localAddr, remoteAddr)
 		connection.Close()
 		return errors.New("timeout: connection closed")
 	case err := <-errChan:

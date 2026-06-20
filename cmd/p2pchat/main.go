@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"bnfs_p2p/logx"
 	"bnfs_p2p/p2pnode"
 	"bnfs_p2p/p2pnode/impl/natnode"
 	"bnfs_p2p/p2pnode/impl/relaynode"
@@ -68,6 +69,8 @@ func main() {
 			if len(fields) > 2 {
 				public = fields[2]
 			}
+			// index server: 静音注册/登记/转发等监控信息, 只保留报错+堆栈。
+			logx.SetLevel(logx.LevelError)
 			startRelay(listen, public, "")
 		case "relay":
 			listen := ":9000"
@@ -82,6 +85,8 @@ func main() {
 			if len(fields) > 3 {
 				indexAddr = fields[3]
 			}
+			// 普通中转 / 节点模式保留常规监控信息(若上一条 index 命令调过 Error 级, 这里复位)。
+			logx.SetLevel(logx.LevelInfo)
 			startRelay(listen, public, indexAddr)
 		case "node":
 			addr := "127.0.0.1:9000"
@@ -92,6 +97,7 @@ func main() {
 			if len(fields) > 2 {
 				keyFile = fields[2]
 			}
+			logx.SetLevel(logx.LevelInfo)
 			runNode(addr, keyFile)
 		default:
 			fmt.Printf("未知模式: %s\n", fields[0])

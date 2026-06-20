@@ -1,6 +1,7 @@
 package natnode
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
 	"bnfs_p2p/p2pnode"
@@ -8,7 +9,6 @@ import (
 
 	"context"
 	"fmt"
-	"log"
 	"math/big"
 	"net"
 	"sort"
@@ -37,17 +37,17 @@ const (
 func (n *NATNode) Bootstrap(ctx context.Context, indexAddr string) (string, error) {
 	relays, err := n.queryIndexRelays(ctx, indexAddr)
 	if err != nil {
-		log.Printf("[natnode] 向 index %s 查询 relay 列表失败, 回退直接注册到 index: %v", indexAddr, err)
+		logx.Warnf("[natnode] 向 index %s 查询 relay 列表失败, 回退直接注册到 index: %v", indexAddr, err)
 		n.setSoleEntryRelay(indexAddr)
 		return indexAddr, nil
 	}
-	log.Printf("[natnode] index %s 返回 %d 个 relay", indexAddr, len(relays))
+	logx.Infof("[natnode] index %s 返回 %d 个 relay", indexAddr, len(relays))
 
 	entry, viaSubRelay := selectEntryRelay(n.ID(), indexAddr, relays, probeRelayReachable)
 	if viaSubRelay {
-		log.Printf("[natnode] 选定就近可达的子 relay 作为入口: %s", entry)
+		logx.Infof("[natnode] 选定就近可达的子 relay 作为入口: %s", entry)
 	} else {
-		log.Printf("[natnode] 无可达子 relay, 回退注册到 index: %s", entry)
+		logx.Infof("[natnode] 无可达子 relay, 回退注册到 index: %s", entry)
 	}
 	n.setSoleEntryRelay(entry)
 	return entry, nil
@@ -125,7 +125,7 @@ func selectEntryRelay(selfID p2pnode.NodeID, indexAddr string, relays []relayque
 func probeRelayReachable(addr string) bool {
 	conn, err := net.DialTimeout("tcp", addr, relayProbeTimeout)
 	if err != nil {
-		log.Printf("[natnode] relay %s 不可达: %v", addr, err)
+		logx.Debugf("[natnode] relay %s 不可达: %v", addr, err)
 		return false
 	}
 	_ = conn.Close()

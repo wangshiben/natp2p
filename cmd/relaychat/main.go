@@ -65,10 +65,34 @@ import (
 	"syscall"
 	"time"
 
+	"bnfs_p2p/logx"
 	"bnfs_p2p/p2pnode"
 	"bnfs_p2p/p2pnode/impl/natnode"
 	"bnfs_p2p/p2pnode/impl/relaynode"
 )
+
+// applyLogLevel 设置全局日志等级。
+//   - explicit 非空时按其取值(debug|info|warn|error)设置;
+//   - 否则: index 模式默认 error(尽量静音注册/登记/转发/桥接等监控信息, 只留报错+堆栈),
+//     其余模式默认 info。
+func applyLogLevel(explicit string, isIndex bool) {
+	switch strings.ToLower(explicit) {
+	case "debug":
+		logx.SetLevel(logx.LevelDebug)
+	case "info":
+		logx.SetLevel(logx.LevelInfo)
+	case "warn":
+		logx.SetLevel(logx.LevelWarn)
+	case "error":
+		logx.SetLevel(logx.LevelError)
+	default:
+		if isIndex {
+			logx.SetLevel(logx.LevelError)
+		} else {
+			logx.SetLevel(logx.LevelInfo)
+		}
+	}
+}
 
 func main() {
 	mode := flag.String("mode", "interactive", "运行模式: index | relay | listen | connect | interactive")
@@ -82,8 +106,13 @@ func main() {
 	msg := flag.String("msg", "hello", "每轮消息前缀 (connect 模式)")
 	connTimeout := flag.Int("connTimeout", 15, "连接/每轮接收的超时秒数 (connect 模式; 跨境多跳链路可调大)")
 	keyFile := flag.String("key", "", "私钥文件, 用同一身份再次上线")
+	logLevel := flag.String("log", "", "日志等级: debug|info|warn|error (默认: index 模式为 error 静音监控信息, 其余为 info)")
 	flag.Usage = printUsage
 	flag.Parse()
+
+	// 日志等级: 显式 -log 优先; 否则 index 模式默认 error(尽量不打印注册/登记/转发等监控信息,
+	// 只留报错+堆栈), 其余模式默认 info。
+	applyLogLevel(*logLevel, *mode == "index")
 
 	switch *mode {
 	case "index":
@@ -183,31 +212,34 @@ func runRelay(listen, public, peer, index, keyFile string) {
 	}
 
 	// 周期性打印路由表状态, 便于观察 DHT 区分与托管情况。
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			neighbors := rn.RelayNeighbors()
-			hosted := rn.HostedNatNodesDetailed()
-			fmt.Printf("[状态] relay邻居=%d 托管NAT节点=%d\n", len(neighbors), len(hosted))
-			// 打印每个对端 relay 邻居及其地址。
-			for _, p := range neighbors {
-				addr := ""
-				if len(p.Addresses) > 0 {
-					addr = p.Addresses[0].Relay
+	// 这属于监控信息: 日志等级高于 Info(如 index 模式的 Error)时不启动该轮询, 保持安静。
+	if logx.GetLevel() <= logx.LevelInfo {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				neighbors := rn.RelayNeighbors()
+				hosted := rn.HostedNatNodesDetailed()
+				fmt.Printf("[状态] relay邻居=%d 托管NAT节点=%d\n", len(neighbors), len(hosted))
+				// 打印每个对端 relay 邻居及其地址。
+				for _, p := range neighbors {
+					addr := ""
+					if len(p.Addresses) > 0 {
+						addr = p.Addresses[0].Relay
+					}
+					fmt.Printf("    [relay邻居] id=%.16s addr=%s\n", p.ID, addr)
 				}
-				fmt.Printf("    [relay邻居] id=%.16s addr=%s\n", p.ID, addr)
-			}
-			// 打印每个托管的 NAT 节点及其托管来源地址（底层连接远端 IP:port）。
-			for _, h := range hosted {
-				src := h.RemoteAddr
-				if src == "" {
-					src = "(未知)"
+				// 打印每个托管的 NAT 节点及其托管来源地址（底层连接远端 IP:port）。
+				for _, h := range hosted {
+					src := h.RemoteAddr
+					if src == "" {
+						src = "(未知)"
+					}
+					fmt.Printf("    [托管NAT] id=%.16s 来源=%s\n", h.NodeID, src)
 				}
-				fmt.Printf("    [托管NAT] id=%.16s 来源=%s\n", h.NodeID, src)
 			}
-		}
-	}()
+		}()
+	}
 
 	rn.Start() // 阻塞
 }

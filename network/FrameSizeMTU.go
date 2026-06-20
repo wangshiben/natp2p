@@ -1,7 +1,7 @@
 package network
 
 import (
-	"log"
+	"bnfs_p2p/logx"
 	"net"
 )
 
@@ -14,21 +14,21 @@ func GetOptimalMaxFrameSize(conn net.Conn) int {
 	// 尝试获取本地地址对应的网卡MTU
 	localAddr := conn.LocalAddr()
 	if localAddr == nil {
-		log.Printf("[FrameSize] 无法获取本地地址，使用默认上限: %d", defaultMax)
+		logx.Debugf("[FrameSize] 无法获取本地地址，使用默认上限: %d", defaultMax)
 		return defaultMax
 	}
 
 	// 解析IP地址
 	tcpAddr, ok := localAddr.(*net.TCPAddr)
 	if !ok {
-		log.Printf("[FrameSize] 非TCP连接，使用默认上限: %d", defaultMax)
+		logx.Debugf("[FrameSize] 非TCP连接，使用默认上限: %d", defaultMax)
 		return defaultMax
 	}
 
 	// 查找对应的网卡
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		log.Printf("[FrameSize] 获取网卡列表失败: %v，使用默认上限: %d", err, defaultMax)
+		logx.Debugf("[FrameSize] 获取网卡列表失败: %v，使用默认上限: %d", err, defaultMax)
 		return defaultMax
 	}
 
@@ -49,7 +49,7 @@ func GetOptimalMaxFrameSize(conn net.Conn) int {
 			// 检查IP是否匹配
 			if ipNet.IP.Equal(tcpAddr.IP) {
 				mtu = iface.MTU
-				log.Printf("[FrameSize] 找到匹配网卡: %s, MTU: %d", iface.Name, mtu)
+				logx.Debugf("[FrameSize] 找到匹配网卡: %s, MTU: %d", iface.Name, mtu)
 				break
 			}
 		}
@@ -61,7 +61,7 @@ func GetOptimalMaxFrameSize(conn net.Conn) int {
 
 	// 如果没找到匹配的网卡，使用默认值
 	if mtu == 0 {
-		log.Printf("[FrameSize] 未找到匹配网卡，使用默认上限: %d", defaultMax)
+		logx.Debugf("[FrameSize] 未找到匹配网卡，使用默认上限: %d", defaultMax)
 		return defaultMax
 	}
 
@@ -86,16 +86,16 @@ func GetOptimalMaxFrameSize(conn net.Conn) int {
 	optimal := standardOptimal - standardOptimal/10
 
 	if optimal < 800 {
-		log.Printf("[FrameSize] MTU(%d) 标准最优=%d 过小，使用最小值800", mtu, standardOptimal)
+		logx.Debugf("[FrameSize] MTU(%d) 标准最优=%d 过小，使用最小值800", mtu, standardOptimal)
 		return 800
 	}
 	// 上限保护：避免 Jumbo Frame 下单帧过大。
 	if optimal > 8192 {
-		log.Printf("[FrameSize] MTU(%d) 标准最优=%d 减10%%=%d，限制为8192", mtu, standardOptimal, optimal)
+		logx.Debugf("[FrameSize] MTU(%d) 标准最优=%d 减10%%=%d，限制为8192", mtu, standardOptimal, optimal)
 		return 8192
 	}
 
-	log.Printf("[FrameSize] MTU(%d) 标准最优=%d，减10%%安全余量 → 最优帧大小=%d", mtu, standardOptimal, optimal)
+	logx.Debugf("[FrameSize] MTU(%d) 标准最优=%d，减10%%安全余量 → 最优帧大小=%d", mtu, standardOptimal, optimal)
 	return optimal
 }
 

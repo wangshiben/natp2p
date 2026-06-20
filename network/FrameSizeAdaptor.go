@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bnfs_p2p/logx"
 	"sync"
 	"time"
 )
@@ -78,12 +79,12 @@ func (a *FrameSizeAdaptor) SetMaxFrameSize(maxSize int) {
 	oldMax := a.maxFrameSize
 	a.maxFrameSize = maxSize
 
-	println("[FrameAdaptor] 更新最大帧大小: ", oldMax, " -> ", maxSize)
+	logx.Debugf("[FrameAdaptor] 更新最大帧大小: %d -> %d", oldMax, maxSize)
 
 	// 如果当前帧大小超过新上限，调整到上限
 	if a.currentFrameSize > maxSize {
 		a.currentFrameSize = maxSize
-		println("[FrameAdaptor] 当前帧大小超限，调整为: ", maxSize)
+		logx.Debugf("[FrameAdaptor] 当前帧大小超限，调整为: %d", maxSize)
 	}
 }
 
@@ -121,7 +122,7 @@ func (a *FrameSizeAdaptor) RecordBytesSent(bytes int) {
 			a.lastThroughput = throughputKBps
 			a.lastCheckBytes = a.bytesSent
 			a.lastCheckTime = now
-			println("[FrameAdaptor] 基线期结束, 基线吞吐:", int(throughputKBps), "KB/s, 总字节:", totalBytes, ", 耗时:", int(totalElapsed.Seconds()), "秒")
+			logx.Debugf("[FrameAdaptor] 基线期结束, 基线吞吐:%d KB/s, 总字节:%d, 耗时:%d 秒", int(throughputKBps), totalBytes, int(totalElapsed.Seconds()))
 		}
 		return // 基线阶段不调整
 	}
@@ -174,7 +175,7 @@ func (a *FrameSizeAdaptor) tryAdjustByThroughput(currentThroughput float64) {
 			}
 		}
 		// oldSize 已是最小帧：direction 保持 0，不调整，等链路恢复。
-		println("[FrameAdaptor] 链路吞吐过低(", int(currentThroughput), "KB/s <", int(a.minHealthyThroughput), "KB/s), 禁止增大帧")
+		logx.Debugf("[FrameAdaptor] 链路吞吐过低(%d KB/s < %d KB/s), 禁止增大帧", int(currentThroughput), int(a.minHealthyThroughput))
 	} else if currentThroughput >= a.lastThroughput*0.95 && oldSize < a.maxFrameSize {
 		// 策略1: 吞吐量达到预期95%以上 -> 考虑增大帧8%（更保守）
 		newSize = int(float64(oldSize) * 1.08)
@@ -212,7 +213,7 @@ func (a *FrameSizeAdaptor) tryAdjustByThroughput(currentThroughput float64) {
 			if direction < 0 {
 				dirStr = "减小"
 			}
-			println("[FrameAdaptor] 准备", dirStr, "帧(", oldSize, "->", newSize, "), 等待下次确认（防振荡", a.sameDirectionCnt, "/2）")
+			logx.Debugf("[FrameAdaptor] 准备%s帧(%d->%d), 等待下次确认（防振荡%d/2）", dirStr, oldSize, newSize, a.sameDirectionCnt)
 			return
 		}
 
@@ -221,7 +222,7 @@ func (a *FrameSizeAdaptor) tryAdjustByThroughput(currentThroughput float64) {
 		if direction < 0 {
 			dirStr = "减小"
 		}
-		println("[FrameAdaptor] 吞吐稳定, 请求", dirStr, "帧: ", oldSize, " -> ", newSize, " (当前:", int(currentThroughput), "KB/s, 上次:", int(a.lastThroughput), "KB/s)")
+		logx.Debugf("[FrameAdaptor] 吞吐稳定, 请求%s帧: %d -> %d (当前:%d KB/s, 上次:%d KB/s)", dirStr, oldSize, newSize, int(currentThroughput), int(a.lastThroughput))
 
 		// 发起帧大小变更，等待对端确认
 		if a.onFrameSizeChange != nil {
@@ -238,9 +239,9 @@ func (a *FrameSizeAdaptor) tryAdjustByThroughput(currentThroughput float64) {
 					a.adjustmentCount++
 					a.lastAdjustTime = time.Now()
 					a.sameDirectionCnt = 0 // 重置计数
-					println("[FrameAdaptor] ✅ 帧大小变更已同步: ", oldSize, " -> ", newSize)
+					logx.Debugf("[FrameAdaptor] ✅ 帧大小变更已同步: %d -> %d", oldSize, newSize)
 				} else {
-					println("[FrameAdaptor] ❌ 帧大小变更被拒绝或超时，保持: ", oldSize)
+					logx.Debugf("[FrameAdaptor] ❌ 帧大小变更被拒绝或超时，保持: %d", oldSize)
 					a.sameDirectionCnt = 0 // 失败也重置
 				}
 				a.pendingFrameSize = nil
