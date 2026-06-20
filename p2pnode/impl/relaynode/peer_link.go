@@ -44,6 +44,22 @@ type peerLink struct {
 	cancel context.CancelFunc
 }
 
+// observedDialAddr 返回「本端观察到的对端公网可路由地址」: observedRemoteIP + 对端自报端口。
+// 仅 inbound(被动接入)链路有 observedRemoteIP。无法构造时返回空串。
+// 用途: index 在回 HELLO 时把它告知主动注册进来的 relay, 让 relay 修正自己的对外地址。
+func (pl *peerLink) observedDialAddr() string {
+	pl.mu.Lock()
+	defer pl.mu.Unlock()
+	if pl.observedRemoteIP == "" {
+		return ""
+	}
+	port := portOf(pl.peerAddr)
+	if port == "" {
+		port = "9000"
+	}
+	return net.JoinHostPort(pl.observedRemoteIP, port)
+}
+
 // dialHostAddr 返回向「该对端 relay」发起桥接拨号时应使用的可路由地址。
 //
 // 选取优先级（关键修复）：
@@ -152,7 +168,7 @@ func (pl *peerLink) adoptInbound(sc *client.StreamClient) {
 }
 
 func (pl *peerLink) sendHello() error {
-	cm := &controlMessage{Type: ctrlHello, NodeId: pl.owner.idStr(), Addr: pl.owner.addr}
+	cm := &controlMessage{Type: ctrlHello, NodeId: pl.owner.idStr(), Addr: pl.owner.getAddr()}
 	return pl.send(cm)
 }
 
@@ -198,16 +214,35 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 		if pl.outbound {
 			dialAddr = pl.addr
 		}
-		pl.owner.onPeerHello(cm.NodeId, cm.Addr, dialAddr)
-		// accept 侧收到 HELLO 后回一个 HELLO, 让对端也获知本端身份与地址。
+		// outbound(主动注册方, 通常是 relay): 若对端(index)在回应里告知了观察到的本端公网地址,
+		// 采纳它作为自己的对外地址, 使后续上报给 natNode 的 relay 列表可路由。
+		if pl.outbound && cm.ObservedAddr != "" {
+			pl.owner.adoptObservedAddr(cm.ObservedAddr)
+		}
+		// 登记对端 relay 邻居时, inbound(被动接入, 如 index 接受 relay 注册)侧优先用「观察到的
+		// 对端公网可路由地址」, 而非对端自报的可能不可路由的 cm.Addr(如 ":9000"); 这样 natNode
+		// 向 index 查询 relay 列表时拿到的就是可拨地址。outbound 侧 cm.Addr 即对方公网地址, 直接用。
+		registerAddr := cm.Addr
 		if !pl.outbound {
-			_ = pl.send(&controlMessage{Type: ctrlHello, NodeId: pl.owner.idStr(), Addr: pl.owner.addr})
+			if obs := pl.observedDialAddr(); obs != "" {
+				registerAddr = obs
+			}
+		}
+		pl.owner.onPeerHello(cm.NodeId, registerAddr, dialAddr)
+		// accept 侧收到 HELLO 后回一个 HELLO, 让对端也获知本端身份与地址,
+		// 并把「观察到的对端公网可路由地址」一并告知, 帮助对端修正其对外地址。
+		if !pl.outbound {
+			reply := &controlMessage{Type: ctrlHello, NodeId: pl.owner.idStr(), Addr: pl.owner.getAddr()}
+			if obs := pl.observedDialAddr(); obs != "" {
+				reply.ObservedAddr = obs
+			}
+			_ = pl.send(reply)
 		}
 	case ctrlFind:
 		hosts := pl.owner.hostsLocally(cm.Target)
 		resp := &controlMessage{Type: ctrlFindResp, ReqID: cm.ReqID, Target: cm.Target, Hosts: hosts}
 		if hosts {
-			resp.Addr = pl.owner.addr
+			resp.Addr = pl.owner.getAddr()
 		}
 		_ = pl.send(resp)
 	case ctrlFindResp:
