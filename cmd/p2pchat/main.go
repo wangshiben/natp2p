@@ -36,16 +36,22 @@ import (
 	"bnfs_p2p/p2pnode/impl/relaynode"
 )
 
+// stdinScanner 是全进程共享的标准输入扫描器。
+// 必须全局唯一: bufio.Scanner 会按块缓冲读取, 若 main 与各子控制台(relay/node)各建一个,
+// 先读的那个可能把后续行也缓冲进去, 导致另一个 Scanner 丢失输入(管道输入下尤其明显)。
+var stdinScanner = bufio.NewScanner(os.Stdin)
+
 func main() {
 	fmt.Println("=== P2P 聊天 ===")
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := stdinScanner
 
 	for {
 		fmt.Println()
 		fmt.Println("可用模式:")
-		fmt.Println("  relay <listen> 启动中转服务器; ")
-		fmt.Println("  node  <addr> [keyFile]        启动 NAT 节点; addr 为 index 则 bootstrap 就近选 relay")
-		fmt.Println("  quit                          退出程序")
+		fmt.Println("  index <listen> [public]            启动 index 节点(中继中心); 启动后 /list 查看状态")
+		fmt.Println("  relay <listen> [public] [indexAddr] 启动中转服务器; 启动后 /list 查看状态")
+		fmt.Println("  node  <addr> [keyFile]             启动 NAT 节点; addr 为 index 则 bootstrap 就近选 relay")
+		fmt.Println("  quit                               退出程序")
 		fmt.Print("> ")
 		if !scanner.Scan() {
 			break
@@ -183,7 +189,7 @@ func runNode(relayAddr string, keyFile string) {
 	fmt.Println("  其他输入         发送消息到当前活动连接")
 	fmt.Println()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	scanner := stdinScanner
 
 	for {
 		fmt.Print("> ")
@@ -339,8 +345,9 @@ func (s *chatSession) receiveLoop(conn p2pnode.Connection) {
 
 // -- 中转服务器 / index --
 
-// startRelay 启动一个 RelayNode(阻塞)。index 本质是无上级的 RelayNode。
+// startRelay 启动一个 RelayNode。index 本质是无上级的 RelayNode。
 // indexAddr 非空时, 启动后向 index 注册成为其邻居。
+// 启动后进入一个简单控制台: /list 查看本 relay 邻居与已注册 NAT 节点, /exit 关闭并返回模式选择。
 func startRelay(listen, public, indexAddr string) {
 	rn, err := relaynode.NewRelayNode(nil, listen, public)
 	if err != nil {
@@ -348,12 +355,57 @@ func startRelay(listen, public, indexAddr string) {
 		return
 	}
 	fmt.Printf("RelayNode ID: %s\n", rn.ID())
-	fmt.Printf("监听: %s  对外地址: %s (按 Ctrl+C 退出)\n", listen, rn.Addr())
+	fmt.Printf("监听: %s  对外地址: %s\n", listen, rn.Addr())
 	if indexAddr != "" {
 		fmt.Printf("正在向 index 注册(只需地址, 其 ID 将自动获知): %s\n", indexAddr)
 		rn.RegisterToIndex(indexAddr, func(indexID, addr string) {
 			fmt.Printf("已注册到 index: id=%s addr=%s\n", indexID, addr)
 		})
 	}
-	rn.Start() // 阻塞
+
+	// Start 阻塞, 放后台跑; 主线程进入控制台读命令。
+	go rn.Start()
+
+	fmt.Println("控制台命令: /list 查看 relay 邻居与已注册 NAT 节点 | /exit 关闭并返回")
+	scanner := stdinScanner
+	for {
+		fmt.Print("(relay)> ")
+		if !scanner.Scan() {
+			break
+		}
+		switch strings.TrimSpace(scanner.Text()) {
+		case "":
+			continue
+		case "/list":
+			printRelayStatus(rn)
+		case "/exit":
+			_ = rn.Close()
+			fmt.Println("已关闭 relay, 返回模式选择。")
+			return
+		default:
+			fmt.Println("未知命令; 可用: /list, /exit")
+		}
+	}
+}
+
+// printRelayStatus 打印本 relay 的当前状态: relay 邻居(对端中转节点) + 已注册的 NAT 节点。
+func printRelayStatus(rn *relaynode.RelayNode) {
+	neighbors := rn.RelayNeighbors()
+	hosted := rn.HostedNatNodesDetailed()
+	fmt.Printf("本节点 ID: %s\n", rn.ID())
+	fmt.Printf("relay 邻居=%d  已注册 NAT 节点=%d\n", len(neighbors), len(hosted))
+	for _, p := range neighbors {
+		addr := ""
+		if len(p.Addresses) > 0 {
+			addr = p.Addresses[0].Relay
+		}
+		fmt.Printf("    [relay邻居] id=%s addr=%s\n", p.ID, addr)
+	}
+	for _, h := range hosted {
+		src := h.RemoteAddr
+		if src == "" {
+			src = "(未知)"
+		}
+		fmt.Printf("    [NAT节点] id=%s 来源=%s\n", h.NodeID, src)
+	}
 }
