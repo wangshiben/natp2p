@@ -95,7 +95,7 @@ func main() {
 			logx.SetLevel(logx.LevelInfo)
 			startRelay(listen, public, indexAddr)
 		case "node":
-			addr := "127.0.0.1:9000"
+			addr := "p2p.stationchange.cn:9000"
 			if len(fields) > 1 {
 				addr = fields[1]
 			}
