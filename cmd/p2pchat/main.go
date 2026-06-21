@@ -25,6 +25,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -57,6 +58,7 @@ func main() {
 		fmt.Println("可用模式:")
 		fmt.Println("  relay <listen> [public] [indexAddr] 启动中转服务器; 默认自动注册到 " + defaultIndexAddr + "; 启动后 /list 查看状态")
 		fmt.Println("  node  <addr> [keyFile]             启动 NAT 节点; 默认经 " + defaultIndexAddr + " bootstrap 就近选 relay")
+		fmt.Println("                                     addr 不可达/非地址或填 \"-\" 时, 自动回退到默认 index")
 		fmt.Println("  quit                               退出程序")
 		fmt.Print("> ")
 		if !scanner.Scan() {
@@ -103,9 +105,12 @@ func main() {
 			logx.SetLevel(logx.LevelInfo)
 			startRelay(listen, public, indexAddr)
 		case "node":
+			// addr 默认走 defaultIndexAddr bootstrap。允许用户只关注 keyFile:
+			//   - 填特殊指令 "-"(或 "_"/"default"): 显式跳过该字段, 直接用默认 index;
+			//   - 填了地址但网络不可达 / 压根不是个有效 host:port: 自动回退默认 index。
 			addr := defaultIndexAddr
 			if len(fields) > 1 {
-				addr = fields[1]
+				addr = resolveNodeAddr(fields[1])
 			}
 			keyFile := ""
 			if len(fields) > 2 {
@@ -317,6 +322,33 @@ func runNode(relayAddr string, keyFile string) {
 			}
 		}
 	}
+}
+
+// resolveNodeAddr 规整 node 模式的 addr 参数, 让用户可以只关注 keyFile:
+//   - 特殊指令 "-" / "_" / "default"(大小写不敏感): 显式跳过该字段, 用 defaultIndexAddr;
+//   - 不含端口 / 不是合法 host:port: 视为误填, 回退 defaultIndexAddr;
+//   - 是合法 host:port 但短超时 TCP 探测不可达: 回退 defaultIndexAddr;
+//   - 其余(可达)原样返回。
+// 注意: 即便返回 defaultIndexAddr, 后续 Bootstrap 仍会做一次完整查询/可达性回退,
+// 这里只是把"明显无效/不可达"的输入提前挡掉, 避免卡在一个连不上的自定义地址上。
+func resolveNodeAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	switch strings.ToLower(addr) {
+	case "", "-", "_", "default":
+		fmt.Printf("跳过 addr 解析, 使用默认 index: %s\n", defaultIndexAddr)
+		return defaultIndexAddr
+	}
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		fmt.Printf("addr %q 不是合法的 host:port, 回退默认 index: %s\n", addr, defaultIndexAddr)
+		return defaultIndexAddr
+	}
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		fmt.Printf("addr %q 不可达(%v), 回退默认 index: %s\n", addr, err, defaultIndexAddr)
+		return defaultIndexAddr
+	}
+	_ = conn.Close()
+	return addr
 }
 
 // loadKeyIfRequested 当 path 非空时, 优先按文件路径加载, 路径不存在则当作 hex 字符串解析,
