@@ -339,7 +339,7 @@ func (r *stabilityServerRecorder) count(payload string) int {
 func currentKCPStream(d *DualStream) network.Stream {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.kcp
+	return d.streamLocked(streamTransportKCP)
 }
 
 // waitForKCPReconnect 轮询等待 DualStream 的 KCP leg 重新建立：

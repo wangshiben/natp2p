@@ -193,7 +193,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			} else {
 				t.lock.Unlock()
 				logx.Infof("[relay] 附加 relay leg 到已有 StreamGroup: nodeId=%.16s", stream.NodeId())
-				if err := group.AttachRelayStream(stream); err != nil {
+				if err := group.AttachRelayStreamCoexist(stream, isExtraLegMarked(message)); err != nil {
 					logx.Errorf("[relay] AttachRelayStream 失败: nodeId=%.16s err=%v", stream.NodeId(), err)
 					stream.Close()
 					errChan <- err

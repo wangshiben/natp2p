@@ -73,24 +73,36 @@ func TestDualDial_KCPBlocked_FallbackToSecondTCP(t *testing.T) {
 		t.Fatalf("期望返回 *DualStream, 实际 %T", stream)
 	}
 
-	// 断言 1: 两个槽位都有 leg(没退化成单 leg)。
-	if !dual.HasStream(streamTransportKCP) {
-		t.Error("KCP 槽位应被 TCP 备路 leg 占据, 实际为空(退化成单 leg)")
-	}
-	if !dual.HasStream(streamTransportTCP) {
-		t.Error("TCP 槽位应有 leg")
-	}
-
-	// 断言 2: 两条 leg 底层都是 TCP(KCP 槽位实际放的是 TCP 备路)。
+	// 断言 1: 应有两条 leg(没退化成单 leg)。
 	dual.mu.RLock()
-	kcpSlot, tcpSlot := dual.kcp, dual.tcp
-	dual.mu.RUnlock()
-	if lt := LegTransport(kcpSlot); lt != "tcp" {
-		t.Errorf("KCP 槽位 leg 底层应为 tcp(备路), 实际 =%q", lt)
+	legCount := len(dual.legs)
+	tcpFamilyCount := 0
+	var legIDs []streamTransport
+	for id, entry := range dual.legs {
+		legIDs = append(legIDs, id)
+		if entry.family == streamTransportTCP {
+			tcpFamilyCount++
+		}
 	}
-	if lt := LegTransport(tcpSlot); lt != "tcp" {
-		t.Errorf("TCP 槽位 leg 底层应为 tcp, 实际 =%q", lt)
+	streams := make([]network.Stream, 0, len(dual.legs))
+	for _, entry := range dual.legs {
+		streams = append(streams, entry.stream)
+	}
+	dual.mu.RUnlock()
+
+	if legCount != 2 {
+		t.Errorf("应有 2 条 leg(双 TCP failover), 实际 %d 条: %v", legCount, legIDs)
 	}
 
-	t.Logf("✅ KCP 不通时降级为双 TCP leg 成功 (建连耗时 %v, 含 KCP 握手超时)", dur)
+	// 断言 2: 两条 leg 都是 TCP 物理族(KCP 不通, 补的是第二条 TCP)。
+	if tcpFamilyCount != 2 {
+		t.Errorf("两条 leg 都应为 TCP 物理族, 实际 TCP 族 %d 条", tcpFamilyCount)
+	}
+	for _, s := range streams {
+		if lt := LegTransport(s); lt != "tcp" {
+			t.Errorf("leg 底层应为 tcp, 实际 =%q", lt)
+		}
+	}
+
+	t.Logf("✅ KCP 不通时降级为双 TCP leg 成功 (建连耗时 %v, leg=%v, 含 KCP 握手超时)", dur, legIDs)
 }

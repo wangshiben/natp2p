@@ -14,6 +14,11 @@ type Header struct {
 	PayLoadLength uint   `json:"pay_load_length"`
 	ConnectionId  string `json:"connection_id"` // 计划使用uuid :
 	OriginData    []byte `json:"origin_data"`
+	// LegFlags 是 leg 级标志位，编码在固定头部 ConnectionId 之后的 1 字节填充区。
+	// bit0(LegFlagExtra)=1 表示"同一逻辑连接的额外并存 leg"（如 KCP 不通时补的第二条 TCP），
+	// relay 据此对该 leg 采取并存语义而非顶替同协议旧 leg。0 表示普通/重连 leg。
+	// 老版本发送方该字节为 0，向后兼容。
+	LegFlags uint8 `json:"leg_flags"`
 }
 type Message struct {
 	Header  *Header `json:"header"`
@@ -27,6 +32,9 @@ const (
 	NodeIdHexLength    = 64 // SHA256 Hex 字符串长度为 64
 	ConnectionIdLength = 36 //ConnectionId 长度
 )
+
+// LegFlagExtra 是 Header.LegFlags 的 bit0：标记"额外并存 leg"。
+const LegFlagExtra uint8 = 1 << 0
 
 var MagicHeaderBytes = []byte(MagicHeader)
 
@@ -96,12 +104,20 @@ func ParseHeader(headerBytes []byte) (*Header, error) {
 	connectionId := strings.TrimRight(string(headerBytes[index:index+ConnectionIdLength]), "\x00")
 	index += ConnectionIdLength
 
+	// 8.5 读取 LegFlags (1 byte，老版本无此字节则为 0)
+	var legFlags uint8
+	if index < len(headerBytes) && index < HeaderLength {
+		legFlags = headerBytes[index]
+		index++
+	}
+
 	return &Header{
 		RouteName:     RouteName,
 		NodeId:        nodeId,
 		NodeIdVersion: nodeIdVersion,
 		PayLoadLength: payloadLength,
 		ConnectionId:  connectionId,
+		LegFlags:      legFlags,
 		//OriginData:    headerBytes[:],
 	}, nil
 }
@@ -173,6 +189,13 @@ func (h *Header) ParseToBytes() ([]byte, error) {
 		return nil, errors.New("header size overflow while writing connection id")
 	}
 	copy(headerBytes[currentIndex:], connectionIdBytes)
+	currentIndex += len(connectionIdBytes)
+
+	// 9. 写入 LegFlags (1 byte，位于 ConnectionId 之后的填充区，向后兼容)
+	if currentIndex < HeaderLength {
+		headerBytes[currentIndex] = h.LegFlags
+		currentIndex++
+	}
 	// 剩余部分默认为 0，无需额外操作
 
 	return headerBytes, nil

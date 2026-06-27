@@ -102,18 +102,24 @@ func (s *StreamGroup) SetForwardHook(config *ForwardHookConfig) {
 
 // AttachRelayStream 把另一条同 nodeId 的 relay leg 挂到本 group 的 relayStream 上。
 // 用于 relay 端在 KCP / TCP 双 leg 场景下补齐第二条 leg。
-func (s *StreamGroup) AttachRelayStream(stream network.Stream) error {
+// AttachRelayStreamCoexist 同 AttachRelayStream，但 coexist=true 时强制并存
+// （用于 client 双 TCP failover 的额外 leg，首帧带 legExtraMarker）。
+func (s *StreamGroup) AttachRelayStreamCoexist(stream network.Stream, coexist bool) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	dual := ensureDualStream(s.relayStream)
 	s.relayStream = dual
-	if err := dual.AttachStream(stream); err != nil {
+	if err := dual.AttachStreamCoexist(stream, coexist); err != nil {
 		return err
 	}
 	if s.relayFrame == nil {
 		s.relayFrame = dual.EnableFrameRelay()
 	}
 	return nil
+}
+
+func (s *StreamGroup) AttachRelayStream(stream network.Stream) error {
+	return s.AttachRelayStreamCoexist(stream, false)
 }
 
 // StreamOn 把新接入的 client leg 挂到指定 ConnectionId 对应的逻辑流上。
@@ -131,7 +137,7 @@ func (s *StreamGroup) StreamOn(stream network.Stream, FirstMessage *network.Mess
 		dual := ensureDualStream(resource.stream)
 		resource.stream = dual
 		s.lock.Unlock()
-		if err := dual.AttachStream(stream); err != nil {
+		if err := dual.AttachStreamCoexist(stream, isExtraLegMarked(FirstMessage)); err != nil {
 			return false, err
 		}
 		if resource.frame == nil {

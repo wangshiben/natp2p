@@ -61,9 +61,7 @@ func NewEndpointFrameMux(stream network.Stream, onNew func(connId string, conn n
 	}
 
 	// 把当前已 attach 的每条 leg 接成原始帧适配器。
-	dual.mu.RLock()
-	legs := []network.Stream{dual.kcp, dual.tcp}
-	dual.mu.RUnlock()
+	legs := dual.legStreams()
 	for _, leg := range legs {
 		if leg == nil {
 			continue

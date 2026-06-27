@@ -277,10 +277,7 @@ func (e *DualFrameRelayEndpoint) AttachStream(kind streamTransport, stream netwo
 // 原始 MessageId 是多少」。这样当反方向需要把帧/ACK 写回这条来源 leg 时，HandleFrame
 // 能直接命中已存在的 route，而不会误判成一条全新消息再分配新 dstID。
 func (e *DualFrameRelayEndpoint) collect(kind streamTransport, adapter *TcpFrameAdapter) {
-	kindStr := "KCP"
-	if kind == streamTransportTCP {
-		kindStr = "TCP"
-	}
+	kindStr := transportName(legFamily(kind))
 	for {
 		f, err := adapter.NextFrame(e.stream.ctx)
 		if err != nil {
@@ -431,10 +428,7 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 	out := cloneFrame(frame)
 	out.MessageId = dstID
 	if err := endpoint.HandleFrame(ctx, out); err != nil {
-		kindStr := "KCP"
-		if route.kind == streamTransportTCP {
-			kindStr = "TCP"
-		}
+		kindStr := transportName(legFamily(route.kind))
 		logx.Warnf("[FrameRelay] %s HandleFrame 写入失败, 触发 replayRoute: nodeId=%.16s connId=%s err=%v",
 			kindStr, e.stream.NodeId(), e.stream.ConnectionId(), err)
 		return e.replayRoute(ctx, logicalID, route.kind, endpoint)
@@ -447,6 +441,28 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 //   - 选一条 backup leg，给这条 logicalID 重新分配 dstID（并刷新 dstID->logicalID 闭环）；
 //   - 把已缓存的所有帧按 SeqId 顺序重放到 backup leg，保证目标侧拿到的是完整消息，
 //     而不是「前半段在旧 leg、后半段在新 leg」的拼不起来的半条消息。
+// onLegDetached 在 DualStream 摘除一条 leg 时调用：删除该 leg 的 adapter，
+// 并把所有绑定到它的回写路由主动切到一条存活 leg（无存活 leg 则保留，待新 leg attach）。
+// 这样即便没有写失败触发 replayRoute，回程也能主动避开已摘除的死 leg。
+func (e *DualFrameRelayEndpoint) onLegDetached(id streamTransport) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.adapters, id)
+	for logicalID, route := range e.routes {
+		if route == nil || route.kind != id {
+			continue
+		}
+		kind, adapter := e.chooseAdapterLocked(id)
+		if adapter == nil {
+			continue
+		}
+		route.kind = kind
+		route.endpoint = adapter
+		route.dstID = adapter.AllocMessageId()
+		e.ackIDs[frameEndpointKey{kind: kind, messageID: route.dstID}] = logicalID
+	}
+}
+
 func (e *DualFrameRelayEndpoint) replayRoute(ctx context.Context, logicalID uint64, failedKind streamTransport, failedEndpoint *TcpFrameAdapter) error {
 	// 仅当 failedEndpoint 仍是该 kind 的现役 adapter 时才触发 leg 失败，
 	// 否则说明 leg 已被新 adapter 替换，写到旧 endpoint 失败属于"路由陈旧"，
@@ -499,12 +515,14 @@ func (e *DualFrameRelayEndpoint) chooseAdapterLocked(exclude streamTransport) (s
 			return preferred, adapter
 		}
 	}
-	for _, kind := range []streamTransport{streamTransportKCP, streamTransportTCP} {
-		if kind == exclude || kind == preferred {
+	// 按 DualStream.legOrder 的稳定顺序遍历适配器（含 "tcp#2" 等额外同协议 leg），
+	// 选第一条非 exclude/preferred 的。用稳定顺序而非 map 随机序，避免回程 leg 抖动。
+	for _, id := range e.stream.legIDOrder() {
+		if id == exclude || id == preferred {
 			continue
 		}
-		if adapter := e.adapters[kind]; adapter != nil {
-			return kind, adapter
+		if adapter := e.adapters[id]; adapter != nil {
+			return id, adapter
 		}
 	}
 	return streamTransportUnknown, nil

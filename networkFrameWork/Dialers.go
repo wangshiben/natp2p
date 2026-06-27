@@ -219,59 +219,61 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 	var kcpErr error
 	var tcpErr error
 
-	// kcpSlotIsTCP 标记 KCP 槽位实际放的是一条 TCP leg（KCP 不通时的备路）。
-	// 运营商高峰期会限流跨地域 UDP，导致 KCP 握手超时不通；此时不退化成单 leg，
-	// 而是在 KCP 槽位补一条 TCP，组成"双 TCP leg"保留 failover 冗余。
-	kcpSlotIsTCP := false
+	tcpDialer := func(ctx context.Context) (network.Stream, error) {
+		return tcpClientStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
+	}
+	kcpDialer := func(ctx context.Context) (network.Stream, error) {
+		return kcpStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
+	}
+	// extraTCPDialer 用于"双 TCP failover 的第二条 TCP"：首帧打 legExtraMarker 标记，
+	// 让 relay 端把它当作并存 leg（而非顶替已有同协议 leg）。
+	extraTCPDialer := func(ctx context.Context) (network.Stream, error) {
+		fm := cloneMessage(template)
+		markExtraLeg(fm)
+		return tcpClientStreamContext(ctx, fm, tcpAddr, originalNodeId, connectionId)
+	}
 
 	kcpClient, err := kcpStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
 	if err != nil {
 		kcpErr = err
-		// KCP 不通 → 在 KCP 槽位补一条 TCP 作为备路 leg。
-		tcp2, e2 := tcpClientStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
+		// KCP 不通（运营商高峰期限流跨地域 UDP）→ 补一条 TCP leg，组成"双 TCP"保留 failover 冗余。
+		// 第二条 TCP 首帧带 legExtraMarker，relay 据此并存而非顶替。
+		extraFirst := cloneMessage(FirstMessage)
+		markExtraLeg(extraFirst)
+		tcp2, e2 := tcpClientStream(extraFirst, tcpAddr, originalNodeId, connectionId)
 		if e2 != nil {
 			kcpErr = fmt.Errorf("KCP 失败(%v) 且备用 TCP 失败(%v)", err, e2)
-		} else if err := dual.attach(streamTransportKCP, tcp2); err != nil {
+		} else if legID, err := dual.attachLeg(streamTransportTCP, tcp2); err != nil {
 			_ = tcp2.Close()
 			kcpErr = err
 		} else {
-			kcpSlotIsTCP = true
-			logx.Infof("[Dialers] KCP 不通, KCP 槽位改用 TCP 备路 leg: target=%.16s connId=%s",
-				originalNodeId, connectionId)
+			dual.SetReconnectDialer(legID, extraTCPDialer)
+			logx.Infof("[Dialers] KCP 不通, 改用第二条 TCP leg(id=%s) 组成双 TCP failover: target=%.16s connId=%s",
+				legID, originalNodeId, connectionId)
 		}
-	} else if err := dual.attach(streamTransportKCP, kcpClient); err != nil {
+	} else if legID, err := dual.attachLeg(streamTransportKCP, kcpClient); err != nil {
 		_ = kcpClient.Close()
 		kcpErr = err
+	} else {
+		dual.SetReconnectDialer(legID, kcpDialer)
 	}
 
 	tcpClient, err := tcpClientStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
 	if err != nil {
 		tcpErr = err
-	} else if err := dual.attach(streamTransportTCP, tcpClient); err != nil {
+	} else if legID, err := dual.attachLeg(streamTransportTCP, tcpClient); err != nil {
 		_ = tcpClient.Close()
 		tcpErr = err
+	} else {
+		dual.SetReconnectDialer(legID, tcpDialer)
 	}
 
-	if !dual.HasStream(streamTransportKCP) && !dual.HasStream(streamTransportTCP) {
+	if len(dual.legStreams()) == 0 {
 		if tcpErr != nil {
 			return nil, tcpErr
 		}
 		return nil, kcpErr
 	}
-
-	// KCP 槽位的重连器：若该槽实际是 TCP 备路，重连也用 TCP 拨号（否则会去拨不通的 KCP）。
-	if kcpSlotIsTCP {
-		dual.SetReconnectDialer(streamTransportKCP, func(ctx context.Context) (network.Stream, error) {
-			return tcpClientStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
-		})
-	} else {
-		dual.SetReconnectDialer(streamTransportKCP, func(ctx context.Context) (network.Stream, error) {
-			return kcpStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
-		})
-	}
-	dual.SetReconnectDialer(streamTransportTCP, func(ctx context.Context) (network.Stream, error) {
-		return tcpClientStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
-	})
 	return dual, nil
 }
 

@@ -235,6 +235,17 @@ func (t *TcpStream) StartLoops() { t.startLoops() }
 // 仅当未启动 readLoop（如 AcceptTcpStreamSync 之后未 StartLoops）时, 裸读才不会与 readLoop 抢字节。
 func (t *TcpStream) RawConn() net.Conn { return t.connection }
 
+// IsClosed 报告该流是否已关闭（streamCtx 已取消）。
+// 供 DualStream 判断同协议族旧 leg 是否仍存活，从而决定"替换旧 leg"还是"并存新 leg"。
+func (t *TcpStream) IsClosed() bool {
+	select {
+	case <-t.streamCtx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 // readFirstMessageSync 直接在连接上同步读帧, 直到组装出第一条完整 Message。
 // 不经过 readLoop / inbox, 也不发 ACK（由调用方决定是否 ACK）。
 // 返回首条消息及其 messageId / totalFrames（供调用方按需 ACK）。
