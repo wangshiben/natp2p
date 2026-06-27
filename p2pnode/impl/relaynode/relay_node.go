@@ -97,9 +97,18 @@ type RelayNode struct {
 }
 
 // localBridgeEntry 跟踪一条已建立跨中继桥接的本地源连接。
+//
+// dual 拨号会对同一 connID 产生 KCP+TCP 两条 leg。为恢复跨境吞吐又规避双 leg
+// 在桥接 active 字段上的竞态，这里**确定性地只用 KCP leg(send-preferred)建桥**：
+//   - KCP 先到：立即建桥；
+//   - TCP 先到：登记为待定，等待窗口期内若 KCP 到达则改用 KCP，超时则 TCP 兜底。
+// bridge 一旦建立，后到的同 connID leg 一律关闭。
 type localBridgeEntry struct {
-	bridge *networkFrameWork.CrossRelayBridge
+	bridge   *networkFrameWork.CrossRelayBridge
+	bridged  bool        // 是否已用某条 leg 建成桥接
+	kcpReady chan struct{} // KCP leg 到达信号（TCP 等待方监听）
 }
+
 
 // NewRelayNode 创建一个中继节点。
 //
@@ -432,20 +441,60 @@ func (n *RelayNode) acceptControlLink(stream network.Stream, firstMsg *network.M
 func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Message) error {
 	target := firstMsg.Header.NodeId
 	connID := firstMsg.Header.ConnectionId
+	leg := networkFrameWork.LegTransport(stream) // "kcp" / "tcp" / ""
 
-	// 同一 connID 可能有多条 leg 进入（dual 拨号）。只用第一条建桥, 其余关闭。
-	// natnode 现以 TCP 单 leg 连 relay, 通常只有一条。
+	// dual 拨号会对同一 connID 产生 KCP+TCP 两条 leg。只用 KCP(send-preferred)建桥,
+	// 既恢复跨境吞吐又避免双 leg 在桥接 active 字段上的竞态。
 	n.mu.Lock()
 	entry := n.localLegs[connID]
-	if entry != nil {
+	if entry == nil {
+		entry = &localBridgeEntry{kcpReady: make(chan struct{})}
+		n.localLegs[connID] = entry
+	}
+	if entry.bridged {
+		// 已建桥, 多余 leg 关闭。
 		n.mu.Unlock()
-		_ = stream.Close() // 已有桥接, 多余的 leg 关闭
+		_ = stream.Close()
 		return nil
 	}
-	entry = &localBridgeEntry{}
-	n.localLegs[connID] = entry
-	n.mu.Unlock()
 
+	if leg == "tcp" {
+		// TCP 先到: 不立即建桥, 等待窗口期内 KCP 是否到达。
+		kcpReady := entry.kcpReady
+		n.mu.Unlock()
+		select {
+		case <-kcpReady:
+			// KCP 已到并由它建桥, 本 TCP leg 多余, 关闭。
+			_ = stream.Close()
+			return nil
+		case <-time.After(kcpWaitWindow):
+			// KCP 未在窗口期到达, 用 TCP 兜底建桥。
+			n.mu.Lock()
+			if entry.bridged { // 竞争: 窗口边界 KCP 刚建桥
+				n.mu.Unlock()
+				_ = stream.Close()
+				return nil
+			}
+			n.mu.Unlock()
+			logx.Infof("[relaynode] KCP leg 未在 %v 内到达, TCP 兜底建桥: target=%.16s connId=%s",
+				kcpWaitWindow, target, connID)
+			return n.doBridge(stream, firstMsg, entry, target, connID)
+		}
+	}
+
+	// KCP 到达(或无法判别 leg 类型): 立即建桥, 并通知等待中的 TCP leg。
+	n.mu.Unlock()
+	err := n.doBridge(stream, firstMsg, entry, target, connID)
+	return err
+}
+
+// kcpWaitWindow 是 TCP leg 先到时等待 KCP leg 的窗口期。
+// 跨境下 KCP(UDP) 首包可能因丢包重传晚于 TCP 到达; 给一个短等待让 KCP 优先建桥,
+// 超时则 TCP 兜底, 保证可用性。
+const kcpWaitWindow = 400 * time.Millisecond
+
+// doBridge 用给定 leg 建立跨中继桥接。建成后置 entry.bridged 并关闭 kcpReady 通知等待方。
+func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, entry *localBridgeEntry, target, connID string) error {
 	cleanup := func() {
 		n.mu.Lock()
 		delete(n.localLegs, connID)
@@ -475,11 +524,16 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 	}
 	n.mu.Lock()
 	entry.bridge = br
+	if !entry.bridged {
+		entry.bridged = true
+		close(entry.kcpReady) // 通知等待中的 TCP leg: 已建桥
+	}
 	n.mu.Unlock()
 	logx.Infof("[relaynode] 跨中继桥接建立: target=%.16s via relay=%s connId=%s leg=%s",
 		target, hostAddr, connID, networkFrameWork.LegTransport(stream))
 	return nil
 }
+
 
 // findHostRelay 向所有已建立的控制链路并发 FIND, 返回首个声称托管 target 的「控制链路」。
 // 调用方用该链路的 dialHostAddr() 得到可路由的桥接地址（而非对端自报的可能不可路由的 Addr）。

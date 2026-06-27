@@ -17,17 +17,17 @@ func NewNATTransport(pubKeyHex string) *NATTransport {
 	return &NATTransport{pubKeyHex: pubKeyHex}
 }
 
-// Register 将本节点注册为 relay 可达目标（TCP 单 leg）。
+// Register 将本节点注册为 relay 可达目标（dual: KCP + TCP 双 leg）。
 //
-// 使用 TCP 单 leg 注册（而非 dual KCP+TCP）：所有连接都经 relay 中转, relay 在公网且 TCP 稳定;
-// 单 leg 彻底避免 relayStream 的 KCP/TCP 双 leg 在中继 / 跨中继转发处的 failover 竞态
-// （dual 注册时, relayStream 某条 leg 中途 EOF 会让跨中继数据转发中断, 表现为时好时坏）。
+// 恢复 dual 注册以获得 KCP 跨境高吞吐。跨中继桥接侧通过「确定性只桥接 KCP(send-preferred)
+// leg」规避双 leg 在 relayStream / 桥接 active 字段上的 failover 竞态
+// （见 relaynode.findAndBridge 的 KCP 优先建桥逻辑）。
 func (t *NATTransport) Register(ctx context.Context, relayAddr string, publicKeyHex string) (network.Stream, error) {
-	return networkFrameWork.TryRegisterRelayStreamTCP(publicKeyHex, relayAddr)
+	return networkFrameWork.TryRegisterRelayStream(publicKeyHex, relayAddr)
 }
 
-// Dial 经指定 relay 连接到目标节点（TCP 单 leg）。
+// Dial 经指定 relay 连接到目标节点（dual: KCP + TCP 双 leg）。
 // 返回原始流（首条 hello 已发送）和连接 ID。
 func (t *NATTransport) Dial(ctx context.Context, relayAddr string, targetID p2pnode.NodeID) (network.Stream, string, error) {
-	return networkFrameWork.TryConnectTCPOnlyStream(relayAddr, string(targetID), t.pubKeyHex)
+	return networkFrameWork.TryConnectTCPStream(relayAddr, string(targetID), t.pubKeyHex)
 }
