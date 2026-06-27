@@ -1,2 +1,10 @@
 .idea
 .vscode
+
+# 编译产物(根目录构建的二进制)
+/client
+/server
+/hooktest
+
+# 测试下载的临时大文件
+*.bin
