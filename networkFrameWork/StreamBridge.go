@@ -75,6 +75,13 @@ func NewCrossRelayBridge(parent context.Context, hostAddr, targetNodeID, originP
 	return newCrossRelayBridge(parent, hostAddr, targetNodeID, originPubKey, connID)
 }
 
+// SetDialFunc 覆盖桥接拨号函数。连接池（Phase B+）用它把"裸拨独占物理连接"替换为
+// "从池里开一条 mux 会话"。dial 的入参与默认 dialRawBridgeConn 一致，返回的 net.Conn
+// 由桥接在会话结束时 Close（对池化 stream 即关闭该逻辑会话，不影响共享物理连接）。
+func (b *CrossRelayBridge) SetDialFunc(dial func(addr, targetNodeId, originPubKeyHex, connID string) (net.Conn, error)) {
+	b.dialBridgeConn = dial
+}
+
 // SpliceLeg 把源节点的一条底层流接入桥接。第一次调用时建立到对端 relay 的唯一连接并启动
 // peer→local 泵；每次调用都为这条 local leg 启动 local→peer 泵。
 // stream 必须是 AcceptTcpStreamSync 得到、尚未启动 readLoop 的 *TcpStream。

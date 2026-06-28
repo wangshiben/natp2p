@@ -81,6 +81,9 @@ type RelayNode struct {
 	// 避免重复拨向对端 relay、重复建桥导致握手错乱。
 	localLegs map[string]*localBridgeEntry
 
+	// bridgePools 跨中继桥接连接池(Phase B+): key = hostAddr(对端 relay 可路由地址)。
+	bridgePools map[string]*relayPeerPool
+
 	// forwardHookConfig 转发 hook 配置（可选）
 	forwardHookConfig *ForwardHookConfig
 
@@ -161,6 +164,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 	}
 
 	n.localLegs = make(map[string]*localBridgeEntry)
+	n.bridgePools = make(map[string]*relayPeerPool)
 
 	// 安装框架回调：注册流建立时登记到 natNodes；业务连接未命中本地 group 时走跨中继逻辑。
 	cover := n.starter.Cover()
@@ -558,12 +562,18 @@ func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, e
 		return fmt.Errorf("relaynode: 无法确定托管 relay 的可路由地址 (target=%.16s)", target)
 	}
 
-	// 裸字节级跨中继桥接：relay 退化成哑字节管道, 不重写 MessageId / 不组包 / 不 ACK,
+	// 跨中继桥接：relay 退化成哑字节管道, 不重写 MessageId / 不组包 / 不 ACK,
 	// local1↔local2 端到端可靠性完全自洽。透传 local1 的 hello（含公钥）与原始 connID。
+	//
+	// 连接池版（Phase B+）：桥接不再每会话独占一条物理 TCP, 而是从到 hostAddr 的连接池
+	// 开一条 mux 逻辑会话（多路复用到共享物理连接上）。会话结束 Close 只关该逻辑会话。
 	br := networkFrameWork.NewCrossRelayBridge(n.ctx, hostAddr, target, string(firstMsg.Payload), connID)
+	br.SetDialFunc(func(addr, targetNodeId, originPubKeyHex, cid string) (net.Conn, error) {
+		return n.openBridgeStream(addr, targetNodeId, originPubKeyHex, cid)
+	})
 	if err := br.SpliceLeg(stream); err != nil {
 		cleanup()
-		return fmt.Errorf("relaynode: 建立裸字节桥接失败: %w", err)
+		return fmt.Errorf("relaynode: 建立跨中继桥接失败: %w", err)
 	}
 	n.mu.Lock()
 	entry.bridge = br
@@ -751,6 +761,8 @@ func (n *RelayNode) Close() error {
 		n.peerLinks = nil
 		n.inboundLinks = nil
 		n.mu.Unlock()
+		// 关闭跨中继连接池(Phase B)：closeBridgePools 内部自取 n.mu，必须在解锁后调用。
+		n.closeBridgePools()
 		n.starter.Close()
 	})
 	return nil

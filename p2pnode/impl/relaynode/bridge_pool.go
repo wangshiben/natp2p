@@ -1,0 +1,269 @@
+package relaynode
+
+import (
+	"bnfs_p2p/logx"
+	"bnfs_p2p/networkFrameWork"
+	"context"
+	"errors"
+	"sync"
+	"time"
+)
+
+// =============================================================================
+// relayPeerPool —— 到一个对端 relay 的多路复用物理连接池
+//
+// 设计要点（见 cmd/tunnel/RELAY_BRIDGE_POOL_DESIGN.md Phase B）：
+//   - 按 hostAddr（对端 relay 可路由地址）做 key，每个对端一个池。
+//   - 池内维护多条 physConn（MuxSession），每条 physConn 承载多路会话（OpenStream）。
+//   - least-loaded 选连接：新会话选 ActiveStreams() 最小的 physConn。
+//   - Phase B 只做「单连接 + 手动扩容接口」，扩容水位/高峰/收缩在 Phase C/D。
+// =============================================================================
+
+var (
+	errPoolClosed    = errors.New("bridge pool: closed")
+	errNoHealthyConn = errors.New("bridge pool: no healthy connection")
+)
+
+// relayPeerPool 管理到一个对端 relay 的所有 mux 物理连接。
+type relayPeerPool struct {
+	hostAddr     string
+	selfNodeID   string // 本 relay NodeId（拨号握手时作 Header.NodeId）
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	conns        []*physConn
+	closed       bool
+	minWarmConns int // 最少保持的热连接数（Phase B 固定 1，Phase D 可调）
+}
+
+// physConn 是一条 relay↔relay 的物理 mux 连接（含重连）。
+type physConn struct {
+	pool    *relayPeerPool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.Mutex
+	sess    *networkFrameWork.MuxSession
+	closed  bool
+	backoff time.Duration // 当前退避时长
+}
+
+// 重连退避参数（沿用 peerLink 范本：nextBackoff 在 peer_link.go，上限 peerLinkRedialMax）。
+const (
+	physConnRedialInitial = 500 * time.Millisecond
+)
+
+// newRelayPeerPool 创建到 hostAddr 的连接池，立即启动 minWarmConns 条物理连接。
+func newRelayPeerPool(parent context.Context, hostAddr, selfNodeID string, minWarmConns int) *relayPeerPool {
+	ctx, cancel := context.WithCancel(parent)
+	p := &relayPeerPool{
+		hostAddr:     hostAddr,
+		selfNodeID:   selfNodeID,
+		ctx:          ctx,
+		cancel:       cancel,
+		minWarmConns: minWarmConns,
+	}
+	// Phase B：启动时只建 minWarmConns 条（暂定 1），扩容接口留给 Phase C。
+	for i := 0; i < minWarmConns; i++ {
+		p.addPhysConn()
+	}
+	return p
+}
+
+// addPhysConn 新增一条物理连接到池（带退避重连）。
+func (p *relayPeerPool) addPhysConn() *physConn {
+	ctx, cancel := context.WithCancel(p.ctx)
+	pc := &physConn{
+		pool:    p,
+		ctx:     ctx,
+		cancel:  cancel,
+		backoff: physConnRedialInitial,
+	}
+	p.mu.Lock()
+	p.conns = append(p.conns, pc)
+	p.mu.Unlock()
+	go pc.manage()
+	return pc
+}
+
+// OpenStream 在池内选一条 least-loaded 物理连接上开一条逻辑会话。
+// Phase B：只用第一条 conn；Phase C 扩容后选 ActiveStreams 最小的。
+func (p *relayPeerPool) OpenStream(connID, targetNodeID, originPubKey string) (*networkFrameWork.MuxStream, error) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errPoolClosed
+	}
+	var best *physConn
+	minActive := int(^uint(0) >> 1) // max int
+	for _, pc := range p.conns {
+		pc.mu.Lock()
+		sess := pc.sess
+		pc.mu.Unlock()
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		active := sess.ActiveStreams()
+		if active < minActive {
+			minActive = active
+			best = pc
+		}
+	}
+	p.mu.Unlock()
+	if best == nil {
+		return nil, errNoHealthyConn
+	}
+	best.mu.Lock()
+	sess := best.sess
+	best.mu.Unlock()
+	if sess == nil || sess.IsClosed() {
+		return nil, errNoHealthyConn
+	}
+	return sess.OpenStream(connID, targetNodeID, originPubKey)
+}
+
+// Close 关闭池及其所有物理连接。
+func (p *relayPeerPool) Close() error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	p.closed = true
+	conns := p.conns
+	p.conns = nil
+	p.mu.Unlock()
+	p.cancel()
+	for _, pc := range conns {
+		pc.close()
+	}
+	return nil
+}
+
+// manage 是 physConn 的重连循环（沿用 peerLink.manage 范本）。
+func (pc *physConn) manage() {
+	for {
+		select {
+		case <-pc.ctx.Done():
+			return
+		default:
+		}
+		sess, err := networkFrameWork.DialBridgeMuxSession(pc.ctx, pc.pool.hostAddr, pc.pool.selfNodeID)
+		if err != nil {
+			logx.Warnf("[bridge-pool] 拨向 %s 失败, %v 后重试: %v", pc.pool.hostAddr, pc.backoff, err)
+			if !pc.sleep(pc.backoff) {
+				return
+			}
+			pc.backoff = nextBackoff(pc.backoff)
+			continue
+		}
+		pc.mu.Lock()
+		pc.sess = sess
+		pc.mu.Unlock()
+		pc.backoff = physConnRedialInitial // 成功后重置退避
+		logx.Infof("[bridge-pool] 物理连接已建立: peer=%s", pc.pool.hostAddr)
+		// 阻塞直到 sess 断开（sess.Context().Done()）或 pc 被关闭。
+		select {
+		case <-sess.Context().Done():
+			logx.Infof("[bridge-pool] 物理连接断开: peer=%s", pc.pool.hostAddr)
+			pc.mu.Lock()
+			pc.sess = nil
+			pc.mu.Unlock()
+			if !pc.sleep(pc.backoff) {
+				return
+			}
+			pc.backoff = nextBackoff(pc.backoff)
+		case <-pc.ctx.Done():
+			_ = sess.Close()
+			return
+		}
+	}
+}
+
+func (pc *physConn) sleep(d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-pc.ctx.Done():
+		return false
+	}
+}
+
+func (pc *physConn) close() {
+	pc.cancel()
+	pc.mu.Lock()
+	sess := pc.sess
+	pc.sess = nil
+	pc.mu.Unlock()
+	if sess != nil {
+		_ = sess.Close()
+	}
+}
+
+// =============================================================================
+// RelayNode 侧：池查找/创建 + 跨中继会话开启
+// =============================================================================
+
+// bridgeMinWarmConns 是每个对端 relay 池保底保持的热连接数（Phase D 可调）。
+const bridgeMinWarmConns = 1
+
+// poolFor 返回到 hostAddr 的连接池，不存在则惰性创建。
+func (n *RelayNode) poolFor(hostAddr string) *relayPeerPool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if pool := n.bridgePools[hostAddr]; pool != nil {
+		return pool
+	}
+	pool := newRelayPeerPool(n.ctx, hostAddr, n.idStr(), bridgeMinWarmConns)
+	n.bridgePools[hostAddr] = pool
+	logx.Infof("[bridge-pool] 新建连接池: peer=%s minWarm=%d", hostAddr, bridgeMinWarmConns)
+	return pool
+}
+
+// openBridgeStream 通过池向 hostAddr 开一条跨中继逻辑会话。
+// 池内物理连接可能正在(重)拨号尚未就绪，这里给一个短重试窗口等待首条连接建立。
+func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connID string) (*networkFrameWork.MuxStream, error) {
+	pool := n.poolFor(hostAddr)
+	deadline := time.Now().Add(bridgeOpenTimeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		st, err := pool.OpenStream(connID, targetNodeID, originPubKey)
+		if err == nil {
+			return st, nil
+		}
+		lastErr = err
+		if err == errPoolClosed {
+			return nil, err
+		}
+		// 物理连接尚未就绪（errNoHealthyConn）：短暂等待重试。
+		select {
+		case <-time.After(bridgeOpenRetryInterval):
+		case <-n.ctx.Done():
+			return nil, n.ctx.Err()
+		}
+	}
+	if lastErr == nil {
+		lastErr = errNoHealthyConn
+	}
+	return nil, lastErr
+}
+
+// closeBridgePools 关闭所有跨中继连接池（RelayNode.Close 调用）。
+func (n *RelayNode) closeBridgePools() {
+	n.mu.Lock()
+	pools := make([]*relayPeerPool, 0, len(n.bridgePools))
+	for _, p := range n.bridgePools {
+		pools = append(pools, p)
+	}
+	n.bridgePools = make(map[string]*relayPeerPool)
+	n.mu.Unlock()
+	for _, p := range pools {
+		_ = p.Close()
+	}
+}
+
+const (
+	// bridgeOpenTimeout 等待池内物理连接就绪并开出会话的总超时。
+	bridgeOpenTimeout = 5 * time.Second
+	// bridgeOpenRetryInterval 物理连接尚未就绪时的重试间隔。
+	bridgeOpenRetryInterval = 100 * time.Millisecond
+)
