@@ -49,6 +49,7 @@ type CrossRelayBridge struct {
 	localConns []net.Conn
 	active     net.Conn // 最近活跃的 local leg, peer→local 往它写
 	started    bool
+	liveLegs   int // 仍在运行的 local leg 数；归零时关闭 peerConn(释放池中逻辑会话)
 }
 
 // newCrossRelayBridge 由 relaynode 通过 NewCrossRelayBridge 构造。
@@ -105,6 +106,7 @@ func (b *CrossRelayBridge) SpliceLeg(stream network.Stream) error {
 	}
 	b.localConns = append(b.localConns, localConn)
 	b.active = localConn
+	b.liveLegs++
 	peerConn := b.peerConn
 	b.mu.Unlock()
 
@@ -139,6 +141,18 @@ func (b *CrossRelayBridge) pumpLocalToPeer(localConn net.Conn) {
 			}
 		}
 		if err != nil {
+			// 一条 local leg 结束（含 client 异常断开的 EOF/RST）。仅当所有 leg 都结束时,
+			// 才关闭对端 mux stream, 让 CLOSE 帧传播、对端 activeStreams 递减,
+			// 池中该逻辑会话得以释放（否则会把仍存活的 failover leg 一起切断）。
+			// 池化下 peerConn 是一条 *MuxStream, Close 只关该逻辑会话, 不影响共享物理连接。
+			b.mu.Lock()
+			b.liveLegs--
+			last := b.liveLegs <= 0
+			peer := b.peerConn
+			b.mu.Unlock()
+			if last && peer != nil {
+				_ = peer.Close()
+			}
 			return
 		}
 	}
