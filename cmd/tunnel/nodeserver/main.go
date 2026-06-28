@@ -28,6 +28,7 @@ func main() {
 	listen := flag.String("listen", ":9000", "listen address")
 	public := flag.String("public", "", "public address (relay only, auto-inferred if empty)")
 	indexAddr := flag.String("index", "", "index address to register to (relay only)")
+	bridgeWidth := flag.Int("bridge-width", 0, "cross-relay striping width: 0=auto(throughput-driven), 1=off, >1=force M legs")
 	flag.Parse()
 
 	logx.SetLevel(logx.LevelInfo)
@@ -36,6 +37,10 @@ func main() {
 	if err != nil {
 		fmt.Printf("创建节点失败: %v\n", err)
 		os.Exit(1)
+	}
+	if *bridgeWidth > 0 {
+		rn.SetBridgeWidth(*bridgeWidth)
+		fmt.Printf("跨中继条带化宽度(强制): %d\n", *bridgeWidth)
 	}
 
 	fmt.Printf("=== Node Server (%s) ===\n", *mode)

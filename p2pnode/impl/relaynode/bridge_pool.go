@@ -665,15 +665,24 @@ func (pc *physConn) close() {
 const bridgeMinWarmConns = 1
 
 // poolFor 返回到 hostAddr 的连接池，不存在则惰性创建。
+// 若显式强制了 bridgeWidth>1，则用它作为 minWarm floor，预热足够的物理连接让条带化能真正
+// 摊到多条独立 TCP（单条逻辑连接不会自发产生跨流竞争来触发扩容）。
 func (n *RelayNode) poolFor(hostAddr string) *relayPeerPool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if pool := n.bridgePools[hostAddr]; pool != nil {
 		return pool
 	}
-	pool := newRelayPeerPool(n.ctx, hostAddr, n.idStr(), bridgeMinWarmConns)
+	minWarm := bridgeMinWarmConns
+	if w := int(n.bridgeWidth.Load()); w > minWarm {
+		if w > poolMaxConns {
+			w = poolMaxConns
+		}
+		minWarm = w
+	}
+	pool := newRelayPeerPool(n.ctx, hostAddr, n.idStr(), minWarm)
 	n.bridgePools[hostAddr] = pool
-	logx.Infof("[bridge-pool] 新建连接池: peer=%s minWarm=%d", hostAddr, bridgeMinWarmConns)
+	logx.Infof("[bridge-pool] 新建连接池: peer=%s minWarm=%d", hostAddr, minWarm)
 	return pool
 }
 
