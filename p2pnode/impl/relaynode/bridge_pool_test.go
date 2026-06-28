@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -529,4 +530,68 @@ func TestBridgePool_ReapKeepsActive(t *testing.T) {
 		t.Errorf("回收后活跃 stream 所在连接丢失")
 	}
 	t.Logf("✔ 收缩跳过活跃连接, 剩余 %d 条且活跃会话存活", c)
+}
+
+// TestBridgePool_ChurnNoLeak 近似 Phase E 的本地校验：高频开/关会话(churn)下，
+// 物理连接数保持有界(不随会话数线性增长)，且每次会话端到端数据完整(SHA 一致)。
+// 模拟真实链路上大量短会话来去时连接池不泄漏物理连接。
+func TestBridgePool_ChurnNoLeak(t *testing.T) {
+	logx.SetLevel(logx.LevelInfo)
+	serverRelay, serverAddr := newTestBridgeRelay(t, "server-churn")
+	defer serverRelay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	pool := newRelayPeerPool(ctx, serverAddr, "client-churn", 1)
+	defer pool.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	goroutinesBefore := runtime.NumGoroutine()
+
+	// 200 次会话：每次开 stream → 发 4KB → 校验 echo → 关闭。低并发(逐个), 不应扩容。
+	const rounds = 200
+	payload := make([]byte, 4*1024)
+	for i := range payload {
+		payload[i] = byte(i * 7 & 0xff)
+	}
+	wantHash := sha256.Sum256(payload)
+	maxConnsSeen := 0
+	for i := 0; i < rounds; i++ {
+		st, err := pool.OpenStream(fmt.Sprintf("churn-%d", i), "target", "key")
+		if err != nil {
+			t.Fatalf("round %d OpenStream 失败: %v", i, err)
+		}
+		if _, err := st.Write(payload); err != nil {
+			t.Fatalf("round %d Write 失败: %v", i, err)
+		}
+		recv := make([]byte, len(payload))
+		if _, err := io.ReadFull(st, recv); err != nil {
+			t.Fatalf("round %d Read 失败: %v", i, err)
+		}
+		if sha256.Sum256(recv) != wantHash {
+			t.Fatalf("round %d SHA 不匹配", i)
+		}
+		_ = st.Close()
+		if c := pool.connCount(); c > maxConnsSeen {
+			maxConnsSeen = c
+		}
+	}
+
+	// 逐个低并发会话：物理连接数应始终远低于会话数(理想保持 1)。
+	if maxConnsSeen > 2 {
+		t.Errorf("低并发 churn 不应显著扩容, 峰值物理连接=%d (会话=%d)", maxConnsSeen, rounds)
+	}
+	finalConns := pool.connCount()
+	if finalConns < 1 {
+		t.Errorf("churn 结束后应保留 ≥minWarmConns 条, 实际 %d", finalConns)
+	}
+
+	// goroutine 不应随会话数线性泄漏(给后台 reap/autoscale 一点收尾余量)。
+	time.Sleep(300 * time.Millisecond)
+	goroutinesAfter := runtime.NumGoroutine()
+	if delta := goroutinesAfter - goroutinesBefore; delta > 20 {
+		t.Errorf("疑似 goroutine 泄漏: churn %d 次后 goroutine 增长 %d", rounds, delta)
+	}
+	t.Logf("✔ churn %d 次会话: 物理连接峰值=%d 终值=%d, goroutine 增长=%d (SHA 全程一致)",
+		rounds, maxConnsSeen, finalConns, goroutinesAfter-goroutinesBefore)
 }
