@@ -5,6 +5,7 @@ import (
 	"bnfs_p2p/networkFrameWork"
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"time"
 )
@@ -375,6 +376,31 @@ func (p *relayPeerPool) OpenStream(connID, targetNodeID, originPubKey string) (*
 	return sess.OpenStream(connID, targetNodeID, originPubKey)
 }
 
+// OpenLogicalConn 在池内开一条逻辑连接（逻辑/物理 N:M 抽象的入口）。
+// width = 该逻辑连接要用的物理 leg 数：
+//   - width<=1：单 leg（模式 A 退化 / 默认），等价 OpenStream 包一层 LogicalConn。
+//   - width>1：条带化（模式 B），在 width 条不同 physConn 上各开一条 leg（F3 启用分片收发）。
+//
+// F1：width 恒按 1 处理（上层暂只传 1）；F3/F4 再启用 >1 的多 leg 装配。
+func (p *relayPeerPool) OpenLogicalConn(connID, targetNodeID, originPubKey string, width int) (*networkFrameWork.LogicalConn, error) {
+	if width < 1 {
+		width = 1
+	}
+	if width == 1 {
+		st, err := p.OpenStream(connID, targetNodeID, originPubKey)
+		if err != nil {
+			return nil, err
+		}
+		return networkFrameWork.NewSingleLegConn(st), nil
+	}
+	// width>1 的多 leg 装配在 F3 接入；当前退化为单 leg，保证行为安全。
+	st, err := p.OpenStream(connID, targetNodeID, originPubKey)
+	if err != nil {
+		return nil, err
+	}
+	return networkFrameWork.NewSingleLegConn(st), nil
+}
+
 // Close 关闭池及其所有物理连接。
 func (p *relayPeerPool) Close() error {
 	p.mu.Lock()
@@ -475,14 +501,16 @@ func (n *RelayNode) poolFor(hostAddr string) *relayPeerPool {
 
 // openBridgeStream 通过池向 hostAddr 开一条跨中继逻辑会话。
 // 池内物理连接可能正在(重)拨号尚未就绪，这里给一个短重试窗口等待首条连接建立。
-func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connID string) (*networkFrameWork.MuxStream, error) {
+//
+// F1 改造：返回 *LogicalConn（仍实现 net.Conn），桥接调用端透明（只认 net.Conn）。
+func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connID string) (net.Conn, error) {
 	pool := n.poolFor(hostAddr)
 	deadline := time.Now().Add(bridgeOpenTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		st, err := pool.OpenStream(connID, targetNodeID, originPubKey)
+		lc, err := pool.OpenLogicalConn(connID, targetNodeID, originPubKey, 1) // F1: width=1
 		if err == nil {
-			return st, nil
+			return lc, nil
 		}
 		lastErr = err
 		if err == errPoolClosed {
