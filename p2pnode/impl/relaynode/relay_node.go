@@ -389,6 +389,30 @@ func (n *RelayNode) onMissingGroup(stream network.Stream, firstMsg *network.Mess
 // 循环 Accept 出逐条逻辑会话；每条会话用 AcceptBridgeMuxStream 包装成「带合成 hello 首帧的
 // net.Conn」，再交给 TransportCover.ListenTCPConnection 复用全部下游接入逻辑
 // （→ 路由到本 relay 托管的 nat 节点，或继续向下游桥接）。
+// knownRelayPeer 报告 nodeID 是否为本端已建立控制链路的对端 relay（peerLinks/inboundLinks）。
+// 用于 bridge-mux 接入时的来源校验。空 nodeID 视为未知。
+func (n *RelayNode) knownRelayPeer(nodeID string) bool {
+	if nodeID == "" {
+		return false
+	}
+	n.mu.RLock()
+	links := make([]*peerLink, 0, len(n.peerLinks)+len(n.inboundLinks))
+	for _, pl := range n.peerLinks {
+		links = append(links, pl)
+	}
+	links = append(links, n.inboundLinks...)
+	n.mu.RUnlock()
+	for _, pl := range links {
+		pl.mu.Lock()
+		id := pl.peerID
+		pl.mu.Unlock()
+		if id == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
 func (n *RelayNode) acceptBridgeMux(stream network.Stream, firstMsg *network.Message) error {
 	tcp := networkFrameWork.TCPStreamOf(stream)
 	if tcp == nil || tcp.RawConn() == nil {
@@ -396,6 +420,14 @@ func (n *RelayNode) acceptBridgeMux(stream network.Stream, firstMsg *network.Mes
 	}
 	rawConn := tcp.RawConn()
 	peerNodeId := firstMsg.Header.NodeId
+	// 来源校验（Phase E §3）：bridge-mux 物理连接会多路复用承载大量逻辑会话，
+	// 接受陌生来源风险被放大。这里做「软校验」——未知来源记 WARN 但仍接受，
+	// 保证不误杀控制链路尚未就绪时到达的桥接（零行为变更、纯可观测性）。
+	// 待用户确认拓扑后，可将此处升级为硬拒绝（return error）。
+	if !n.knownRelayPeer(peerNodeId) {
+		logx.Warnf("[relaynode] bridge-mux 来源未在已知对端 relay 集合: peer=%.16s remote=%s (软校验放行, 见 Phase E §3)",
+			peerNodeId, rawConn.RemoteAddr())
+	}
 	logx.Infof("[relaynode] 接受 bridge-mux 物理连接: peer=%.16s remote=%s", peerNodeId, rawConn.RemoteAddr())
 
 	sess := networkFrameWork.NewMuxSession(n.ctx, rawConn, false)

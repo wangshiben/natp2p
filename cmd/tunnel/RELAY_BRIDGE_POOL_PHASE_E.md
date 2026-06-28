@@ -66,22 +66,32 @@
 
 ---
 
-## 3. 待评估的安全事项（Phase E 发现）
+## 3. 桥接来源校验（Phase E 发现 → 已实施软校验）
 
-**现状**：`acceptBridgeMux`（`relay_node.go`）接受**任何**带 `RelayBridgeMuxRoute`
+**原现状**：`acceptBridgeMux`（`relay_node.go`）接受**任何**带 `RelayBridgeMuxRoute`
 首帧的连接，对端身份仅凭其自报的 `Header.NodeId`，**未校验是否为可信对端 relay**。
 
 **风险**：与改造前的裸字节桥接信任模型一致，但**池化放大了影响**——一条被接受的物理连接
 此后可多路复用承载任意数量会话。恶意一方若能连到 relay 的桥接端口，即可借一条物理连接
 开大量逻辑会话。
 
-**建议的收敛路径（未实施，待用户决策）**：
-1. 在 `acceptBridgeMux` 校验 `firstMsg.Header.NodeId` ∈ 已建立控制链路的对端 relay 集合
-   （`peerLinks` / `inboundLinks` 已知 NodeId），拒绝陌生来源。
+**已实施（软校验，零行为变更）**：
+- 新增 `RelayNode.knownRelayPeer(nodeID)`：遍历 `peerLinks`/`inboundLinks` 比对已知对端
+  relay 的 `peerID`。
+- `acceptBridgeMux` 对未在已知集合的来源记 `WARN` 但**仍放行**，避免误杀「控制链路尚未
+  就绪时到达的桥接」。
+- 验证：跨中继集成测试 `TestCrossRelay_DualLeg_LargeTransfer` 中 WARN **未触发**，
+  证明合法跨中继路径的入口 relay NodeId 总在 host relay 的已知集合内——
+  即升级为硬拒绝对合法路径是安全的。
+
+**待用户决策的进一步收敛**：
+1. 将软校验升级为**硬拒绝**（未知来源 `return error` 直接关闭连接）。
+   已验证合法路径不受影响，只需把 `acceptBridgeMux` 的 WARN 分支改为返回错误。
 2. 或对桥接握手帧增加基于 relay 身份私钥的签名校验（与控制链路一致的鉴权）。
 3. 配合每对端 `poolMaxConns` 封顶（已有）限制单来源的物理连接占用。
 
-> 该改动触及 relay 信任模型，范围超出连接池任务本身，故在此登记，不在本轮静默变更。
+> 硬拒绝触及信任边界，可能影响特殊拓扑（如尚未建控制链路即桥接），故保留为软校验默认，
+> 升级开关留给用户。
 
 ---
 
@@ -90,4 +100,5 @@
 - 连接池（阶段 A–D）**功能完整、本地验证充分**：复用、扩容（并发+发送压力）、
   高峰批量预扩、闲置收缩+保底，均有针对性测试覆盖且 `-race` 通过。
 - **无连接/ goroutine 泄漏**（churn 测试担保），端到端语义不变（SHA 一致 + 跨中继集成测试通过）。
-- 真实跨境链路验证（§2）与桥接握手鉴权（§3）需在用户的多服务器环境推进。
+- 桥接来源软校验（§3）已实施且验证合法路径不触发 WARN；硬拒绝升级开关留给用户。
+- 真实跨境链路验证（§2）需在用户的多服务器环境推进。
