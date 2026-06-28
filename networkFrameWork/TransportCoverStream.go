@@ -21,6 +21,12 @@ const relayControlRouteHint = "/relay/control"
 // stream 上正常 SendMessage/NextMessage（先 AckFirstMessage + StartLoops）。
 const relayQueryRouteHint = "/relay/query"
 
+// relayBridgeMuxRouteHint 与 relaynode.RelayBridgeMuxRoute 取值一致（避免循环依赖, 常量副本,
+// 由注释保持同步）。relay↔relay 多路复用桥接物理连接的握手 RouteName。
+// 它必须像裸字节桥接一样【不启动读写循环】(否则 readLoop 会偷走后续 mux 帧),
+// 由 onMissingGroup → acceptBridgeMux 直接接管底层裸连接跑 MuxSession。
+const relayBridgeMuxRouteHint = "/relay/bridge-mux"
+
 // TransportCover 将 TCP/UDP 连接转换为 Stream。
 type TransportCover struct {
 	StreamGroup map[string]*StreamGroup
@@ -133,7 +139,23 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		t.lock.RUnlock()
 		isBridge := len(message.Header.ConnectionId) != 0 && !hasGroupPeek &&
 			missingHandlerPeek != nil && message.Header.RouteName != relayControlRouteHint &&
-			message.Header.RouteName != relayQueryRouteHint
+			message.Header.RouteName != relayQueryRouteHint &&
+			message.Header.RouteName != relayBridgeMuxRouteHint
+
+		// bridge-mux 物理连接握手：与裸字节桥接一样【不启动读写循环】，
+		// 直接把底层裸连接交给 handler(acceptBridgeMux) 跑 MuxSession。
+		if message.Header.RouteName == relayBridgeMuxRouteHint && missingHandlerPeek != nil {
+			_ = stream.AckFirstMessage()
+			if err := missingHandlerPeek(stream, message); err != nil {
+				logx.Errorf("[relay] MissingGroupHandler(bridge-mux) 处理失败: peer=%.16s err=%v",
+					message.Header.NodeId, err)
+				stream.Close()
+				errChan <- err
+				return
+			}
+			errChan <- nil
+			return
+		}
 
 		if isBridge {
 			// 裸字节级跨中继桥接：不启动 readLoop（否则会偷走后续裸字节）。

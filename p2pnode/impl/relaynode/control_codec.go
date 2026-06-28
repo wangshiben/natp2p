@@ -13,6 +13,14 @@ import (
 // 本地未托管的 nat 节点」。控制链路建立后，后续所有控制消息也复用此 RouteName。
 const RelayControlRoute = "/relay/control"
 
+// RelayBridgeMuxRoute 是 relay→relay 跨中继「多路复用桥接物理连接」的 RouteName 标记。
+//
+// 入口 relay 与托管 relay 之间维护若干条复用物理连接（连接池），每条物理连接建立时
+// 用本 RouteName 作首帧握手，对端 relay 据此进入 mux-accept 模式：把该物理连接交给
+// 一个 MuxSession，循环 Accept 出逐条逻辑会话（每个跨中继 connID 一条），再把每条
+// 会话当作普通 client leg 接入下游（→ 托管的 nat 节点）。
+const RelayBridgeMuxRoute = "/relay/bridge-mux"
+
 // 控制消息类型。
 const (
 	ctrlHello    = "HELLO"     // 交换 relay 身份与公网业务地址

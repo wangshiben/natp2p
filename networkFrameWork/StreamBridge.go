@@ -183,39 +183,36 @@ func (b *CrossRelayBridge) Close() {
 	}
 }
 
-// dialRawBridgeConn 裸拨一条到对端 relay 的 TCP 连接, 并把 local1 的 hello 作为首帧发出。
-// 返回的 net.Conn 之后只做裸字节转发, 不再有任何 TcpStream 逻辑。
+// dialRawBridgeConn 建立一条到对端 relay 的「跨中继会话」连接。
+//
+// 多路复用版：为每个会话单拨一条物理 TCP + 物理握手 + 在其上开一条 mux stream，
+// 返回该 muxStream（实现 net.Conn）。会话结束关闭 muxStream 时一并关闭其独占的物理连接。
+// 注意：这是 Phase A 的"每会话独立物理连接"形态；连接池（Phase B）会改为
+// 复用共享物理连接，届时 CrossRelayBridge 不再走本函数，而由池注入 muxStream。
 func dialRawBridgeConn(addr, targetNodeId, originPubKeyHex, connID string) (net.Conn, error) {
-	conn, err := net.Dial("tcp4", addr)
+	sess, err := DialBridgeMuxSession(context.Background(), addr, targetNodeId)
 	if err != nil {
 		return nil, err
 	}
-	// 首帧：把 local1 的 hello（Header.NodeId=target, Payload=local1 公钥, ConnectionId=connID）
-	// 按帧格式发出, 与普通客户端连 relay 的首包一致, 触发对端 relay 的 StreamOn。
-	header := &network.Header{
-		RouteName:     "",
-		NodeId:        targetNodeId,
-		NodeIdVersion: 1,
-		ConnectionId:  connID,
-	}
-	msg := &network.Message{Header: header, Payload: []byte(originPubKeyHex)}
-	frames, err := msg.ToFrames(1)
+	st, err := sess.OpenStream(connID, targetNodeId, originPubKeyHex)
 	if err != nil {
-		_ = conn.Close()
+		_ = sess.Close()
 		return nil, err
 	}
-	for _, f := range frames {
-		bs, err := f.ParseToBytes()
-		if err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-		if _, err := conn.Write(bs); err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-	}
-	return conn, nil
+	// Phase A：物理连接与会话一一对应，MuxStream 关闭即关物理会话。
+	return &ownedMuxConn{MuxStream: st, sess: sess}, nil
+}
+
+// ownedMuxConn 把一条独占物理会话的 MuxStream 包装成 net.Conn：
+// Close 时同时关闭其独占的 MuxSession（含底层物理连接）。
+type ownedMuxConn struct {
+	*MuxStream
+	sess *MuxSession
+}
+
+func (c *ownedMuxConn) Close() error {
+	_ = c.MuxStream.Close()
+	return c.sess.Close()
 }
 
 // LegTransport 返回一条流底层 leg 的传输类型字符串("kcp"/"tcp"/"")。

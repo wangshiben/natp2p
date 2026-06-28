@@ -369,10 +369,53 @@ func (n *RelayNode) onMissingGroup(stream network.Stream, firstMsg *network.Mess
 	if firstMsg.Header.RouteName == RelayControlRoute {
 		return n.acceptControlLink(stream, firstMsg)
 	}
+	if firstMsg.Header.RouteName == RelayBridgeMuxRoute {
+		return n.acceptBridgeMux(stream, firstMsg)
+	}
 	if firstMsg.Header.RouteName == relayquery.Route {
 		return n.answerRelayQuery(stream, firstMsg)
 	}
 	return n.findAndBridge(stream, firstMsg)
+}
+
+// acceptBridgeMux 接管一条对端 relay 拨入的「多路复用桥接物理连接」。
+//
+// 物理连接首帧（RelayBridgeMuxRoute）已被框架读走，底层 net.Conn 此刻正好停在 mux 帧边界
+// （network.ReadFrame 精确分帧、不过读）。这里在该裸连接上建立 server 侧 MuxSession，
+// 循环 Accept 出逐条逻辑会话；每条会话用 AcceptBridgeMuxStream 包装成「带合成 hello 首帧的
+// net.Conn」，再交给 TransportCover.ListenTCPConnection 复用全部下游接入逻辑
+// （→ 路由到本 relay 托管的 nat 节点，或继续向下游桥接）。
+func (n *RelayNode) acceptBridgeMux(stream network.Stream, firstMsg *network.Message) error {
+	tcp := networkFrameWork.TCPStreamOf(stream)
+	if tcp == nil || tcp.RawConn() == nil {
+		return errors.New("relaynode: bridge-mux 接入的流非 TcpStream")
+	}
+	rawConn := tcp.RawConn()
+	peerNodeId := firstMsg.Header.NodeId
+	logx.Infof("[relaynode] 接受 bridge-mux 物理连接: peer=%.16s remote=%s", peerNodeId, rawConn.RemoteAddr())
+
+	sess := networkFrameWork.NewMuxSession(n.ctx, rawConn, false)
+	go func() {
+		for {
+			st, err := sess.Accept()
+			if err != nil {
+				logx.Debugf("[relaynode] bridge-mux session 结束: peer=%.16s err=%v", peerNodeId, err)
+				return
+			}
+			conn, err := networkFrameWork.AcceptBridgeMuxStream(st)
+			if err != nil {
+				logx.Warnf("[relaynode] bridge-mux 合成 hello 失败: %v", err)
+				_ = st.Close()
+				continue
+			}
+			go func() {
+				if e := n.starter.Cover().ListenTCPConnection(conn); e != nil {
+					logx.Debugf("[relaynode] bridge-mux 会话接入结束: %v", e)
+				}
+			}()
+		}
+	}()
+	return nil // 已接管该物理连接的生命周期
 }
 
 // answerRelayQuery 应答 NAT 节点的「relay 列表查询」(RelayQueryRoute)。
