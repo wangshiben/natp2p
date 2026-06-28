@@ -34,6 +34,9 @@ type relayPeerPool struct {
 	conns        []*physConn
 	closed       bool
 	minWarmConns int // 最少保持的热连接数（Phase B 固定 1，Phase D 可调）
+
+	// 高峰探测（Phase D §4.2）：记录滑动窗口内的扩容触发时刻。
+	expandEvents []time.Time
 }
 
 // physConn 是一条 relay↔relay 的物理 mux 连接（含重连）。
@@ -45,6 +48,10 @@ type physConn struct {
 	sess    *networkFrameWork.MuxSession
 	closed  bool
 	backoff time.Duration // 当前退避时长
+
+	// idleSince 是该连接最近一次「活跃会话归零」的时刻（Phase D 收缩判定）。
+	// 零值表示尚未进入空闲（或当前有活跃会话）。
+	idleSince time.Time
 }
 
 // 重连退避参数（沿用 peerLink 范本：nextBackoff 在 peer_link.go，上限 peerLinkRedialMax）。
@@ -64,6 +71,24 @@ const (
 	poolMaxConns = 8
 	// poolSampleInterval 扩容采样周期：每隔该时长检查一次各 physConn 水位。
 	poolSampleInterval = 200 * time.Millisecond
+)
+
+// 高峰批量预扩参数（Phase D §4.2）。
+const (
+	// burstWindow 高峰探测滑动窗口（统计窗口内扩容触发次数）。
+	burstWindow = 5 * time.Second
+	// burstTriggerCount 窗口内扩容触发 ≥ 该次数 → 进入高峰态（批量扩容）。
+	burstTriggerCount = 3
+	// burstBatchSize 高峰态单次扩容增量（普通态每次 +1，高峰态每次 +N）。
+	burstBatchSize = 4
+)
+
+// 收缩 reaper 参数（Phase D §4.3）。
+const (
+	// poolReapInterval reaper 扫描周期（检查空闲连接回收）。
+	poolReapInterval = 15 * time.Second
+	// poolIdleTimeout 物理连接空闲（ActiveStreams==0）超过该时长 → 候选回收。
+	poolIdleTimeout = 60 * time.Second
 )
 
 // atHighWatermark 报告该物理连接是否达到任一高水位（并发数 或 发送压力）。
@@ -127,6 +152,9 @@ func (p *relayPeerPool) autoscale() {
 }
 
 // maybeExpand 执行一次扩容判定与（必要时）扩容。返回是否实际扩容。
+//
+// Phase D：扩容量受高峰探测影响——普通态每次 +1；高峰态（burstWindow 内扩容触发
+// ≥ burstTriggerCount 次）每次批量 +burstBatchSize，均不超过 poolMaxConns 封顶。
 func (p *relayPeerPool) maybeExpand() bool {
 	live := p.liveConns()
 	if len(live) == 0 {
@@ -137,18 +165,142 @@ func (p *relayPeerPool) maybeExpand() bool {
 			return false // 只要有一条还没满，就不扩容。
 		}
 	}
-	// 所有健康连接都达高水位 → 在 maxConns 封顶内扩容。
+	// 所有健康连接都达高水位 → 记录触发事件并按高峰态决定批量大小。
 	p.mu.Lock()
 	if p.closed || len(p.conns) >= poolMaxConns {
 		p.mu.Unlock()
 		return false
 	}
+	now := time.Now()
+	p.recordExpandEventLocked(now)
+	batch := 1
+	if p.inBurstLocked(now) {
+		batch = burstBatchSize
+	}
+	room := poolMaxConns - len(p.conns)
+	if batch > room {
+		batch = room
+	}
 	p.mu.Unlock()
-	p.addPhysConn()
-	logx.Infof("[bridge-pool] 扩容: peer=%s 所有连接达高水位 → 新增物理连接 (now=%d/%d)",
-		p.hostAddr, p.connCount(), poolMaxConns)
+	if batch <= 0 {
+		return false
+	}
+	for i := 0; i < batch; i++ {
+		p.addPhysConn()
+	}
+	logx.Infof("[bridge-pool] 扩容: peer=%s 所有连接达高水位 → 新增 %d 条物理连接 (now=%d/%d, burst=%v)",
+		p.hostAddr, batch, p.connCount(), poolMaxConns, batch > 1)
 	return true
 }
+
+// recordExpandEventLocked 记录一次扩容触发时刻并裁剪滑动窗口外的旧事件（持 p.mu）。
+func (p *relayPeerPool) recordExpandEventLocked(now time.Time) {
+	cutoff := now.Add(-burstWindow)
+	kept := p.expandEvents[:0]
+	for _, t := range p.expandEvents {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	p.expandEvents = append(kept, now)
+}
+
+// inBurstLocked 报告当前是否处于高峰态：滑动窗口内扩容触发次数 ≥ burstTriggerCount（持 p.mu）。
+func (p *relayPeerPool) inBurstLocked(now time.Time) bool {
+	cutoff := now.Add(-burstWindow)
+	count := 0
+	for _, t := range p.expandEvents {
+		if t.After(cutoff) {
+			count++
+		}
+	}
+	return count >= burstTriggerCount
+}
+
+// reap 是收缩循环（Phase D §4.3）：周期扫描，回收长时间空闲的物理连接，
+// 但池内至少保留 minWarmConns 条热连接，且永不超过 poolMaxConns。
+func (p *relayPeerPool) reap() {
+	ticker := time.NewTicker(poolReapInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.reapOnce(time.Now())
+		}
+	}
+}
+
+// reapOnce 执行一次空闲回收扫描。now 参数便于测试注入时间。
+func (p *relayPeerPool) reapOnce(now time.Time) {
+	var toClose []*physConn
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	// 刷新各连接的空闲状态（活跃→清零起点；归零→记录起点）。
+	for _, pc := range p.conns {
+		pc.refreshIdle(now)
+	}
+	// 保底：回收后池内连接数不得低于 minWarmConns。
+	// budget 是本轮最多可回收的数量。
+	budget := len(p.conns) - p.minWarmConns
+	survivors := make([]*physConn, 0, len(p.conns))
+	for _, pc := range p.conns {
+		if budget > 0 && pc.idleExpired(now) {
+			toClose = append(toClose, pc)
+			budget--
+			continue
+		}
+		survivors = append(survivors, pc)
+	}
+	p.conns = survivors
+	remaining := len(p.conns)
+	p.mu.Unlock()
+	for _, pc := range toClose {
+		pc.close()
+	}
+	if len(toClose) > 0 {
+		logx.Infof("[bridge-pool] 收缩: peer=%s 回收 %d 条空闲物理连接 (剩余=%d, 保底=%d)",
+			p.hostAddr, len(toClose), remaining, p.minWarmConns)
+	}
+}
+
+// refreshIdle 更新连接空闲起点：有活跃会话→清零；无活跃会话→首次记录 now（持 p.mu 由调用方保证）。
+func (pc *physConn) refreshIdle(now time.Time) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	sess := pc.sess
+	if sess == nil || sess.IsClosed() {
+		// 无健康会话：不在收缩范畴（manage 负责），清空闲标记。
+		pc.idleSince = time.Time{}
+		return
+	}
+	if sess.ActiveStreams() > 0 {
+		pc.idleSince = time.Time{} // 有活跃会话，重置空闲计时。
+		return
+	}
+	if pc.idleSince.IsZero() {
+		pc.idleSince = now // 首次归零，开始计时。
+	}
+}
+
+// idleExpired 报告连接是否已空闲超过 poolIdleTimeout（持 p.mu 由调用方保证）。
+func (pc *physConn) idleExpired(now time.Time) bool {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	sess := pc.sess
+	if sess == nil || sess.IsClosed() {
+		return false // 重连中，不回收。
+	}
+	if sess.ActiveStreams() > 0 || pc.idleSince.IsZero() {
+		return false
+	}
+	return now.Sub(pc.idleSince) >= poolIdleTimeout
+}
+
 
 // newRelayPeerPool 创建到 hostAddr 的连接池，立即启动 minWarmConns 条物理连接。
 func newRelayPeerPool(parent context.Context, hostAddr, selfNodeID string, minWarmConns int) *relayPeerPool {
@@ -166,6 +318,8 @@ func newRelayPeerPool(parent context.Context, hostAddr, selfNodeID string, minWa
 	}
 	// Phase C：后台扩容采样循环（并发数 + 发送压力水位）。
 	go p.autoscale()
+	// Phase D：后台收缩 reaper（闲置超时回收 + minWarmConns 保底）。
+	go p.reap()
 	return p
 }
 

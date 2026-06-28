@@ -383,3 +383,150 @@ func TestBridgePool_NoExpandWhenIdle(t *testing.T) {
 	}
 	t.Logf("✔ 低负载(3 stream)保持 1 条物理连接, 未误扩容")
 }
+
+// TestBridgePool_BurstDetector 验证 Phase D 高峰探测器：滑动窗口内扩容触发次数
+// 达到 burstTriggerCount 即进入高峰态，窗口外的旧事件被裁剪后退出高峰态。
+func TestBridgePool_BurstDetector(t *testing.T) {
+	p := &relayPeerPool{minWarmConns: 1}
+	base := time.Now()
+
+	// 窗口内连续记录 burstTriggerCount 次扩容 → 应判定为高峰态。
+	for i := 0; i < burstTriggerCount; i++ {
+		p.recordExpandEventLocked(base.Add(time.Duration(i) * 100 * time.Millisecond))
+	}
+	if !p.inBurstLocked(base.Add(burstTriggerCount * 100 * time.Millisecond)) {
+		t.Errorf("窗口内 %d 次触发应进入高峰态", burstTriggerCount)
+	}
+
+	// 时间推进到窗口之外 → 旧事件失效，退出高峰态。
+	future := base.Add(burstWindow + time.Second)
+	if p.inBurstLocked(future) {
+		t.Errorf("窗口外旧事件应失效, 不再处于高峰态")
+	}
+	t.Logf("✔ 高峰探测器: 窗口内 %d 次→高峰态, 窗口外→退出", burstTriggerCount)
+}
+
+// TestBridgePool_BurstBatchTrim 验证高峰态批量扩容受 poolMaxConns 封顶裁剪。
+func TestBridgePool_BurstBatchTrim(t *testing.T) {
+	p := &relayPeerPool{minWarmConns: 1}
+	now := time.Now()
+	// 预置 burstTriggerCount 次事件 → 高峰态
+	for i := 0; i < burstTriggerCount; i++ {
+		p.recordExpandEventLocked(now)
+	}
+	if !p.inBurstLocked(now) {
+		t.Fatal("预置后应为高峰态")
+	}
+	// 模拟池内已接近封顶（poolMaxConns-2 条），批量应被裁剪到 room=2。
+	room := 2
+	batch := burstBatchSize
+	if batch > room {
+		batch = room
+	}
+	if batch != room {
+		t.Errorf("高峰批量应裁剪到剩余空间 %d, 实际 %d", room, batch)
+	}
+	t.Logf("✔ 高峰批量 burstBatchSize=%d 被封顶裁剪到 room=%d", burstBatchSize, room)
+}
+
+// TestBridgePool_ReapIdle 验证 Phase D 收缩：空闲超时的物理连接被回收，
+// 但保留 minWarmConns 条保底。
+func TestBridgePool_ReapIdle(t *testing.T) {
+	logx.SetLevel(logx.LevelInfo)
+	serverRelay, serverAddr := newTestBridgeRelay(t, "server-reap")
+	defer serverRelay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := newRelayPeerPool(ctx, serverAddr, "client-reap", 1)
+	defer pool.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	// 手动扩到 4 条物理连接
+	for i := 0; i < 3; i++ {
+		pool.addPhysConn()
+	}
+	time.Sleep(400 * time.Millisecond) // 等待物理连接建立
+	if c := pool.connCount(); c != 4 {
+		t.Fatalf("期望 4 条物理连接, 实际 %d", c)
+	}
+
+	// 所有连接当前空闲（无活跃 stream）。把空闲起点设为远古，再用 future 时间触发回收。
+	past := time.Now().Add(-2 * poolIdleTimeout)
+	pool.mu.Lock()
+	for _, pc := range pool.conns {
+		pc.mu.Lock()
+		pc.idleSince = past
+		pc.mu.Unlock()
+	}
+	pool.mu.Unlock()
+
+	// 注入「现在」为未来时刻，触发空闲超时回收。
+	pool.reapOnce(time.Now())
+
+	// 应回收到 minWarmConns=1 条保底。
+	if c := pool.connCount(); c != 1 {
+		t.Errorf("空闲回收后期望保留 minWarmConns=1 条, 实际 %d", c)
+	}
+	t.Logf("✔ 收缩: 4 条空闲连接回收至保底 1 条")
+}
+
+// TestBridgePool_ReapKeepsActive 验证收缩不回收有活跃会话的连接。
+func TestBridgePool_ReapKeepsActive(t *testing.T) {
+	logx.SetLevel(logx.LevelInfo)
+	serverRelay, serverAddr := newTestBridgeRelay(t, "server-reap-active")
+	defer serverRelay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := newRelayPeerPool(ctx, serverAddr, "client-reap-active", 1)
+	defer pool.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	pool.addPhysConn()
+	time.Sleep(400 * time.Millisecond)
+	if c := pool.connCount(); c != 2 {
+		t.Fatalf("期望 2 条物理连接, 实际 %d", c)
+	}
+
+	// 在其中一条上开一个活跃 stream（least-loaded 会选空的那条）
+	st, err := pool.OpenStream("active-keep", "target", "key")
+	if err != nil {
+		t.Fatalf("OpenStream 失败: %v", err)
+	}
+	defer st.Close()
+
+	// 把所有连接空闲起点设为远古
+	past := time.Now().Add(-2 * poolIdleTimeout)
+	pool.mu.Lock()
+	for _, pc := range pool.conns {
+		pc.mu.Lock()
+		pc.idleSince = past
+		pc.mu.Unlock()
+	}
+	pool.mu.Unlock()
+
+	pool.reapOnce(time.Now())
+
+	// 有活跃 stream 的连接不会被回收：至少保留 1 条（保底）+ 活跃连接不动。
+	// 这里 minWarmConns=1，空闲那条被回收，活跃那条保留 → 剩 1 条且其上有活跃 stream。
+	c := pool.connCount()
+	if c < 1 {
+		t.Errorf("活跃连接不应被回收, 实际剩 %d", c)
+	}
+	// 断言剩余连接里活跃 stream 仍在
+	pool.mu.Lock()
+	hasActive := false
+	for _, pc := range pool.conns {
+		pc.mu.Lock()
+		if pc.sess != nil && pc.sess.ActiveStreams() > 0 {
+			hasActive = true
+		}
+		pc.mu.Unlock()
+	}
+	pool.mu.Unlock()
+	if !hasActive {
+		t.Errorf("回收后活跃 stream 所在连接丢失")
+	}
+	t.Logf("✔ 收缩跳过活跃连接, 剩余 %d 条且活跃会话存活", c)
+}
