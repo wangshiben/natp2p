@@ -72,6 +72,9 @@ const (
 	poolMaxConns = 8
 	// poolSampleInterval 扩容采样周期：每隔该时长检查一次各 physConn 水位。
 	poolSampleInterval = 200 * time.Millisecond
+	// contentionBytesThreshold 多流写竞争阈值：单条物理连接写队列积压字节达到即视为
+	// 流间队头阻塞（模式 A 摊散信号）。64KB ≈ 两个 32KB 满块在排队。
+	contentionBytesThreshold = 64 * 1024
 )
 
 // 高峰批量预扩参数（Phase D §4.2）。
@@ -108,6 +111,19 @@ func (pc *physConn) atHighWatermark() bool {
 		return true
 	}
 	return false
+}
+
+// contended 报告该连接是否处于「多流写竞争」状态（模式 A 摊散信号）：
+// 同一条 TCP 上有 ≥2 条活跃会话且写队列积压字节超过阈值，说明这些流在串行写路径上
+// 互相阻塞（队头阻塞），应把它们摊散到更多物理连接以并行各自的 cwnd。
+func (pc *physConn) contended() bool {
+	pc.mu.Lock()
+	sess := pc.sess
+	pc.mu.Unlock()
+	if sess == nil || sess.IsClosed() {
+		return false
+	}
+	return sess.ActiveStreams() >= 2 && sess.PendingBytes() >= contentionBytesThreshold
 }
 
 // liveConns 返回当前有健康 session 的物理连接快照（持锁外用）。
@@ -161,12 +177,27 @@ func (p *relayPeerPool) maybeExpand() bool {
 	if len(live) == 0 {
 		return false // 无健康连接：交给 manage() 重连，不在此扩容。
 	}
+	// 扩容信号有两类，满足其一即扩（均要求所有健康连接同时命中，避免少数热点误触发）：
+	//   1. 高水位：并发会话数或发送帧压力达上限（Phase C，应对会话数暴涨）。
+	//   2. 写竞争：多流挤一条 TCP 且写队列积压（F2 模式 A，应对吞吐受队头阻塞）。
+	allHigh := true
+	allContended := true
 	for _, pc := range live {
 		if !pc.atHighWatermark() {
-			return false // 只要有一条还没满，就不扩容。
+			allHigh = false
+		}
+		if !pc.contended() {
+			allContended = false
 		}
 	}
-	// 所有健康连接都达高水位 → 记录触发事件并按高峰态决定批量大小。
+	if !allHigh && !allContended {
+		return false
+	}
+	reason := "高水位"
+	if !allHigh {
+		reason = "写竞争(模式A摊散)"
+	}
+	// 触发扩容 → 记录事件并按高峰态决定批量大小。
 	p.mu.Lock()
 	if p.closed || len(p.conns) >= poolMaxConns {
 		p.mu.Unlock()
@@ -189,8 +220,8 @@ func (p *relayPeerPool) maybeExpand() bool {
 	for i := 0; i < batch; i++ {
 		p.addPhysConn()
 	}
-	logx.Infof("[bridge-pool] 扩容: peer=%s 所有连接达高水位 → 新增 %d 条物理连接 (now=%d/%d, burst=%v)",
-		p.hostAddr, batch, p.connCount(), poolMaxConns, batch > 1)
+	logx.Infof("[bridge-pool] 扩容: peer=%s 触发=%s → 新增 %d 条物理连接 (now=%d/%d, burst=%v)",
+		p.hostAddr, reason, batch, p.connCount(), poolMaxConns, batch > 1)
 	return true
 }
 
@@ -340,31 +371,20 @@ func (p *relayPeerPool) addPhysConn() *physConn {
 	return pc
 }
 
-// OpenStream 在池内选一条 least-loaded 物理连接上开一条逻辑会话。
-// Phase B：只用第一条 conn；Phase C 扩容后选 ActiveStreams 最小的。
+// OpenStream 在池内选一条物理连接上开一条逻辑会话。
+//
+// F2（模式 A 摊散调度）：选连接综合「写压力(pendingBytes)」与「并发会话数」打分，
+// 把新逻辑连接摊到最空闲的物理连接，规避把多条流挤在同一条 TCP 导致的写串行队头阻塞。
+// 不同逻辑连接因此天然分散到多条独立 cwnd 的 TCP，聚合带宽更高。
 func (p *relayPeerPool) OpenStream(connID, targetNodeID, originPubKey string) (*networkFrameWork.MuxStream, error) {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil, errPoolClosed
-	}
-	var best *physConn
-	minActive := int(^uint(0) >> 1) // max int
-	for _, pc := range p.conns {
-		pc.mu.Lock()
-		sess := pc.sess
-		pc.mu.Unlock()
-		if sess == nil || sess.IsClosed() {
-			continue
-		}
-		active := sess.ActiveStreams()
-		if active < minActive {
-			minActive = active
-			best = pc
-		}
-	}
-	p.mu.Unlock()
+	best := p.pickLeastLoaded()
 	if best == nil {
+		p.mu.Lock()
+		closed := p.closed
+		p.mu.Unlock()
+		if closed {
+			return nil, errPoolClosed
+		}
 		return nil, errNoHealthyConn
 	}
 	best.mu.Lock()
@@ -374,6 +394,35 @@ func (p *relayPeerPool) OpenStream(connID, targetNodeID, originPubKey string) (*
 		return nil, errNoHealthyConn
 	}
 	return sess.OpenStream(connID, targetNodeID, originPubKey)
+}
+
+// pickLeastLoaded 返回综合负载最小的健康物理连接（模式 A 摊散核心）。
+// 负载分以 pendingBytes 为主（写压力直接反映队头阻塞风险），ActiveStreams 为次（平手打散）。
+func (p *relayPeerPool) pickLeastLoaded() *physConn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	var best *physConn
+	var bestPending int64 = 1<<63 - 1
+	bestStreams := int(^uint(0) >> 1)
+	for _, pc := range p.conns {
+		pc.mu.Lock()
+		sess := pc.sess
+		pc.mu.Unlock()
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		pending := sess.PendingBytes()
+		streams := sess.ActiveStreams()
+		if pending < bestPending || (pending == bestPending && streams < bestStreams) {
+			bestPending = pending
+			bestStreams = streams
+			best = pc
+		}
+	}
+	return best
 }
 
 // OpenLogicalConn 在池内开一条逻辑连接（逻辑/物理 N:M 抽象的入口）。

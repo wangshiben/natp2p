@@ -81,9 +81,11 @@ type MuxSession struct {
 	closed   bool
 	isClient bool
 
-	// 指标（供连接池扩容判定）
+	// 指标（供连接池扩容/调度判定）
 	activeStreams int64 // 当前活跃 stream 数
 	pendingFrames int64 // 进入写串行队列但尚未写出的帧数（发送压力近似）
+	pendingBytes  int64 // 进入写串行队列但尚未写出的字节数（写压力, 调度用, 比帧数更准）
+	wroteBytes    int64 // 累计已写出字节数（吞吐近似, 调度可据增量估算热度）
 }
 
 // NewMuxSession 在 conn 上建立 mux 会话并启动读循环。
@@ -110,6 +112,12 @@ func (s *MuxSession) ActiveStreams() int { return int(atomic.LoadInt64(&s.active
 
 // PendingFrames 返回排队待写的帧数近似值（扩容发送压力水位）。
 func (s *MuxSession) PendingFrames() int { return int(atomic.LoadInt64(&s.pendingFrames)) }
+
+// PendingBytes 返回排队待写但尚未写出的字节数（写压力, 调度选 leg 用，比帧数更准）。
+func (s *MuxSession) PendingBytes() int64 { return atomic.LoadInt64(&s.pendingBytes) }
+
+// WroteBytes 返回累计已写出字节数（吞吐近似，调度可据采样增量估算连接热度）。
+func (s *MuxSession) WroteBytes() int64 { return atomic.LoadInt64(&s.wroteBytes) }
 
 // IsClosed 报告会话是否已关闭。
 func (s *MuxSession) IsClosed() bool {
@@ -260,10 +268,12 @@ func (s *MuxSession) writeFrame(typ uint8, streamID string, payload []byte) erro
 		return err
 	}
 	atomic.AddInt64(&s.pendingFrames, 1)
+	atomic.AddInt64(&s.pendingBytes, int64(len(bs)))
 	s.writeMu.Lock()
 	defer func() {
 		s.writeMu.Unlock()
 		atomic.AddInt64(&s.pendingFrames, -1)
+		atomic.AddInt64(&s.pendingBytes, -int64(len(bs)))
 	}()
 	select {
 	case <-s.ctx.Done():
@@ -273,6 +283,7 @@ func (s *MuxSession) writeFrame(typ uint8, streamID string, payload []byte) erro
 	if _, err := s.conn.Write(bs); err != nil {
 		return err
 	}
+	atomic.AddInt64(&s.wroteBytes, int64(len(bs)))
 	return nil
 }
 
