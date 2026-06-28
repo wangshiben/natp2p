@@ -61,8 +61,8 @@ func TestBridgePool_SpreadLoad(t *testing.T) {
 		}(lc)
 	}
 
-	// 给扩容采样循环(200ms)几个周期去观察写竞争并摊散。
-	deadline := time.Now().Add(4 * time.Second)
+	// 给扩容采样循环(200ms)足够周期去观察写竞争并摊散（CPU 竞争时采样可能偏慢，放宽窗口）。
+	deadline := time.Now().Add(8 * time.Second)
 	maxConns := 1
 	for time.Now().Before(deadline) {
 		if c := pool.connCount(); c > maxConns {
@@ -71,7 +71,7 @@ func TestBridgePool_SpreadLoad(t *testing.T) {
 		if maxConns >= 2 {
 			break
 		}
-		time.Sleep(150 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	close(stop)

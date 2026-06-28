@@ -38,6 +38,10 @@ type relayPeerPool struct {
 
 	// 高峰探测（Phase D §4.2）：记录滑动窗口内的扩容触发时刻。
 	expandEvents []time.Time
+
+	// F4 吞吐驱动的条带化宽度推荐：
+	lastWroteBytes int64 // 上轮采样的累计写出字节（算增量用）
+	recWidth       int   // 当前推荐的新逻辑连接宽度（吞吐档位）
 }
 
 // physConn 是一条 relay↔relay 的物理 mux 连接（含重连）。
@@ -75,6 +79,9 @@ const (
 	// contentionBytesThreshold 多流写竞争阈值：单条物理连接写队列积压字节达到即视为
 	// 流间队头阻塞（模式 A 摊散信号）。64KB ≈ 两个 32KB 满块在排队。
 	contentionBytesThreshold = 64 * 1024
+	// widthThroughputStep 吞吐→宽度档位步长：每达到该 字节/秒 给推荐宽度 +1 条 leg。
+	// 1MB/s 一档：单 TCP 跨境常受限于此量级，超过即考虑拆多 TCP 并行。
+	widthThroughputStep = 1024 * 1024
 )
 
 // 高峰批量预扩参数（Phase D §4.2）。
@@ -164,8 +171,66 @@ func (p *relayPeerPool) autoscale() {
 			return
 		case <-ticker.C:
 			p.maybeExpand()
+			p.sampleThroughput()
 		}
 	}
+}
+
+// sampleThroughput 采样本池到对端 relay 的聚合写吞吐（基于各 session WroteBytes 增量），
+// 据此更新 recWidth（推荐的新逻辑连接条带化宽度）。
+//
+// 思路：跨境高 BDP 链路上，单条逻辑连接挤在一条 TCP 受单 cwnd 限制；当观察到该对端持续
+// 高吞吐（说明有大流量需求），就建议新逻辑连接用更宽的条带（拆到多条 TCP 并行各自 cwnd）。
+// 仅影响后续新建的逻辑连接（不对存量连接做有风险的 mid-flow resplice）。
+func (p *relayPeerPool) sampleThroughput() {
+	p.mu.Lock()
+	conns := make([]*physConn, len(p.conns))
+	copy(conns, p.conns)
+	p.mu.Unlock()
+
+	var total int64
+	for _, pc := range conns {
+		pc.mu.Lock()
+		sess := pc.sess
+		pc.mu.Unlock()
+		if sess != nil && !sess.IsClosed() {
+			total += sess.WroteBytes()
+		}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	prev := p.lastWroteBytes
+	p.lastWroteBytes = total
+	if prev == 0 {
+		return // 首次采样无增量基准
+	}
+	delta := total - prev
+	if delta < 0 {
+		delta = 0
+	}
+	// delta 是一个采样周期(poolSampleInterval)内写出的字节数 → 估算 bytes/s。
+	bytesPerSec := float64(delta) * float64(time.Second) / float64(poolSampleInterval)
+
+	// 按吞吐档位推荐宽度：每 widthThroughputStep 字节/秒 +1 条 leg，封顶 poolMaxConns。
+	rec := 1 + int(bytesPerSec/widthThroughputStep)
+	if rec < 1 {
+		rec = 1
+	}
+	if rec > poolMaxConns {
+		rec = poolMaxConns
+	}
+	p.recWidth = rec
+}
+
+// recommendedWidth 返回当前推荐的新逻辑连接条带化宽度（吞吐驱动，见 sampleThroughput）。
+func (p *relayPeerPool) recommendedWidth() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.recWidth < 1 {
+		return 1
+	}
+	return p.recWidth
 }
 
 // maybeExpand 执行一次扩容判定与（必要时）扩容。返回是否实际扩容。
@@ -619,9 +684,10 @@ func (n *RelayNode) poolFor(hostAddr string) *relayPeerPool {
 // width 取自 RelayNode.bridgeWidth（F4 动态调整；默认 1=非条带化）。
 func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connID string) (net.Conn, error) {
 	pool := n.poolFor(hostAddr)
+	// width 决策：bridgeWidth>0 为显式强制（测试/配置）；==0 为自动（吞吐驱动推荐）。
 	width := int(n.bridgeWidth.Load())
 	if width < 1 {
-		width = 1
+		width = pool.recommendedWidth()
 	}
 	deadline := time.Now().Add(bridgeOpenTimeout)
 	var lastErr error
