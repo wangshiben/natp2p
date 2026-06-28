@@ -428,9 +428,8 @@ func (p *relayPeerPool) pickLeastLoaded() *physConn {
 // OpenLogicalConn 在池内开一条逻辑连接（逻辑/物理 N:M 抽象的入口）。
 // width = 该逻辑连接要用的物理 leg 数：
 //   - width<=1：单 leg（模式 A 退化 / 默认），等价 OpenStream 包一层 LogicalConn。
-//   - width>1：条带化（模式 B），在 width 条不同 physConn 上各开一条 leg（F3 启用分片收发）。
-//
-// F1：width 恒按 1 处理（上层暂只传 1）；F3/F4 再启用 >1 的多 leg 装配。
+//   - width>1：条带化（模式 B，F3 启用），在 width 条不同 physConn 上各开一条 leg，
+//     组装成条带化逻辑连接（出站轮转分片+序号，入站重排）。
 func (p *relayPeerPool) OpenLogicalConn(connID, targetNodeID, originPubKey string, width int) (*networkFrameWork.LogicalConn, error) {
 	if width < 1 {
 		width = 1
@@ -442,12 +441,77 @@ func (p *relayPeerPool) OpenLogicalConn(connID, targetNodeID, originPubKey strin
 		}
 		return networkFrameWork.NewSingleLegConn(st), nil
 	}
-	// width>1 的多 leg 装配在 F3 接入；当前退化为单 leg，保证行为安全。
-	st, err := p.OpenStream(connID, targetNodeID, originPubKey)
-	if err != nil {
-		return nil, err
+	// width>1：在 width 条不同 physConn 上各开一条 leg（F3 条带化）。
+	// 受池容量约束，实际可能低于期望 width（池 < width 或健康连接不足）。
+	// 先选出目标 physConn，确定实际 legCount，再各自 OpenStreamLeg 带正确 legIndex/legCount。
+	targets := make([]*physConn, 0, width)
+	used := make(map[*physConn]bool, width)
+	for i := 0; i < width; i++ {
+		pc := p.pickLeastLoadedExcluding(used)
+		if pc == nil {
+			break
+		}
+		used[pc] = true
+		targets = append(targets, pc)
 	}
-	return networkFrameWork.NewSingleLegConn(st), nil
+	if len(targets) == 0 {
+		return nil, errNoHealthyConn
+	}
+	legCount := len(targets)
+	legs := make([]*networkFrameWork.MuxStream, 0, legCount)
+	for idx, pc := range targets {
+		pc.mu.Lock()
+		sess := pc.sess
+		pc.mu.Unlock()
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		// 每条 leg 用同 connID + (legIndex, legCount)，对端据此归并为一条条带化逻辑连接。
+		st, err := sess.OpenStreamLeg(connID, targetNodeID, originPubKey, idx, legCount)
+		if err != nil {
+			continue
+		}
+		legs = append(legs, st)
+	}
+	if len(legs) == 0 {
+		return nil, errNoHealthyConn
+	}
+	if len(legs) == 1 {
+		return networkFrameWork.NewSingleLegConn(legs[0]), nil
+	}
+	return networkFrameWork.NewStripedConn(connID, legs), nil
+}
+
+// pickLeastLoadedExcluding 返回负载最小的健康物理连接，排除 used 中已选的。
+// 用于条带化时在不同 physConn 上开多 leg（避免多 leg 挤一条 TCP 失去并行收益）。
+func (p *relayPeerPool) pickLeastLoadedExcluding(used map[*physConn]bool) *physConn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	var best *physConn
+	var bestPending int64 = 1<<63 - 1
+	bestStreams := int(^uint(0) >> 1)
+	for _, pc := range p.conns {
+		if used[pc] {
+			continue
+		}
+		pc.mu.Lock()
+		sess := pc.sess
+		pc.mu.Unlock()
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		pending := sess.PendingBytes()
+		streams := sess.ActiveStreams()
+		if pending < bestPending || (pending == bestPending && streams < bestStreams) {
+			bestPending = pending
+			bestStreams = streams
+			best = pc
+		}
+	}
+	return best
 }
 
 // Close 关闭池及其所有物理连接。
@@ -551,13 +615,18 @@ func (n *RelayNode) poolFor(hostAddr string) *relayPeerPool {
 // openBridgeStream 通过池向 hostAddr 开一条跨中继逻辑会话。
 // 池内物理连接可能正在(重)拨号尚未就绪，这里给一个短重试窗口等待首条连接建立。
 //
-// F1 改造：返回 *LogicalConn（仍实现 net.Conn），桥接调用端透明（只认 net.Conn）。
+// F1/F3 改造：返回 *LogicalConn（仍实现 net.Conn），桥接调用端透明（只认 net.Conn）。
+// width 取自 RelayNode.bridgeWidth（F4 动态调整；默认 1=非条带化）。
 func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connID string) (net.Conn, error) {
 	pool := n.poolFor(hostAddr)
+	width := int(n.bridgeWidth.Load())
+	if width < 1 {
+		width = 1
+	}
 	deadline := time.Now().Add(bridgeOpenTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		lc, err := pool.OpenLogicalConn(connID, targetNodeID, originPubKey, 1) // F1: width=1
+		lc, err := pool.OpenLogicalConn(connID, targetNodeID, originPubKey, width)
 		if err == nil {
 			return lc, nil
 		}
@@ -576,6 +645,15 @@ func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connI
 		lastErr = errNoHealthyConn
 	}
 	return nil, lastErr
+}
+
+// SetBridgeWidth 设置桥接出站条带化宽度（每条逻辑连接用几条物理 leg）。
+// 1=非条带化（模式 A）；>1=条带化（模式 B）。F4 据流量动态调整；测试/配置可显式设定。
+func (n *RelayNode) SetBridgeWidth(w int) {
+	if w < 1 {
+		w = 1
+	}
+	n.bridgeWidth.Store(int32(w))
 }
 
 // closeBridgePools 关闭所有跨中继连接池（RelayNode.Close 调用）。

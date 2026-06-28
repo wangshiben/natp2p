@@ -44,24 +44,93 @@ var (
 )
 
 // muxOpenInfo 是 OPEN 帧 Payload 的解码结果。
-// 线格式（与 dialRawBridgeConn 原 hello 等价）：targetNodeId 与 originPubKey 用 '\n' 分隔。
+// 线格式（'\n' 分隔，向后兼容）：targetNodeId \n originPubKey [\n legIndex \n legCount]
+// 老格式只有前两段，解码时 legCount 缺省=1（单 leg，非条带化）。
 type muxOpenInfo struct {
 	targetNodeID string
 	originPubKey string
+	legIndex     int // 条带化时本 leg 在逻辑连接内的序号（0-based）
+	legCount     int // 条带化时逻辑连接的总 leg 数；1 表示非条带化
 }
 
 func encodeMuxOpen(targetNodeID, originPubKey string) []byte {
-	return []byte(targetNodeID + "\n" + originPubKey)
+	return encodeMuxOpenLeg(targetNodeID, originPubKey, 0, 1)
+}
+
+// encodeMuxOpenLeg 编码带条带化元信息的 OPEN payload。
+func encodeMuxOpenLeg(targetNodeID, originPubKey string, legIndex, legCount int) []byte {
+	if legCount <= 1 {
+		// 单 leg：保持老格式（两段），与老对端完全兼容。
+		return []byte(targetNodeID + "\n" + originPubKey)
+	}
+	return []byte(targetNodeID + "\n" + originPubKey + "\n" +
+		itoa(legIndex) + "\n" + itoa(legCount))
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
+func atoi(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return n
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n
 }
 
 func decodeMuxOpen(payload []byte) muxOpenInfo {
 	s := string(payload)
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			return muxOpenInfo{targetNodeID: s[:i], originPubKey: s[i+1:]}
+	parts := splitN(s, '\n', 4)
+	info := muxOpenInfo{legIndex: 0, legCount: 1}
+	if len(parts) > 0 {
+		info.targetNodeID = parts[0]
+	}
+	if len(parts) > 1 {
+		info.originPubKey = parts[1]
+	}
+	if len(parts) > 3 {
+		info.legIndex = atoi(parts[2])
+		if c := atoi(parts[3]); c > 0 {
+			info.legCount = c
 		}
 	}
-	return muxOpenInfo{targetNodeID: s}
+	return info
+}
+
+// splitN 按 sep 分割 s 为至多 n 段（最后一段保留剩余所有，含 sep）。
+func splitN(s string, sep byte, n int) []string {
+	out := make([]string, 0, n)
+	start := 0
+	for i := 0; i < len(s) && len(out) < n-1; i++ {
+		if s[i] == sep {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
 }
 
 // MuxSession 在一条物理 net.Conn 上多路复用若干 MuxStream。
@@ -132,6 +201,12 @@ func (s *MuxSession) IsClosed() bool {
 // OpenStream 开一条新逻辑会话（入口侧）。streamID 用业务 connID，
 // open 元信息（targetNodeID + 公钥）随 OPEN 帧发往对端，供对端合成 hello 接入下游。
 func (s *MuxSession) OpenStream(streamID, targetNodeID, originPubKey string) (*MuxStream, error) {
+	return s.OpenStreamLeg(streamID, targetNodeID, originPubKey, 0, 1)
+}
+
+// OpenStreamLeg 开一条带条带化元信息的逻辑会话 leg。
+// legCount>1 时，对端据 (streamID, legIndex, legCount) 把多条 mux 会话归并为一条条带化逻辑连接。
+func (s *MuxSession) OpenStreamLeg(streamID, targetNodeID, originPubKey string, legIndex, legCount int) (*MuxStream, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -146,7 +221,7 @@ func (s *MuxSession) OpenStream(streamID, targetNodeID, originPubKey string) (*M
 	s.mu.Unlock()
 	atomic.AddInt64(&s.activeStreams, 1)
 
-	if err := s.writeFrame(muxFrameOpen, streamID, encodeMuxOpen(targetNodeID, originPubKey)); err != nil {
+	if err := s.writeFrame(muxFrameOpen, streamID, encodeMuxOpenLeg(targetNodeID, originPubKey, legIndex, legCount)); err != nil {
 		s.dropStream(streamID)
 		return nil, err
 	}
@@ -209,7 +284,7 @@ func (s *MuxSession) readLoop() {
 			st := s.streams[streamID]
 			s.mu.Unlock()
 			if st != nil {
-				st.deliver(frame.Payload)
+				st.deliverSeq(frame.MessageId, frame.Payload)
 			}
 		case muxFrameClose:
 			s.dropStream(streamID)
@@ -258,7 +333,15 @@ func (s *MuxSession) dropStream(streamID string) {
 
 // writeFrame 把一帧 mux 帧串行写入底层 conn。pendingFrames 近似反映写压力。
 func (s *MuxSession) writeFrame(typ uint8, streamID string, payload []byte) error {
+	return s.writeFrameSeq(typ, streamID, 0, payload)
+}
+
+// writeFrameSeq 同 writeFrame，但额外携带逻辑连接级序号 seq（写入 Frame.MessageId）。
+// 条带化（F3）下，单条逻辑连接的字节被拆到多条物理 leg 发送，接收端据 seq 按序重组。
+// 非条带化路径 seq=0，对端忽略无害（老对端同样忽略 MessageId，向后兼容）。
+func (s *MuxSession) writeFrameSeq(typ uint8, streamID string, seq uint64, payload []byte) error {
 	frame := &network.Frame{
+		MessageId:    seq,
 		FrameType:    typ,
 		ConnectionId: streamID,
 		Payload:      payload,
@@ -303,6 +386,8 @@ type MuxStream struct {
 	closed   bool
 	closedCh chan struct{}
 	once     sync.Once
+	// deliverHook 非 nil 时，入站字节交给它（条带化 LogicalConn 的重排器）而非本地 buf。
+	deliverHook func(seq uint64, data []byte)
 }
 
 func newMuxStream(sess *MuxSession, id string) *MuxStream {
@@ -317,12 +402,44 @@ func newMuxStream(sess *MuxSession, id string) *MuxStream {
 // OpenInfo 返回对端开此 stream 时携带的元信息（target nodeId + 公钥）。
 func (st *MuxStream) OpenInfo() muxOpenInfo { return st.openInfo }
 
+// TargetNodeID/OriginPubKey 暴露对端 OPEN 元信息（接入侧条带化归并用）。
+func (st *MuxStream) TargetNodeID() string { return st.openInfo.targetNodeID }
+func (st *MuxStream) OriginPubKey() string { return st.openInfo.originPubKey }
+
+// LegIndex/LegCount 返回条带化元信息（对端 Accept 出的 leg 有意义）。
+// LegCount<=1 表示非条带化（单 leg）。
+func (st *MuxStream) LegIndex() int { return st.openInfo.legIndex }
+func (st *MuxStream) LegCount() int {
+	if st.openInfo.legCount <= 0 {
+		return 1
+	}
+	return st.openInfo.legCount
+}
+
 // StreamID 返回该逻辑会话 ID（= 业务 connID）。
 func (st *MuxStream) StreamID() string { return st.id }
 
-// deliver 追加入站字节并唤醒阻塞的 Read。
+// deliver 追加入站字节并唤醒阻塞的 Read（无序号路径）。
 func (st *MuxStream) deliver(data []byte) {
+	st.deliverSeq(0, data)
+}
+
+// deliverSeq 投递带逻辑连接级序号的入站字节。
+// 若设置了 deliverHook（条带化 LogicalConn 注册），则交给 hook 做重排；否则按原路追加到本地缓冲。
+func (st *MuxStream) deliverSeq(seq uint64, data []byte) {
 	if len(data) == 0 {
+		return
+	}
+	st.mu.Lock()
+	hook := st.deliverHook
+	closed := st.closed
+	st.mu.Unlock()
+	if closed {
+		return
+	}
+	if hook != nil {
+		// 条带化：交给 LogicalConn 的重排器（自带其内部缓冲与唤醒）。
+		hook(seq, data)
 		return
 	}
 	st.mu.Lock()
@@ -336,6 +453,13 @@ func (st *MuxStream) deliver(data []byte) {
 	case st.dataCh <- struct{}{}:
 	default:
 	}
+}
+
+// setDeliverHook 让上层（条带化 LogicalConn）接管该 leg 的入站投递。
+func (st *MuxStream) setDeliverHook(h func(seq uint64, data []byte)) {
+	st.mu.Lock()
+	st.deliverHook = h
+	st.mu.Unlock()
 }
 
 // Read 实现 io.Reader：阻塞直到有数据或 stream 关闭（缓冲耗尽后返回 io.EOF）。
@@ -384,6 +508,18 @@ func (st *MuxStream) Write(p []byte) (int, error) {
 		p = p[len(chunk):]
 	}
 	return total, nil
+}
+
+// writeChunkSeq 把单个分片以给定逻辑连接级序号 seq 发出（条带化 LogicalConn 用）。
+// 调用方负责分片不超过 maxChunk 并保证 seq 在该逻辑连接内连续递增。
+func (st *MuxStream) writeChunkSeq(seq uint64, chunk []byte) error {
+	st.mu.Lock()
+	closed := st.closed
+	st.mu.Unlock()
+	if closed {
+		return errMuxStreamGone
+	}
+	return st.sess.writeFrameSeq(muxFrameData, st.id, seq, chunk)
 }
 
 // Close 发 CLOSE 帧并本地拆除 stream。
@@ -483,12 +619,31 @@ func DialBridgeMuxSession(parent context.Context, addr, selfNodeID string) (*Mux
 // Payload=local1 公钥, ConnectionId=connID），之后透传 stream 的 E2E 字节。
 // 返回的 net.Conn 可直接交给 TransportCover.ListenTCPConnection，复用全部下游接入逻辑。
 func AcceptBridgeMuxStream(st *MuxStream) (net.Conn, error) {
-	info := st.OpenInfo()
+	prefix, err := buildHelloPrefix(st.OpenInfo(), st.StreamID())
+	if err != nil {
+		return nil, err
+	}
+	return &prefixConn{Conn: st, prefix: prefix}, nil
+}
+
+// AcceptBridgeMuxLogicalConn 同 AcceptBridgeMuxStream，但接入侧承载体是一条条带化
+// LogicalConn（M 条 leg 已归并）。targetNodeID/originPubKey 取自归并时任一 leg 的 OpenInfo
+// （见 MuxStream.TargetNodeID/OriginPubKey）。
+func AcceptBridgeMuxLogicalConn(lc *LogicalConn, targetNodeID, originPubKey string) (net.Conn, error) {
+	prefix, err := buildHelloPrefix(muxOpenInfo{targetNodeID: targetNodeID, originPubKey: originPubKey}, lc.LogicalID())
+	if err != nil {
+		return nil, err
+	}
+	return &prefixConn{Conn: lc, prefix: prefix}, nil
+}
+
+// buildHelloPrefix 构造对端下游接入所需的合成 hello 首帧字节。
+func buildHelloPrefix(info muxOpenInfo, connID string) ([]byte, error) {
 	header := &network.Header{
-		RouteName:    "",
-		NodeId:       info.targetNodeID,
+		RouteName:     "",
+		NodeId:        info.targetNodeID,
 		NodeIdVersion: 1,
-		ConnectionId: st.StreamID(),
+		ConnectionId:  connID,
 	}
 	msg := &network.Message{Header: header, Payload: []byte(info.originPubKey)}
 	frames, err := msg.ToFrames(1)
@@ -503,7 +658,7 @@ func AcceptBridgeMuxStream(st *MuxStream) (net.Conn, error) {
 		}
 		prefix = append(prefix, bs...)
 	}
-	return &prefixConn{Conn: st, prefix: prefix}, nil
+	return prefix, nil
 }
 
 // prefixConn 在底层 net.Conn 的读取流前注入一段预置字节（合成 hello 帧），

@@ -84,6 +84,16 @@ type RelayNode struct {
 	// bridgePools 跨中继桥接连接池(Phase B+): key = hostAddr(对端 relay 可路由地址)。
 	bridgePools map[string]*relayPeerPool
 
+	// stripedLegs 条带化接入侧归并(F3): key = connID。
+	// 一条条带化逻辑连接的 M 条 leg 分别从 M 条物理连接的 Accept 出来，按 connID 聚齐 legCount
+	// 条后组装成一条 LogicalConn 交下游一次。
+	stripedLegs map[string]*stripedAccept
+
+	// bridgeWidth 是桥接出站默认条带化宽度（每条逻辑连接用几条物理 leg）。
+	// 0/1 = 不条带化（模式 A，默认）；>1 = 条带化（模式 B）。F4 将据流量压力动态调整；
+	// 在此之前可由测试/配置显式设定。用 atomic 读写避免与 doBridge 竞争。
+	bridgeWidth atomic.Int32
+
 	// forwardHookConfig 转发 hook 配置（可选）
 	forwardHookConfig *ForwardHookConfig
 
@@ -110,6 +120,15 @@ type localBridgeEntry struct {
 	bridge   *networkFrameWork.CrossRelayBridge
 	bridged  bool        // 是否已用某条 leg 建成桥接
 	kcpReady chan struct{} // KCP leg 到达信号（TCP 等待方监听）
+}
+
+// stripedAccept 跟踪接入侧一条条带化逻辑连接的 leg 归并状态（F3）。
+// M 条 leg 从 M 条不同物理连接的 Accept 陆续到达，聚齐 want 条后组装成一条 LogicalConn。
+type stripedAccept struct {
+	want   int                          // 期望 leg 数（= 入口侧 legCount）
+	legs   []*networkFrameWork.MuxStream // 已到达的 leg
+	target string                       // 合成 hello 用的目标 NodeId
+	pubKey string                       // 合成 hello 用的源节点公钥
 }
 
 
@@ -165,6 +184,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 
 	n.localLegs = make(map[string]*localBridgeEntry)
 	n.bridgePools = make(map[string]*relayPeerPool)
+	n.stripedLegs = make(map[string]*stripedAccept)
 
 	// 安装框架回调：注册流建立时登记到 natNodes；业务连接未命中本地 group 时走跨中继逻辑。
 	cover := n.starter.Cover()
@@ -438,6 +458,11 @@ func (n *RelayNode) acceptBridgeMux(stream network.Stream, firstMsg *network.Mes
 				logx.Debugf("[relaynode] bridge-mux session 结束: peer=%.16s err=%v", peerNodeId, err)
 				return
 			}
+			// 条带化接入(F3)：legCount>1 的 leg 先归并，聚齐 M 条再组装下游连接。
+			if st.LegCount() > 1 {
+				n.collectStripedLeg(st)
+				continue
+			}
 			conn, err := networkFrameWork.AcceptBridgeMuxStream(st)
 			if err != nil {
 				logx.Warnf("[relaynode] bridge-mux 合成 hello 失败: %v", err)
@@ -452,6 +477,42 @@ func (n *RelayNode) acceptBridgeMux(stream network.Stream, firstMsg *network.Mes
 		}
 	}()
 	return nil // 已接管该物理连接的生命周期
+}
+
+// collectStripedLeg 归并一条条带化 leg。按 connID(=StreamID) 聚齐 legCount 条后，
+// 组装成一条条带化 LogicalConn 并交下游 ListenTCPConnection 一次。
+func (n *RelayNode) collectStripedLeg(st *networkFrameWork.MuxStream) {
+	connID := st.StreamID()
+	want := st.LegCount()
+	n.mu.Lock()
+	sa := n.stripedLegs[connID]
+	if sa == nil {
+		sa = &stripedAccept{want: want, target: st.TargetNodeID(), pubKey: st.OriginPubKey()}
+		n.stripedLegs[connID] = sa
+	}
+	sa.legs = append(sa.legs, st)
+	ready := len(sa.legs) >= sa.want
+	if ready {
+		delete(n.stripedLegs, connID)
+	}
+	n.mu.Unlock()
+	if !ready {
+		return
+	}
+	// 聚齐：组装条带化逻辑连接（接入侧用同 connID + M 条 leg）。
+	lc := networkFrameWork.NewStripedConn(connID, sa.legs)
+	conn, err := networkFrameWork.AcceptBridgeMuxLogicalConn(lc, sa.target, sa.pubKey)
+	if err != nil {
+		logx.Warnf("[relaynode] bridge-mux 条带化合成 hello 失败: %v", err)
+		_ = lc.Close()
+		return
+	}
+	logx.Infof("[relaynode] bridge-mux 条带化接入: connID=%s legs=%d", connID, sa.want)
+	go func() {
+		if e := n.starter.Cover().ListenTCPConnection(conn); e != nil {
+			logx.Debugf("[relaynode] bridge-mux 条带化会话接入结束: %v", e)
+		}
+	}()
 }
 
 // answerRelayQuery 应答 NAT 节点的「relay 列表查询」(RelayQueryRoute)。
