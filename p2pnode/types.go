@@ -94,6 +94,11 @@ type Message struct {
 	// 广播场景下保持不变，方便接收方知道真实来源。
 	Sender NodeID
 
+	// Code 是应用层状态码，语义参考 HTTP 状态码（200=成功，404=未找到，500=服务端错误等）。
+	// 默认值 0 表示「不关心状态」或「框架层消息」（如 DHT 控制消息）。
+	// router 层的业务消息默认填充 200 表示成功响应。
+	Code int
+
 	// Payload 是消息体，由上层业务定义格式。
 	Payload []byte
 }

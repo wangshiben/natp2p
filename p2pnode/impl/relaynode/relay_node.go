@@ -592,10 +592,13 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 		n.localLegs[connID] = entry
 	}
 	if entry.bridged {
-		// 已建桥, 多余 leg 关闭。
+		// 已建桥：把这条同 connID 的多余 leg 作为 failover leg splice 进已有桥接，
+		// 而非关闭。CrossRelayBridge 原生支持多条 local leg（localConns/active/liveLegs），
+		// 客户端 dual/双TCP failover 在某条 leg 死后切到另一条时，桥接会把回程写到新活跃 leg。
+		// 这从根上消除「客户端给 extra leg 注册了重连器、relay 却关掉它 → 无限重连风暴」。
+		br := entry.bridge
 		n.mu.Unlock()
-		_ = stream.Close()
-		return nil
+		return n.spliceFailoverLeg(br, stream, target, connID)
 	}
 
 	if leg == "tcp" {
@@ -604,16 +607,18 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 		n.mu.Unlock()
 		select {
 		case <-kcpReady:
-			// KCP 已到并由它建桥, 本 TCP leg 多余, 关闭。
-			_ = stream.Close()
-			return nil
+			// KCP 已到并由它建桥, 本 TCP leg 作为 failover splice 进桥接（不再关闭）。
+			n.mu.Lock()
+			br := entry.bridge
+			n.mu.Unlock()
+			return n.spliceFailoverLeg(br, stream, target, connID)
 		case <-time.After(kcpWaitWindow):
 			// KCP 未在窗口期到达, 用 TCP 兜底建桥。
 			n.mu.Lock()
-			if entry.bridged { // 竞争: 窗口边界 KCP 刚建桥
+			if entry.bridged { // 竞争: 窗口边界 KCP 刚建桥 → 本 leg 转 failover
+				br := entry.bridge
 				n.mu.Unlock()
-				_ = stream.Close()
-				return nil
+				return n.spliceFailoverLeg(br, stream, target, connID)
 			}
 			n.mu.Unlock()
 			logx.Infof("[relaynode] KCP leg 未在 %v 内到达, TCP 兜底建桥: target=%.16s connId=%s",
@@ -677,6 +682,26 @@ func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, e
 	n.mu.Unlock()
 	logx.Infof("[relaynode] 跨中继桥接建立: target=%.16s via relay=%s connId=%s leg=%s",
 		target, hostAddr, connID, networkFrameWork.LegTransport(stream))
+	return nil
+}
+
+// spliceFailoverLeg 把一条同 connID 的多余 leg 作为 failover leg 接入已建好的桥接。
+// 替代旧的「关闭多余 leg」行为：客户端 dual/双TCP failover 保留的备用 leg 不再被 relay 关闭，
+// 从而消除「客户端重连备用 leg → relay 关闭 → 无限重连」的风暴。
+// br 为 nil（极端竞态：bridged 已置但 bridge 尚未可见）或 splice 失败时，回退为关闭该 leg。
+func (n *RelayNode) spliceFailoverLeg(br *networkFrameWork.CrossRelayBridge, stream network.Stream, target, connID string) error {
+	if br == nil {
+		_ = stream.Close()
+		return nil
+	}
+	if err := br.SpliceLeg(stream); err != nil {
+		logx.Warnf("[relaynode] failover leg splice 失败, 关闭该 leg: target=%.16s connId=%s err=%v",
+			target, connID, err)
+		_ = stream.Close()
+		return nil
+	}
+	logx.Infof("[relaynode] failover leg 已并入桥接: target=%.16s connId=%s leg=%s",
+		target, connID, networkFrameWork.LegTransport(stream))
 	return nil
 }
 

@@ -219,28 +219,34 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 	var kcpErr error
 	var tcpErr error
 
+	// dual 模式：所有 leg 都不自发心跳(noKeepAlive=true)，改由 DualStream 统一只在
+	// 当前 preferred leg 上发心跳（见 startKeepAlive）。原因：relay 跨中继桥接按「最近发字节的
+	// leg」决定回程 active leg；若 standby leg 也自发心跳，会把 active 翻到 standby，下一段
+	// peer→local 下行数据就被错路由到 standby，在 32KB 读边界处把一帧劈成两半 → 两条 leg 同时
+	// 解析失败 → 重连风暴。让心跳只走 preferred、standby 全程静默，active 就稳定在数据 leg 上；
+	// 主 leg 死后 failover 切换 preferred，心跳与 active 一起迁移，天然 role-swap 安全。
 	tcpDialer := func(ctx context.Context) (network.Stream, error) {
-		return tcpClientStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
+		return tcpClientStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
 	}
 	kcpDialer := func(ctx context.Context) (network.Stream, error) {
-		return kcpStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId)
+		return kcpStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
 	}
 	// extraTCPDialer 用于"双 TCP failover 的第二条 TCP"：首帧打 legExtraMarker 标记，
-	// 让 relay 端把它当作并存 leg（而非顶替已有同协议 leg）。
+	// 让 relay 端把它当作并存 leg（而非顶替已有同协议 leg）。同样不自发心跳。
 	extraTCPDialer := func(ctx context.Context) (network.Stream, error) {
 		fm := cloneMessage(template)
 		markExtraLeg(fm)
-		return tcpClientStreamContext(ctx, fm, tcpAddr, originalNodeId, connectionId)
+		return tcpClientStreamContext(ctx, fm, tcpAddr, originalNodeId, connectionId, true)
 	}
 
-	kcpClient, err := kcpStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
+	kcpClient, err := kcpStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId, true)
 	if err != nil {
 		kcpErr = err
 		// KCP 不通（运营商高峰期限流跨地域 UDP）→ 补一条 TCP leg，组成"双 TCP"保留 failover 冗余。
 		// 第二条 TCP 首帧带 legExtraMarker，relay 据此并存而非顶替。
 		extraFirst := cloneMessage(FirstMessage)
 		markExtraLeg(extraFirst)
-		tcp2, e2 := tcpClientStream(extraFirst, tcpAddr, originalNodeId, connectionId)
+		tcp2, e2 := tcpClientStreamContext(context.Background(), extraFirst, tcpAddr, originalNodeId, connectionId, true)
 		if e2 != nil {
 			kcpErr = fmt.Errorf("KCP 失败(%v) 且备用 TCP 失败(%v)", err, e2)
 		} else if legID, err := dual.attachLeg(streamTransportTCP, tcp2); err != nil {
@@ -258,7 +264,7 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 		dual.SetReconnectDialer(legID, kcpDialer)
 	}
 
-	tcpClient, err := tcpClientStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
+	tcpClient, err := tcpClientStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId, true)
 	if err != nil {
 		tcpErr = err
 	} else if legID, err := dual.attachLeg(streamTransportTCP, tcpClient); err != nil {
@@ -274,6 +280,8 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 		}
 		return nil, kcpErr
 	}
+	// 统一心跳：只在 preferred leg 上发，standby 静默（见上方注释）。
+	dual.startKeepAlive()
 	return dual, nil
 }
 
@@ -281,7 +289,12 @@ func tcpClientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, con
 	return tcpClientStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId)
 }
 
-func tcpClientStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string) (network.Stream, error) {
+// tcpClientStreamContext 拨一条 TCP leg。可选 noKeepAlive=true 时不启动 keepLive 心跳，
+// 用于「双 TCP failover 的第二条 TCP」——它在 relay 桥接里是 silent standby:
+// 不发心跳 → relay 桥接的 active leg 不会被它的心跳往返翻动 → 下行数据不会被错路由到它、
+// 不会在 32KB 读边界处把一帧劈成两半造成两条 leg 同时损坏。主 leg 死后客户端 sendOrder
+// 自然切到它，届时它才开始发数据、成为 active。
+func tcpClientStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string, noKeepAlive ...bool) (network.Stream, error) {
 	handshakeCtx, cancel := context.WithTimeout(ctx, dialHandshakeTimeout)
 	defer cancel()
 
@@ -303,7 +316,9 @@ func tcpClientStreamContext(ctx context.Context, FirstMessage *network.Message, 
 		res.Close()
 		return nil, err
 	}
-	go res.keepLive()
+	if !(len(noKeepAlive) > 0 && noKeepAlive[0]) {
+		go res.keepLive()
+	}
 	return res, nil
 }
 
@@ -311,7 +326,7 @@ func kcpStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connectio
 	return kcpStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId)
 }
 
-func kcpStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string) (network.Stream, error) {
+func kcpStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string, noKeepAlive ...bool) (network.Stream, error) {
 	handshakeCtx, cancel := context.WithTimeout(ctx, dialHandshakeTimeout)
 	defer cancel()
 
@@ -333,6 +348,10 @@ func kcpStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAdd
 		res.Close()
 		return nil, err
 	}
-	go res.keepLive()
+	// dual 模式下心跳由 DualStream 统一只在 preferred leg 上发（见 clientStream 注释），
+	// 各 leg 不再自发心跳；noKeepAlive=true 即此用途。单 leg 路径保持各自心跳。
+	if !(len(noKeepAlive) > 0 && noKeepAlive[0]) {
+		go res.keepLive()
+	}
 	return res, nil
 }

@@ -105,7 +105,13 @@ func (b *CrossRelayBridge) SpliceLeg(stream network.Stream) error {
 		go b.pumpPeerToLocal()
 	}
 	b.localConns = append(b.localConns, localConn)
-	b.active = localConn
+	// 只有第一条 leg 设为 active；后续 splice 进来的 failover/standby leg 不抢 active。
+	// 否则静默 standby 会成为 active，回程(含握手响应)被写到它而非客户端正在收发的数据 leg，
+	// 把帧流劈到两条各自独立组帧的 leg 上 → 握手/数据损坏。standby 真正开始发数据时，
+	// pumpLocalToPeer 的 Read 会把 active 切到它（见下方 b.active = localConn）。
+	if b.active == nil {
+		b.active = localConn
+	}
 	b.liveLegs++
 	peerConn := b.peerConn
 	b.mu.Unlock()

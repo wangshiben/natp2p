@@ -843,6 +843,41 @@ func (d *DualStream) setPreferred(kind streamTransport) {
 	}
 }
 
+// startKeepAlive 启动 DualStream 级统一心跳：每 900ms 经 SendMessage 发一帧 /ping。
+// SendMessage 只走当前 preferred leg（失败才切 backup 并触发 handleLegFailure），
+// 因此心跳始终只在数据 leg 上发、standby 全程静默 —— 这正是 relay 跨中继桥接保持
+// active leg 稳定、不被 standby 心跳翻动而劈裂下行帧的前提。failover 后 preferred 迁移，
+// 心跳自动跟随，role-swap 安全。仅 dual 模式调用一次；单 leg 路径仍各自 keepLive。
+func (d *DualStream) startKeepAlive() {
+	go func() {
+		ticker := time.NewTicker(900 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-ticker.C:
+				hbCtx, cancel := context.WithTimeout(d.ctx, 3*time.Second)
+				err := d.SendMessage(hbCtx, &network.Message{
+					Header: &network.Header{
+						RouteName:     KeepAliveRoute,
+						NodeId:        d.NodeId(),
+						NodeIdVersion: 1,
+						ConnectionId:  d.ConnectionId(),
+					},
+				})
+				cancel()
+				if err != nil && d.ctx.Err() == nil && !isContextError(err) {
+					// SendMessage 内部已对失败 leg 触发 handleLegFailure/重连；
+					// 这里仅记录，不关闭整个 DualStream（另一条 leg 可能仍可用）。
+					logx.Debugf("[DualStream] keepalive 发送失败(已交由 leg failover 处理): nodeId=%.16s connId=%s err=%v",
+						d.NodeId(), d.ConnectionId(), err)
+				}
+			}
+		}
+	}()
+}
+
 // streamLocked 返回指定 leg ID 的现役流（调用方持锁）。
 func (d *DualStream) streamLocked(id streamTransport) network.Stream {
 	if entry := d.legs[id]; entry != nil {
