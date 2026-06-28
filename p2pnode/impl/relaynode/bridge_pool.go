@@ -52,6 +52,104 @@ const (
 	physConnRedialInitial = 500 * time.Millisecond
 )
 
+// 连接池扩容策略参数（Phase C，见 RELAY_BRIDGE_POOL_DESIGN.md §4.1/§4.4）。
+const (
+	// maxStreamsPerConn 单条物理连接承载的最大并发逻辑会话数（软上限）。
+	maxStreamsPerConn = 64
+	// streamHighWatermark 并发水位 = maxStreamsPerConn * 0.8，达到即视为该连接「并发吃紧」。
+	streamHighWatermark = 51
+	// sendPressureThreshold 发送压力水位：mux 待发帧数达到即视为该连接「发送吃紧」。
+	sendPressureThreshold = 256
+	// poolMaxConns 单对端 relay 的物理连接数上限。
+	poolMaxConns = 8
+	// poolSampleInterval 扩容采样周期：每隔该时长检查一次各 physConn 水位。
+	poolSampleInterval = 200 * time.Millisecond
+)
+
+// atHighWatermark 报告该物理连接是否达到任一高水位（并发数 或 发送压力）。
+// 无健康 session 视为「不占用扩容信号」(false)：它由 manage() 负责重连，不应触发扩容。
+func (pc *physConn) atHighWatermark() bool {
+	pc.mu.Lock()
+	sess := pc.sess
+	pc.mu.Unlock()
+	if sess == nil || sess.IsClosed() {
+		return false
+	}
+	if sess.ActiveStreams() >= streamHighWatermark {
+		return true
+	}
+	if sess.PendingFrames() >= sendPressureThreshold {
+		return true
+	}
+	return false
+}
+
+// liveConns 返回当前有健康 session 的物理连接快照（持锁外用）。
+func (p *relayPeerPool) liveConns() []*physConn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	live := make([]*physConn, 0, len(p.conns))
+	for _, pc := range p.conns {
+		pc.mu.Lock()
+		sess := pc.sess
+		pc.mu.Unlock()
+		if sess != nil && !sess.IsClosed() {
+			live = append(live, pc)
+		}
+	}
+	return live
+}
+
+// connCount 返回池内物理连接总数（含正在重连的）。
+func (p *relayPeerPool) connCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.conns)
+}
+
+// autoscale 是扩容采样循环（Phase C）：周期性检查水位，满足条件则 +1 物理连接。
+//
+// 扩容判定（针对整个池，§4.1）：
+//   - 存在 ≥1 条健康连接，且「所有健康连接都达到高水位」(避免少数热点误触发)；
+//   - 且当前连接总数 < poolMaxConns。
+// 满足则新增 1 条 physConn（高峰批量预扩在 Phase D 接管单次增量）。
+func (p *relayPeerPool) autoscale() {
+	ticker := time.NewTicker(poolSampleInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.maybeExpand()
+		}
+	}
+}
+
+// maybeExpand 执行一次扩容判定与（必要时）扩容。返回是否实际扩容。
+func (p *relayPeerPool) maybeExpand() bool {
+	live := p.liveConns()
+	if len(live) == 0 {
+		return false // 无健康连接：交给 manage() 重连，不在此扩容。
+	}
+	for _, pc := range live {
+		if !pc.atHighWatermark() {
+			return false // 只要有一条还没满，就不扩容。
+		}
+	}
+	// 所有健康连接都达高水位 → 在 maxConns 封顶内扩容。
+	p.mu.Lock()
+	if p.closed || len(p.conns) >= poolMaxConns {
+		p.mu.Unlock()
+		return false
+	}
+	p.mu.Unlock()
+	p.addPhysConn()
+	logx.Infof("[bridge-pool] 扩容: peer=%s 所有连接达高水位 → 新增物理连接 (now=%d/%d)",
+		p.hostAddr, p.connCount(), poolMaxConns)
+	return true
+}
+
 // newRelayPeerPool 创建到 hostAddr 的连接池，立即启动 minWarmConns 条物理连接。
 func newRelayPeerPool(parent context.Context, hostAddr, selfNodeID string, minWarmConns int) *relayPeerPool {
 	ctx, cancel := context.WithCancel(parent)
@@ -66,6 +164,8 @@ func newRelayPeerPool(parent context.Context, hostAddr, selfNodeID string, minWa
 	for i := 0; i < minWarmConns; i++ {
 		p.addPhysConn()
 	}
+	// Phase C：后台扩容采样循环（并发数 + 发送压力水位）。
+	go p.autoscale()
 	return p
 }
 

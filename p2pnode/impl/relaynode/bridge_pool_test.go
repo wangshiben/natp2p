@@ -300,3 +300,86 @@ func (r *testBridgeRelay) Close() error {
 func hexEncodeInteger(i int) string {
 	return hex.EncodeToString([]byte(fmt.Sprintf("%d", i)))
 }
+
+// TestBridgePool_ExpandOnConcurrency 验证 Phase C 扩容：当唯一物理连接的并发会话数
+// 达到 streamHighWatermark 时，autoscale 应新增物理连接（直到 poolMaxConns 封顶）。
+func TestBridgePool_ExpandOnConcurrency(t *testing.T) {
+	logx.SetLevel(logx.LevelInfo)
+	serverRelay, serverAddr := newTestBridgeRelay(t, "server-expand")
+	defer serverRelay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	pool := newRelayPeerPool(ctx, serverAddr, "client-expand", 1)
+	defer pool.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	// 初始应只有 1 条物理连接
+	if c := pool.connCount(); c != 1 {
+		t.Fatalf("初始期望 1 条物理连接, 实际 %d", c)
+	}
+
+	// 开 streamHighWatermark+5 条并发 stream（不关闭，保持活跃）以触发扩容。
+	openCount := streamHighWatermark + 5
+	streams := make([]*networkFrameWork.MuxStream, 0, openCount)
+	for i := 0; i < openCount; i++ {
+		st, err := pool.OpenStream(fmt.Sprintf("expand-%d", i), "target", "key")
+		if err != nil {
+			t.Fatalf("OpenStream %d 失败: %v", i, err)
+		}
+		streams = append(streams, st)
+	}
+	defer func() {
+		for _, st := range streams {
+			_ = st.Close()
+		}
+	}()
+
+	// autoscale 采样周期 200ms，给几个周期让它扩容。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if pool.connCount() > 1 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	got := pool.connCount()
+	if got <= 1 {
+		t.Errorf("期望并发达高水位后扩容 (>1 条), 实际 %d", got)
+	}
+	if got > poolMaxConns {
+		t.Errorf("物理连接数 %d 超过封顶 poolMaxConns=%d", got, poolMaxConns)
+	}
+	t.Logf("✔ 并发 %d 条达高水位 → 池扩容至 %d 条 (封顶 %d)", openCount, got, poolMaxConns)
+}
+
+// TestBridgePool_NoExpandWhenIdle 验证 Phase C 不误扩容：低负载（远低于水位）时
+// 池保持初始连接数不增长。
+func TestBridgePool_NoExpandWhenIdle(t *testing.T) {
+	logx.SetLevel(logx.LevelInfo)
+	serverRelay, serverAddr := newTestBridgeRelay(t, "server-noexpand")
+	defer serverRelay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := newRelayPeerPool(ctx, serverAddr, "client-noexpand", 1)
+	defer pool.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	// 只开少量 stream（远低于 streamHighWatermark）
+	for i := 0; i < 3; i++ {
+		st, err := pool.OpenStream(fmt.Sprintf("idle-%d", i), "target", "key")
+		if err != nil {
+			t.Fatalf("OpenStream %d 失败: %v", i, err)
+		}
+		defer st.Close()
+	}
+
+	// 等待多个采样周期，确认不扩容
+	time.Sleep(1500 * time.Millisecond)
+	if c := pool.connCount(); c != 1 {
+		t.Errorf("低负载不应扩容, 期望 1 条, 实际 %d", c)
+	}
+	t.Logf("✔ 低负载(3 stream)保持 1 条物理连接, 未误扩容")
+}
