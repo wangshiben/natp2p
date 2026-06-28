@@ -15,9 +15,16 @@ import (
 )
 
 const (
-	// initialAckTimeout 是首次等待 ACK 的超时。保持600ms确保跨公网高延迟场景的稳定性。
-	// 实测：200ms导致连接不稳定，400ms性能提升但不如600ms，600ms是最佳平衡点。
+	// initialAckTimeout 是「无进展」重传阈值的下限/缺省值（尚无 RTT 样本时用）。
+	// 注意语义：waitAck 现在测「距上次 ACK 进展多久」，而非「整条消息必须在此内完成」——
+	// 只要还在收到新的 range ACK（有进展）就不超时，故大消息/高 RTT 不再误重传。
+	// 实测：200ms 偏抖，600ms 是无 RTT 样本时的稳妥缺省。有样本后由 adaptiveAckTimeout 接管。
 	initialAckTimeout = 600 * time.Millisecond
+	// ackProgressRTTMultiple：无进展阈值 = 该倍数 × SRTT。给一次重传往返足够余量。
+	ackProgressRTTMultiple = 3
+	// minAckTimeout / maxAckTimeout：自适应无进展阈值的钳位区间。
+	minAckTimeout = 300 * time.Millisecond
+	maxAckTimeout = 5 * time.Second
 	// maxRetransmitAttempts 是单条消息的最大重传次数。配合指数退避, 给跨公网高延迟链路足够的送达窗口。
 	maxRetransmitAttempts  = 6
 	ackBatchThreshold      = 100
@@ -105,6 +112,11 @@ type TcpStream struct {
 	// frameSizeChangeMu 保护帧大小变更的同步过程
 	frameSizeChangeMu   sync.Mutex
 	frameSizeChangeAcks map[int]chan bool // newSize -> ack channel
+
+	// srttMicros 是本流平滑 RTT 估计（微秒，EWMA），由 keepLive 心跳的 SendMessage 往返采样。
+	// 0 表示尚无样本。waitAck 用它把「无进展超时阈值」按链路实际 RTT 自适应，
+	// 取代固定 600ms —— 高 RTT 链路给更大预算，避免大消息/高延迟下误判超时触发雪崩重传。
+	srttMicros atomic.Int64
 }
 
 // startTcpStream 在已经建好的连接上开 readLoop 与 recvAckTimer，
@@ -348,6 +360,7 @@ func (t *TcpStream) keepLive() {
 			return
 		case <-ticker.C:
 			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, 3*time.Second)
+			start := time.Now()
 			err := t.SendMessage(heartbeatCtx, &network.Message{
 				Header: &network.Header{
 					RouteName:     KeepAliveRoute,
@@ -362,6 +375,10 @@ func (t *TcpStream) keepLive() {
 					connType, t.getNodeId(), t.getConnectionId(), err)
 				t.failAndClose(err)
 				return
+			}
+			if err == nil {
+				// keepalive 是单帧消息，SendMessage 返回 ≈ 一个往返：用作 RTT 样本喂 SRTT。
+				t.observeRTT(time.Since(start))
 			}
 		}
 	}
@@ -537,7 +554,8 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 		return err
 	}
 
-	timeout := initialAckTimeout
+	// 无进展重传阈值按实测 RTT 自适应（无样本时退回 initialAckTimeout）。
+	timeout := t.adaptiveAckTimeout()
 	for attempt := 0; ; attempt++ {
 		err := t.waitAck(ctx, tracker, timeout)
 		if err == nil {
@@ -566,9 +584,14 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 	}
 }
 
+// waitAck 等待 tracker 收齐 ACK。语义为「无进展超时」：timeout 是「距上次 ACK 进展」的
+// 最长容忍时间，而非整条消息的硬截止。每当对端 ACK 推进了已确认帧数（有进展）就重置计时器，
+// 因此一条大消息只要持续有 range ACK 回来就不会误判超时；只有真正卡住（timeout 内零进展）
+// 才返回 errAckTimeout 触发重传缺失帧。这样放大 maxChunk / 高 RTT 链路不再雪崩。
 func (t *TcpStream) waitAck(ctx context.Context, tracker *ackTracker, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	lastProgress := tracker.ackedCount()
 	for {
 		select {
 		case <-ctx.Done():
@@ -579,10 +602,53 @@ func (t *TcpStream) waitAck(ctx context.Context, tracker *ackTracker, timeout ti
 			if tracker.complete() {
 				return nil
 			}
+			if cur := tracker.ackedCount(); cur > lastProgress {
+				// 有进展：重置无进展计时器。
+				lastProgress = cur
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(timeout)
+			}
 		case <-timer.C:
 			return errAckTimeout
 		}
 	}
+}
+
+// adaptiveAckTimeout 返回当前「无进展」重传阈值：有 RTT 样本时为 ackProgressRTTMultiple×SRTT
+// （钳在 [minAckTimeout, maxAckTimeout]）；无样本时退回 initialAckTimeout。
+func (t *TcpStream) adaptiveAckTimeout() time.Duration {
+	srtt := t.srttMicros.Load()
+	if srtt <= 0 {
+		return initialAckTimeout
+	}
+	to := time.Duration(srtt) * time.Microsecond * ackProgressRTTMultiple
+	if to < minAckTimeout {
+		return minAckTimeout
+	}
+	if to > maxAckTimeout {
+		return maxAckTimeout
+	}
+	return to
+}
+
+// observeRTT 用一次往返样本更新 SRTT（EWMA，α=1/8，与 TCP 经验一致）。
+func (t *TcpStream) observeRTT(sample time.Duration) {
+	if sample <= 0 {
+		return
+	}
+	us := sample.Microseconds()
+	prev := t.srttMicros.Load()
+	if prev <= 0 {
+		t.srttMicros.Store(us)
+		return
+	}
+	// srtt = 7/8*srtt + 1/8*sample
+	t.srttMicros.Store((prev*7 + us) / 8)
 }
 
 func (t *TcpStream) writeFrames(frames []*network.Frame) error {

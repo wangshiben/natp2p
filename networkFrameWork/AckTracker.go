@@ -52,6 +52,13 @@ func (a *ackTracker) complete() bool {
 	return uint32(len(a.acked)) >= a.total
 }
 
+// ackedCount 返回当前已确认的帧数。waitAck 用它判断「是否有新进展」以决定是否重置无进展计时器。
+func (a *ackTracker) ackedCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.acked)
+}
+
 // missing 列出尚未被确认的 SeqId，按升序返回。retransmit 路径会基于它构造重传帧。
 func (a *ackTracker) missing() []uint32 {
 	a.mu.Lock()

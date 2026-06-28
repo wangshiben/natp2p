@@ -20,6 +20,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,11 +181,23 @@ func handleLocal(sess *mux.Session, local net.Conn) {
 	pipe(stream, local)
 }
 
+// pipe copies bytes in both directions. 用大缓冲 io.CopyBuffer 而非裸 io.Copy(32KB)，
+// 让一次 Read 能合成更大的单条 mux 消息（一个端到端 ACK 往返摊更多字节，跨境高 RTT 提速）。
 func pipe(a io.ReadWriteCloser, b io.ReadWriteCloser) {
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(a, b); done <- struct{}{} }()
-	go func() { io.Copy(b, a); done <- struct{}{} }()
+	go func() { io.CopyBuffer(a, b, make([]byte, pumpBufSize())); done <- struct{}{} }()
+	go func() { io.CopyBuffer(b, a, make([]byte, pumpBufSize())); done <- struct{}{} }()
 	<-done
+}
+
+// pumpBufSize 返回数据泵缓冲字节数，默认 512KB，可用 TUNNEL_PUMP_BUF 覆盖（压测用）。
+func pumpBufSize() int {
+	if v := os.Getenv("TUNNEL_PUMP_BUF"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 4096 {
+			return n
+		}
+	}
+	return 512 * 1024
 }
 
 func loadKey(path string) (*ecdh.PrivateKey, error) {

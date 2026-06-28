@@ -12,10 +12,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 
 	"bnfs_p2p/p2pnode"
 )
+
+// defaultMaxChunk 是单条 mux 消息承载的最大业务字节数（见 Stream.Write 注释）。
+// 512KB：在双跳 ~240ms RTT 上把单 RTT 吞吐从 32KB/RTT(~136KB/s) 提升约一个数量级，
+// 同时单条消息不至于过大导致重传粒度太粗。可用 TUNNEL_MAX_CHUNK 覆盖。
+const defaultMaxChunk = 512 * 1024
+
+var streamMaxChunk = resolveMaxChunk()
+
+func resolveMaxChunk() int {
+	if v := os.Getenv("TUNNEL_MAX_CHUNK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1024 {
+			return n
+		}
+	}
+	return defaultMaxChunk
+}
 
 const (
 	frameOpen  byte = 1

@@ -75,8 +75,14 @@ func (st *Stream) Read(p []byte) (int, error) {
 
 // Write implements io.Writer. Splits large writes into frames that fit
 // comfortably inside a single P2P message.
+//
+// maxChunk 决定「一次 Write 切成几条 mux 消息」。每条 mux 消息 = 底层一次 SendMessage
+// = 一个端到端 ACK 往返。chunk 越大，单个 RTT 摊到的字节越多，跨境高 RTT 链路吞吐越高
+// （吞吐≈chunk/RTT，直到填满带宽时延积）。底层 SendMessage 内部仍按物理帧大小再分帧、
+// 用 sendLock 一次性打包发出、靠部分 range ACK 增量确认——本改动不触碰那套传帧/ACK 逻辑。
+// 可用环境变量 TUNNEL_MAX_CHUNK（字节）覆盖，便于压测找 BDP 拐点。
 func (st *Stream) Write(p []byte) (int, error) {
-	const maxChunk = 32 * 1024
+	maxChunk := streamMaxChunk
 	total := 0
 	for len(p) > 0 {
 		chunk := p
