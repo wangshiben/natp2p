@@ -54,6 +54,12 @@ func RelayClientTest(t *testing.T, relayAddr string) string {
 		t.Log("I'm waiting for Message")
 		for i := 1; i <= 3; i++ {
 			message, err = stream.NextMessage(t.Context())
+			// 存活探测修复后连接不再被过早杀死，本泄漏 goroutine 可能在测试结束后才从
+			// NextMessage 返回（因 t.Context() 在收尾时取消）。此时严禁再触碰 t（否则
+			// "Fail/Log in goroutine after test completed" panic）。测试收尾即静默退出。
+			if t.Context().Err() != nil {
+				return
+			}
 			marshal, _ := json.Marshal(message)
 			t.Logf("I'm got a Message %s,\n %v", marshal, err)
 			if err != nil {
@@ -143,6 +149,11 @@ func ClientTest(RelayNodeId string, t *testing.T, relayAddr string) (string, str
 			Payload: []byte("这是来自客户端的消息"),
 		})
 		t.Log("Success send Message to relayStream")
+		if t.Context().Err() != nil {
+			// 测试已收尾（存活探测修复后连接保活更久，本泄漏 goroutine 可能此刻才走到这里），
+			// 静默退出，禁止再触碰 t。
+			return
+		}
 		if err != nil {
 			t.Errorf("发送消息失败: %v", err)
 			return
@@ -169,6 +180,9 @@ func TestNewTLSCrypto(t *testing.T) {
 		t.Logf("[系统] 中转服务器启动成功，监听地址 %s", relayAddr)
 		t.Logf("[系统] 目标节点ID为 %s", RelayId)
 		ClientId, connectionId, err := ClientTest(RelayId, t, relayAddr)
+		if t.Context().Err() != nil {
+			return
+		}
 		if err != nil {
 			t.Errorf("ClientTest err: %v", err)
 			return

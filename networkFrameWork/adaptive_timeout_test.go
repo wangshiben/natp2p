@@ -15,13 +15,13 @@ func TestAdaptiveAckTimeout_Logic(t *testing.T) {
 	}
 	// 注入 RTT 样本
 	ts.observeRTT(240 * time.Millisecond)
-	// 3×240ms=720ms, 在 [300ms,5s] 内
-	if got := ts.adaptiveAckTimeout(); got != 720*time.Millisecond {
-		t.Fatalf("240ms RTT → 期望 720ms, 得 %v", got)
+	// 4×240ms=960ms, 在 [800ms,8s] 内
+	if got := ts.adaptiveAckTimeout(); got != 960*time.Millisecond {
+		t.Fatalf("240ms RTT → 期望 960ms, 得 %v", got)
 	}
-	// EWMA: 再来一个 80ms 样本 → 7/8*240+1/8*80 = 220ms
+	// EWMA: 再来一个 80ms 样本 → 7/8*240+1/8*80 = 220ms; 4×220ms=880ms, 仍在区间内
 	ts.observeRTT(80 * time.Millisecond)
-	exp := 3 * (240*7 + 80) / 8 * int(time.Millisecond)
+	exp := ackProgressRTTMultiple * (240*7 + 80) / 8 * int(time.Millisecond)
 	if got := ts.adaptiveAckTimeout(); got != time.Duration(exp) {
 		t.Fatalf("EWMA 后期望 %v, 得 %v", time.Duration(exp), got)
 	}
@@ -31,7 +31,7 @@ func TestAdaptiveAckTimeout_Logic(t *testing.T) {
 	if got := ts2.adaptiveAckTimeout(); got != minAckTimeout {
 		t.Fatalf("10ms RTT 应钳到 %v, 得 %v", minAckTimeout, got)
 	}
-	t.Logf("✔ 自适应超时: 无样本=%v, 240ms→720ms, 钳位 min=%v", initialAckTimeout, minAckTimeout)
+	t.Logf("✔ 自适应超时: 无样本=%v, 240ms→960ms, 钳位 min=%v", initialAckTimeout, minAckTimeout)
 }
 
 // TestWaitAck_ProgressResetsTimer 验证核心改动：只要持续有 ACK 进展，

@@ -16,15 +16,21 @@ import (
 
 const (
 	// initialAckTimeout 是「无进展」重传阈值的下限/缺省值（尚无 RTT 样本时用）。
-	// 注意语义：waitAck 现在测「距上次 ACK 进展多久」，而非「整条消息必须在此内完成」——
-	// 只要还在收到新的 range ACK（有进展）就不超时，故大消息/高 RTT 不再误重传。
-	// 实测：200ms 偏抖，600ms 是无 RTT 样本时的稳妥缺省。有样本后由 adaptiveAckTimeout 接管。
-	initialAckTimeout = 600 * time.Millisecond
-	// ackProgressRTTMultiple：无进展阈值 = 该倍数 × SRTT。给一次重传往返足够余量。
-	ackProgressRTTMultiple = 3
-	// minAckTimeout / maxAckTimeout：自适应无进展阈值的钳位区间。
-	minAckTimeout = 300 * time.Millisecond
-	maxAckTimeout = 5 * time.Second
+	// 注意语义：waitAck 测「距上次 ACK 进展多久」，而非「整条消息必须在此内完成」——
+	// 只要还在收到新的 range ACK（有进展）就不超时。
+	// —— 与底层 ARQ 解耦（见 KCP_DEBUG/README.md 方案A ①）——
+	// 底层 KCP/TCP 自带可靠 ARQ（RTO 数十~数百 ms）。应用层重传只应作「底层都救不回来」
+	// 的兜底，绝不能与底层 RTO 抢跑（否则冗余重传拥塞底层窗口 → app-ACK 更晚 → 雪崩）。
+	// 故把无进展阈值放宽到 ≫ 底层 RTO（下限 800ms），底层可靠交付时 ACK 持续进展、计时器
+	// 不断重置，应用层重传几乎永不触发；仅当底层长时间零进展（真卡死）才补发。
+	// 真正的判死交给 keepLive 存活探测（~63s）与 KCP 自身 dead_link，此处只是次级兜底。
+	initialAckTimeout = 800 * time.Millisecond
+	// ackProgressRTTMultiple：无进展阈值 = 该倍数 × SRTT。放宽到 4×，给底层 ARQ 恢复余量。
+	ackProgressRTTMultiple = 4
+	// minAckTimeout / maxAckTimeout：自适应无进展阈值的钳位区间。下限 800ms（≫ 底层 RTO），
+	// 上限 8s；重传退避也钳在 maxAckTimeout，使整条消息重传耗尽有界（见 sendMessageWithMessageID）。
+	minAckTimeout = 800 * time.Millisecond
+	maxAckTimeout = 8 * time.Second
 	// maxRetransmitAttempts 是单条消息的最大重传次数。配合指数退避, 给跨公网高延迟链路足够的送达窗口。
 	maxRetransmitAttempts  = 6
 	ackBatchThreshold      = 100
@@ -32,6 +38,16 @@ const (
 	recvAckTickInterval    = 250 * time.Millisecond
 	inboxBufferSize        = 64
 	e2eDeliveredCacheLimit = 65536
+
+	// —— 存活探测（liveness）：判死信号从「app-ACK 是否准时」解耦为「收字节空闲 + 指数退避探测」——
+	// 见 KCP_DEBUG/README.md §3.5 / 方案A。KCP 无 failSend 回调、跨境 KCP 单个丢包会让某条
+	// app-ACK 晚一个 RTO，故绝不能用「单条 ping 的 ACK 是否准时」判死（会把抖动误判成断链）。
+	// 改为：距上次收到对端【任意帧】静默超过 keepAliveIdleBaseline 才开始主动探测；探测按指数退避，
+	// 连续 keepAliveMaxProbes 次都收不到任何回帧才判死。期间收到任意入站帧立即判活、退避清零。
+	keepAliveIdleBaseline = 3 * time.Second  // 静默多久后开始主动探测
+	keepAliveProbeBase    = 1 * time.Second  // 首次探测后的等待，其后每次翻倍(1,2,4,8,16,32)
+	keepAliveMaxProbes    = 6                // 连续这么多次探测无任何回帧才判死
+	keepAliveProbeTimeout = 3 * time.Second  // 单个探测 SendMessage 的发送预算（仅发，不据其超时判死）
 )
 
 const KeepAliveRoute = "/ping"
@@ -117,6 +133,13 @@ type TcpStream struct {
 	// 0 表示尚无样本。waitAck 用它把「无进展超时阈值」按链路实际 RTT 自适应，
 	// 取代固定 600ms —— 高 RTT 链路给更大预算，避免大消息/高延迟下误判超时触发雪崩重传。
 	srttMicros atomic.Int64
+
+	// lastRecvMicros 是本 leg 上「最近一次从对端收到任意帧」的时刻（UnixMicro，atomic）。
+	// 由 readLoop 每次 ReadFrame 成功后刷新（覆盖 data/ACK/对端心跳一切入站帧）。
+	// 这是存活探测的判活信号——只要对端还在发任何字节，连接即活；与「我发的某条 app-ACK
+	// 是否准时回来」彻底解耦。区别于 recvTracker.lastFrameTime（那是 per-message、只覆盖
+	// 数据帧、组包完即删）。见 KCP_DEBUG/README.md 方案A。
+	lastRecvMicros atomic.Int64
 }
 
 // startTcpStream 在已经建好的连接上开 readLoop 与 recvAckTimer，
@@ -158,6 +181,8 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	// 身份字段经原子指针存储（见字段注释），构造期串行设置，之后任何并发读写都走原子。
 	t.setNodeId(nodeId)
 	t.setConnectionId(connectionId)
+	// 初始化存活时间戳为「现在」，避免新流一建立就被存活探测误判为静默。
+	t.lastRecvMicros.Store(time.Now().UnixMicro())
 
 	// 设置帧大小变更同步回调。
 	//
@@ -346,20 +371,60 @@ func (t *TcpStream) SetIdentity(nodeId, connectionId string) {
 	t.setConnectionId(connectionId)
 }
 
+// keepLive 存活维护 + 判死。
+//
+// 判死信号已从「单条 ping 的 app-ACK 是否准时」解耦为「收字节空闲 + 指数退避探测」
+// （见 KCP_DEBUG/README.md §3.5 / 方案A）。核心：只要本 leg 上还在收到对端【任意帧】
+// （由 readLoop 刷新 lastRecvMicros），连接即活；跨境 KCP 单个丢包让某条 app-ACK 晚一个
+// RTO，绝不会被误判为断链。只有「持续静默 + 连续 keepAliveMaxProbes 次主动探测都收不到
+// 任何回帧」才 failAndClose，交由 DualStream.handleLegFailure→scheduleReconnect 走既有重连。
+//
+// 状态机（判活以 lastRecvMicros 是否被刷新为准，与本次探测 ACK 是否准时无关）：
+//   非探测态：每 keepAliveIdleBaseline 轮询；若期间收到过帧（lastRecv 距今 < 基线）则继续等；
+//             静默超基线 → 进入探测态。
+//   探测态：记录探测前的 lastRecv 快照 → 发探测 ping → 等 backoff(1,2,4,8,16,32s) →
+//           若 lastRecv 被刷新（收到任意帧）→ 判活、退出探测态、退避清零；
+//           否则 probeCount++；连续 keepAliveMaxProbes 次都没刷新 → 判死。
 func (t *TcpStream) keepLive() {
 	connType := "TCP"
 	if t.connection != nil && t.connection.RemoteAddr().Network() != "tcp" {
 		connType = "KCP"
 	}
-	ticker := time.NewTicker(900 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
+	idleSince := func() time.Duration {
+		last := t.lastRecvMicros.Load()
+		if last <= 0 {
+			return 0
+		}
+		return time.Since(time.UnixMicro(last))
+	}
+	sleep := func(d time.Duration) bool {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
 		select {
 		case <-t.streamCtx.Done():
-			return
-		case <-ticker.C:
-			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, 3*time.Second)
+			return false
+		case <-timer.C:
+			return true
+		}
+	}
+
+	for {
+		// —— 非探测态：等到静默超过基线才开始探测 ——
+		if d := idleSince(); d < keepAliveIdleBaseline {
+			if !sleep(keepAliveIdleBaseline - d) {
+				return
+			}
+			continue
+		}
+
+		// —— 探测态：指数退避连续探测 ——
+		probeCount := 0
+		backoff := keepAliveProbeBase
+		alive := false
+		for probeCount < keepAliveMaxProbes {
+			before := t.lastRecvMicros.Load() // 探测前的收帧快照
+
+			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, keepAliveProbeTimeout)
 			start := time.Now()
 			err := t.SendMessage(heartbeatCtx, &network.Message{
 				Header: &network.Header{
@@ -370,17 +435,35 @@ func (t *TcpStream) keepLive() {
 				},
 			})
 			cancel()
-			if err != nil && t.streamCtx.Err() == nil && !isContextError(err) {
-				logx.Warnf("[%s] keepLive 心跳失败, 关闭连接: nodeId=%.16s connId=%s err=%v",
-					connType, t.getNodeId(), t.getConnectionId(), err)
-				t.failAndClose(err)
-				return
-			}
 			if err == nil {
-				// keepalive 是单帧消息，SendMessage 返回 ≈ 一个往返：用作 RTT 样本喂 SRTT。
+				// 探测成功往返：有效 RTT 样本 + 对端活着。
 				t.observeRTT(time.Since(start))
 			}
+			if t.streamCtx.Err() != nil {
+				return
+			}
+
+			// 等一个退避窗口，看这期间是否收到对端【任意帧】（判活的唯一依据）。
+			if !sleep(backoff) {
+				return
+			}
+			if t.lastRecvMicros.Load() != before {
+				alive = true // 收到任意入站帧 → 判活
+				break
+			}
+			probeCount++
+			if backoff < 32*time.Second {
+				backoff *= 2
+			}
 		}
+		if alive {
+			continue // 退避清零，回非探测态
+		}
+		// 连续 keepAliveMaxProbes 次探测窗口内都没收到任何帧 → 判死。
+		logx.Warnf("[%s] keepLive 判死: 连续 %d 次指数退避探测均无任何回帧, 关闭 leg: nodeId=%.16s connId=%s",
+			connType, keepAliveMaxProbes, t.getNodeId(), t.getConnectionId())
+		t.failAndClose(errors.New("keepalive: peer unreachable after exponential-backoff probes"))
+		return
 	}
 }
 
@@ -580,7 +663,11 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 		if err := t.writeFrames(retrans); err != nil {
 			return err
 		}
+		// 退避但钳在 maxAckTimeout，使重传耗尽总时长有界（不与底层 RTO 抢跑、也不会退避到分钟级）。
 		timeout *= 2
+		if timeout > maxAckTimeout {
+			timeout = maxAckTimeout
+		}
 	}
 }
 
@@ -819,6 +906,8 @@ func (t *TcpStream) readLoop() {
 			t.failAndClose(err)
 			return
 		}
+		// 刷新存活时间戳：收到对端【任意帧】即证明连接活着（存活探测判活信号，见 keepLive）。
+		t.lastRecvMicros.Store(time.Now().UnixMicro())
 		if err := t.handleFrame(frame); err != nil {
 			t.failAndClose(err)
 			return
