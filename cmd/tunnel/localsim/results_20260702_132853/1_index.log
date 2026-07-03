@@ -1,0 +1,13 @@
+=== Node Server (index) ===
+节点 ID: 363535071d7992d70b3f79878d090b8bf967641f49c6a134f0013d85b669f95b
+监听: :19000  对外地址: 127.0.0.1:19000
+RelayStarter Start AT :19000
+index 已就绪
+2026/07/02 13:28:55 [INFO] [relay] 新连接: local=127.0.0.1:19000 remote=127.0.0.1:43788
+2026/07/02 13:28:55 [INFO] [relay] 新连接: local=[::]:19000 remote=127.0.0.1:37055
+2026/07/02 13:28:55 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:19000 remote=127.0.0.1:37055): nodeId=6df58c3bcd545ed5 connId=5e447683-520f-46e5-9751-6a82e18d0616
+2026/07/02 13:28:55 [INFO] [relaynode] 控制链路已建立(被动): peerNodeId=6df58c3bcd545ed5 remoteIP=127.0.0.1
+2026/07/02 13:28:55 [INFO] [relay] AcceptTcpStream 成功 (local=127.0.0.1:19000 remote=127.0.0.1:43788): nodeId=6df58c3bcd545ed5 connId=5e447683-520f-46e5-9751-6a82e18d0616
+2026/07/02 13:28:55 [INFO] [relaynode] 控制链路已建立(被动): peerNodeId=6df58c3bcd545ed5 remoteIP=127.0.0.1
+2026/07/02 13:28:55 [INFO] [relaynode] 登记对端 relay: id=6df58c3bcd545ed5 addr=127.0.0.1:19001
+正在关闭...

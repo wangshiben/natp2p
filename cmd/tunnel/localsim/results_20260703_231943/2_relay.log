@@ -1,0 +1,33 @@
+=== Node Server (relay) ===
+节点 ID: 0dfcd973edf2e73a498c9ed15438f50a0fbd96e72ebbcf4246a74473a61d8a6a
+监听: :19001  对外地址: 127.0.0.1:19001
+正在向 index 注册: 127.0.0.1:19000
+2026/07/03 23:19:45 [INFO] [relaynode] 向 index 注册(建控制链路, ID 将在 HELLO 后自动获知): 127.0.0.1:19000
+2026/07/03 23:19:45 [INFO] [relaynode] 开始维持到 relay 127.0.0.1:19000 的控制链路
+RelayStarter Start AT :19001
+2026/07/03 23:19:45 [INFO] [relaynode] 控制链路已建立(主动): peer=127.0.0.1:19000
+2026/07/03 23:19:45 [INFO] [relaynode] 登记对端 relay: id=fff4385783c0ce11 addr=127.0.0.1:19000
+2026/07/03 23:19:45 [INFO] [relaynode] 已注册到 index(自动获知其 ID): id=fff4385783c0ce11 addr=127.0.0.1:19000
+已注册到 index: id=fff4385783c0ce115606c5d2dfa2469358eed0bb5c7f98557af85beb4436afc0 addr=127.0.0.1:19000
+relay 已就绪
+2026/07/03 23:19:51 [INFO] [relay] 新连接: local=127.0.0.1:19001 remote=127.0.0.1:60432
+2026/07/03 23:19:51 [INFO] [relay] 新连接: local=[::]:19001 remote=127.0.0.1:50141
+2026/07/03 23:19:51 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:19001 remote=127.0.0.1:50141): nodeId=24ce7ceb00209dd4 connId=
+2026/07/03 23:19:51 [INFO] [relay] 新建 StreamGroup: nodeId=24ce7ceb00209dd4
+2026/07/03 23:19:51 [INFO] [relay] AcceptTcpStream 成功 (local=127.0.0.1:19001 remote=127.0.0.1:60432): nodeId=24ce7ceb00209dd4 connId=
+2026/07/03 23:19:51 [INFO] [relaynode] 本地托管的 NAT 节点登记到 natNodes: 24ce7ceb00209dd4 来源=127.0.0.1:50141
+2026/07/03 23:19:51 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=24ce7ceb00209dd4
+2026/07/03 23:19:56 [INFO] [relay] 新连接: local=127.0.0.1:19001 remote=127.0.0.1:60436
+2026/07/03 23:19:56 [INFO] [relay] 新连接: local=[::]:19001 remote=127.0.0.1:35363
+2026/07/03 23:19:56 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:19001 remote=127.0.0.1:35363): nodeId=24ce7ceb00209dd4 connId=cf360c26-49d5-4a7b-8677-218c3b793fc9
+2026/07/03 23:19:56 [INFO] [relay] AcceptTcpStream 成功 (local=127.0.0.1:19001 remote=127.0.0.1:60436): nodeId=24ce7ceb00209dd4 connId=cf360c26-49d5-4a7b-8677-218c3b793fc9
+2026/07/03 23:19:56 [INFO] [relay] StreamOn 成功: targetNodeId=24ce7ceb00209dd4 connId=cf360c26-49d5-4a7b-8677-218c3b793fc9 forward=true
+2026/07/03 23:19:56 [INFO] [relay] 新连接: local=[::]:19001 remote=127.0.0.1:35628
+2026/07/03 23:19:56 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:19001 remote=127.0.0.1:35628): nodeId=cf83c04e78fdd7b5 connId=
+2026/07/03 23:19:56 [INFO] [relay] 新建 StreamGroup: nodeId=cf83c04e78fdd7b5
+2026/07/03 23:19:56 [INFO] [relay] StreamOn 成功: targetNodeId=24ce7ceb00209dd4 connId=cf360c26-49d5-4a7b-8677-218c3b793fc9 forward=false
+2026/07/03 23:19:56 [INFO] [relaynode] 本地托管的 NAT 节点登记到 natNodes: cf83c04e78fdd7b5 来源=127.0.0.1:35628
+2026/07/03 23:19:56 [INFO] [relay] 新连接: local=127.0.0.1:19001 remote=127.0.0.1:60444
+2026/07/03 23:19:56 [INFO] [relay] AcceptTcpStream 成功 (local=127.0.0.1:19001 remote=127.0.0.1:60444): nodeId=cf83c04e78fdd7b5 connId=
+2026/07/03 23:19:56 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=cf83c04e78fdd7b5
+正在关闭...

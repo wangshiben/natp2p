@@ -1,0 +1,14 @@
+测试时间: 2026年 07月 03日 星期五 23:20:05 CST
+组件状态:
+  Index Server: 就绪 (ID fff4385783c0ce11)
+  Relay Server: 就绪
+  HTTP Server: 就绪 (20MB)
+  Tunnel Server: 就绪 (NodeID 24ce7ceb00209dd4)
+  Tunnel Client: 已连接
+传输结果:
+  文件大小: 20971520 字节
+  传输耗时: .615451856s
+  传输速度: 32.49 MB/s
+  期望SHA256: bc8bc806f894a88475064df14373cbc68c929f47845034bf7261586cc522dd87
+  实际SHA256: bc8bc806f894a88475064df14373cbc68c929f47845034bf7261586cc522dd87
+  完整性: ✅ 通过
