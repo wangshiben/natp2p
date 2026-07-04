@@ -1,0 +1,1280 @@
+RelayNode ID: 931ba35e9df5c4794f19f45cecf26935b8453135fd7e88afc04e30d0309c3309
+监听: 0.0.0.0:9000  对外地址: 104.0.0.1:9000
+2026/06/19 22:44:08 [relaynode] 向 index 注册(建控制链路): 38.0.0.1:9000
+2026/06/19 22:44:08 [relaynode] 开始维持到 relay 38.0.0.1:9000 的控制链路
+向 index 注册: 38.0.0.1:9000
+RelayStarter Start AT 0.0.0.0:9000
+2026/06/19 22:44:08 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 22:44:10 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:44:10 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:44:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=ce0ec174-eb4e-450c-aa03-f58b5dc4ec2a route=/relay/control payloadLen=121 hexPreview=7b2274797065223a2248454c4c4f222c226e6f64655f6964223a226662653664
+2026/06/19 22:44:10 [relaynode] 控制链路已建立(主动): peer=38.0.0.1:9000
+2026/06/19 22:44:10 [relaynode] 登记对端 relay: id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+2026/06/19 22:46:26 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:49534
+2026/06/19 22:46:26 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:46:26 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:46:26 [relay] AcceptTcpStream 失败 (local=104.0.0.1:9000 remote=38.0.0.1:49534): EOF
+2026/06/19 22:46:26 ListenTCPConnection error: EOF
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+[状态] relay邻居=1 托管NAT节点=0
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+2026/06/19 22:46:38 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:54452
+2026/06/19 22:46:38 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:46:38 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:46:38 [relay] AcceptTcpStream 失败 (local=104.0.0.1:9000 remote=38.0.0.1:54452): EOF
+2026/06/19 22:46:38 ListenTCPConnection error: EOF
+2026/06/19 22:46:38 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:54460
+2026/06/19 22:46:38 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:46:38 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:46:38 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:54460): nodeId=88db07337f3df5f2 connId=
+2026/06/19 22:46:38 [relay] 新建 StreamGroup: nodeId=88db07337f3df5f2
+2026/06/19 22:46:38 [relaynode] 本地托管的 NAT 节点登记到 natNodes: 88db07337f3df5f2 来源=38.0.0.1:54460
+2026/06/19 22:46:39 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:54466
+2026/06/19 22:46:39 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:46:39 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:46:39 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:54466): nodeId=f524fe38ff8b8023 connId=b38d5030-972e-4f6c-8b9f-ee0c872e3108
+2026/06/19 22:46:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=ce0ec174-eb4e-450c-aa03-f58b5dc4ec2a route=/relay/control payloadLen=148 hexPreview=7b2274797065223a2246494e445f52455350222c227265715f6964223a312c22
+2026/06/19 22:46:40 [relaynode] 跨中继桥接建立: target=f524fe38ff8b8023 via relay=38.0.0.1:9000 connId=b38d5030-972e-4f6c-8b9f-ee0c872e3108 leg=tcp
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+2026/06/19 22:47:23 [DualStream] TCP startPump NextMessage 失败: nodeId=88db07337f3df5f2 connId= err=EOF
+2026/06/19 22:47:23 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=88db07337f3df5f2 connId=
+2026/06/19 22:47:23 [FrameRelay] TCP NextFrame 失败: nodeId=88db07337f3df5f2 connId= isCurrent=true ctxErr=context canceled err=EOF
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+[状态] relay邻居=1 托管NAT节点=1
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+2026/06/19 22:47:35 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:35480
+2026/06/19 22:47:35 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:47:35 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:47:35 [relay] AcceptTcpStream 失败 (local=104.0.0.1:9000 remote=38.0.0.1:35480): EOF
+2026/06/19 22:47:35 ListenTCPConnection error: EOF
+2026/06/19 22:47:35 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:35490
+2026/06/19 22:47:35 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:47:35 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:47:35 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:35490): nodeId=38ff1eaef8b61185 connId=
+2026/06/19 22:47:35 [relay] 新建 StreamGroup: nodeId=38ff1eaef8b61185
+2026/06/19 22:47:35 [relaynode] 本地托管的 NAT 节点登记到 natNodes: 38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:47:36 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:35500
+2026/06/19 22:47:36 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:47:36 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:47:36 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:35500): nodeId=f524fe38ff8b8023 connId=e4161e73-9348-410b-bcdf-2a45bd1f700d
+2026/06/19 22:47:37 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=ce0ec174-eb4e-450c-aa03-f58b5dc4ec2a route=/relay/control payloadLen=148 hexPreview=7b2274797065223a2246494e445f52455350222c227265715f6964223a322c22
+2026/06/19 22:47:37 [relaynode] 跨中继桥接建立: target=f524fe38ff8b8023 via relay=38.0.0.1:9000 connId=e4161e73-9348-410b-bcdf-2a45bd1f700d leg=tcp
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:48:30 [DualStream] TCP startPump NextMessage 失败: nodeId=38ff1eaef8b61185 connId= err=EOF
+2026/06/19 22:48:30 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=38ff1eaef8b61185 connId=
+2026/06/19 22:48:30 [FrameRelay] TCP NextFrame 失败: nodeId=38ff1eaef8b61185 connId= isCurrent=true ctxErr=context canceled err=EOF
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:52:16 [DualStream] TCP startPump NextMessage 失败: nodeId=931ba35e9df5c479 connId=ce0ec174-eb4e-450c-aa03-f58b5dc4ec2a err=EOF
+2026/06/19 22:52:16 [DualStream] TCP leg 失败, 关闭并触发重连: nodeId=931ba35e9df5c479 connId=ce0ec174-eb4e-450c-aa03-f58b5dc4ec2a
+2026/06/19 22:52:16 [relaynode] 控制链路断开(主动), 准备重连: peer=38.0.0.1:9000
+2026/06/19 22:52:16 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:52:18 [relaynode] 拨号对端 relay 38.0.0.1:9000 失败, 1s 后重试: dial tcp4 38.0.0.1:9000: connect: connection refused
+2026/06/19 22:52:19 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 22:52:21 [relaynode] 拨号对端 relay 38.0.0.1:9000 失败, 2s 后重试: dial tcp4 38.0.0.1:9000: connect: connection refused
+2026/06/19 22:52:23 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:52:24 [relaynode] 拨号对端 relay 38.0.0.1:9000 失败, 4s 后重试: dial tcp4 38.0.0.1:9000: connect: connection refused
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:52:28 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 22:52:30 [relaynode] 拨号对端 relay 38.0.0.1:9000 失败, 8s 后重试: dial tcp4 38.0.0.1:9000: connect: connection refused
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=1 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:52:38 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 22:52:40 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:52:40 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:52:40 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/relay/control payloadLen=121 hexPreview=7b2274797065223a2248454c4c4f222c226e6f64655f6964223a226561363639
+2026/06/19 22:52:40 [relaynode] 控制链路已建立(主动): peer=38.0.0.1:9000
+2026/06/19 22:52:40 [relaynode] 登记对端 relay: id=ea6691d93ccdcace addr=38.0.0.1:9000
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+[状态] relay邻居=2 托管NAT节点=2
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+2026/06/19 22:53:37 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:35570
+2026/06/19 22:53:37 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:53:37 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:53:37 [relay] AcceptTcpStream 失败 (local=104.0.0.1:9000 remote=38.0.0.1:35570): EOF
+2026/06/19 22:53:37 ListenTCPConnection error: EOF
+2026/06/19 22:53:37 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:35582
+2026/06/19 22:53:37 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:53:37 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:53:37 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:35582): nodeId=892ba440dad08538 connId=
+2026/06/19 22:53:37 [relay] 新建 StreamGroup: nodeId=892ba440dad08538
+2026/06/19 22:53:37 [relaynode] 本地托管的 NAT 节点登记到 natNodes: 892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+2026/06/19 22:53:38 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:35590
+2026/06/19 22:53:38 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:53:38 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:53:38 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:35590): nodeId=18b744e05e797bca connId=fb7b4197-f6f7-477c-84fb-e3eb0a89e9c4
+2026/06/19 22:53:38 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/relay/control payloadLen=148 hexPreview=7b2274797065223a2246494e445f52455350222c227265715f6964223a332c22
+2026/06/19 22:53:38 [relaynode] 跨中继桥接建立: target=18b744e05e797bca via relay=38.0.0.1:9000 connId=fb7b4197-f6f7-477c-84fb-e3eb0a89e9c4 leg=tcp
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+[状态] relay邻居=2 托管NAT节点=3
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+2026/06/19 22:57:36 [DualStream] TCP startPump NextMessage 失败: nodeId=892ba440dad08538 connId= err=EOF
+2026/06/19 22:57:36 [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=892ba440dad08538 connId=
+2026/06/19 22:57:36 [FrameRelay] TCP NextFrame 失败: nodeId=892ba440dad08538 connId= isCurrent=true ctxErr=context canceled err=EOF
+2026/06/19 22:57:37 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:57048
+2026/06/19 22:57:37 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:57:37 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:57:37 [relay] AcceptTcpStream 失败 (local=104.0.0.1:9000 remote=38.0.0.1:57048): EOF
+2026/06/19 22:57:37 ListenTCPConnection error: EOF
+2026/06/19 22:57:38 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:57062
+2026/06/19 22:57:38 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:57:38 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:57:38 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:57062): nodeId=abd55cb5b71a40ac connId=
+2026/06/19 22:57:38 [relay] 新建 StreamGroup: nodeId=abd55cb5b71a40ac
+2026/06/19 22:57:38 [relaynode] 本地托管的 NAT 节点登记到 natNodes: abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+2026/06/19 22:57:39 [relay] 新连接: local=104.0.0.1:9000 remote=38.0.0.1:57074
+2026/06/19 22:57:39 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 22:57:39 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 22:57:39 [relay] AcceptTcpStream 成功 (local=104.0.0.1:9000 remote=38.0.0.1:57074): nodeId=8743aba3b2d6a79f connId=856f86a5-410f-48b5-a7fe-aba684056419
+2026/06/19 22:57:39 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=931ba35e9df5c479 connId=8afa5d69-86a0-495d-96a9-5c255a50c205 route=/relay/control payloadLen=148 hexPreview=7b2274797065223a2246494e445f52455350222c227265715f6964223a342c22
+2026/06/19 22:57:39 [relaynode] 跨中继桥接建立: target=8743aba3b2d6a79f via relay=38.0.0.1:9000 connId=856f86a5-410f-48b5-a7fe-aba684056419 leg=tcp
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062
+[状态] relay邻居=2 托管NAT节点=4
+    [relay邻居] id=fbe6d0956c9af820 addr=38.0.0.1:9000
+    [relay邻居] id=ea6691d93ccdcace addr=38.0.0.1:9000
+    [托管NAT] id=88db07337f3df5f2 来源=38.0.0.1:54460
+    [托管NAT] id=38ff1eaef8b61185 来源=38.0.0.1:35490
+    [托管NAT] id=892ba440dad08538 来源=38.0.0.1:35582
+    [托管NAT] id=abd55cb5b71a40ac 来源=38.0.0.1:57062

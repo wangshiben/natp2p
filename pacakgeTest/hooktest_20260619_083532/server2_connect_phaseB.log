@@ -1,0 +1,20 @@
+NAT 节点 ID: 57ebb7ab79c3a442e0b77243b5632ae97ea1c3a8f6184681cb86201a2277e908
+注册到 relay: 10.146.83.21:9000
+2026/06/19 00:33:52 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 00:33:52 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+正在跨中继连接 target 7c1314965a7f19c719bd493bafc670f7540fd4e1cb7284c06e73b20f1753d70b ...
+2026/06/19 00:33:53 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 00:33:53 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 00:33:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=7c1314965a7f19c7 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b route= payloadLen=130 hexPreview=3034326433333239343262656437363234313432356561303064336535623965
+2026/06/19 00:33:53 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=7c1314965a7f19c7 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b route= payloadLen=129 hexPreview=6463343935623234336635333266333065376132306365366333363937663733
+2026/06/19 00:33:53 [TcpStream] SetCryptoSuite: nodeId=7c1314965a7f19c7 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b suite=*crypoto.TLSCrypto
+2026/06/19 00:33:53 [exchangeMetadata] 发送 metadata: peerID=7c1314965a7f19c7 connId=b0aab72c-7292-4807-bacb-5f16b6659f5b payloadLen=110 preview="{\"peer_id\":\"57ebb7ab79c3a442e0b77243b5632ae97ea1c3a8f6184681cb86201a2277e908\",\"r..."
+2026/06/19 00:33:54 [exchangeMetadata] 收到 metadata: peerID=7c1314965a7f19c7 headerNodeId=7c1314965a7f19c7 headerConnId=b0aab72c-7292-4807-bacb-5f16b6659f5b headerRoute=/p2p/handshake-info payloadLen=110 hexPreview=7b22706565725f6964223a2237633133313439363561376631396337313962643439336261666336373066373534306664346531636237323834633036653733623230663137353364373062222c2272 asciiPreview="{\"peer_id\":\"7c1314965a7f19c719bd493bafc670f7540fd4e1cb7284c06e73b20f1753d70b\",\"r"
+已连接到 7c1314965a7f19c719bd493bafc670f7540fd4e1cb7284c06e73b20f1753d70b, 开始 50 轮通信 (每轮 14336 字节)
+→ 已完成 10/50 轮
+[FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+[FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+第 12 轮发送失败: send message: max retransmits exceeded
+通信完成: 成功 12/50 轮, 共发送约 172032 字节

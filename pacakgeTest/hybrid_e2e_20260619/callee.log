@@ -1,0 +1,262 @@
+mode: relayServer, address: 10.10.0.1:9000, targetId: targetId, size: 4096, duration: 1m30s, floodDelay: 5s, elephantMB: 1
+Starting relay server...
+2026/06/19 05:56:54 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 05:56:56 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 05:56:56 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+EndpointFrameMux started, waiting for client connections...
+00ba3d9bfaa2407de8917eba8e7161211e72cc1585d6ec7eb33c161e35563416
+2026/06/19 05:56:57 [EndpointMux] 丢弃无 connectionId 的帧: msgId=2 seq=0 type=1
+2026/06/19 05:56:58 [EndpointMux] 丢弃无 connectionId 的帧: msgId=3 seq=0 type=1
+2026/06/19 05:56:59 [EndpointMux] 丢弃无 connectionId 的帧: msgId=4 seq=0 type=1
+2026/06/19 05:57:00 [EndpointMux] 丢弃无 connectionId 的帧: msgId=5 seq=0 type=1
+2026/06/19 05:57:01 [EndpointMux] 丢弃无 connectionId 的帧: msgId=6 seq=0 type=1
+2026/06/19 05:57:02 [EndpointMux] 丢弃无 connectionId 的帧: msgId=7 seq=0 type=1
+2026/06/19 05:57:03 [EndpointMux] 丢弃无 connectionId 的帧: msgId=8 seq=0 type=1
+2026/06/19 05:57:03 [EndpointMux] 丢弃无 connectionId 的帧: msgId=9 seq=0 type=1
+2026/06/19 05:57:04 [EndpointMux] 丢弃无 connectionId 的帧: msgId=10 seq=0 type=1
+2026/06/19 05:57:05 [EndpointMux] 丢弃无 connectionId 的帧: msgId=11 seq=0 type=1
+2026/06/19 05:57:06 [EndpointMux] 丢弃无 connectionId 的帧: msgId=12 seq=0 type=1
+2026/06/19 05:57:07 [EndpointMux] 丢弃无 connectionId 的帧: msgId=13 seq=0 type=1
+2026/06/19 05:57:08 [EndpointMux] 丢弃无 connectionId 的帧: msgId=14 seq=0 type=1
+2026/06/19 05:57:09 [EndpointMux] 丢弃无 connectionId 的帧: msgId=15 seq=0 type=1
+2026/06/19 05:57:10 [EndpointMux] 丢弃无 connectionId 的帧: msgId=16 seq=0 type=1
+2026/06/19 05:57:11 [EndpointMux] 丢弃无 connectionId 的帧: msgId=17 seq=0 type=1
+2026/06/19 05:57:12 [EndpointMux] 丢弃无 connectionId 的帧: msgId=18 seq=0 type=1
+2026/06/19 05:57:12 [EndpointMux] 丢弃无 connectionId 的帧: msgId=19 seq=0 type=1
+2026/06/19 05:57:13 [EndpointMux] 丢弃无 connectionId 的帧: msgId=20 seq=0 type=1
+2026/06/19 05:57:14 [EndpointMux] 丢弃无 connectionId 的帧: msgId=21 seq=0 type=1
+2026/06/19 05:57:15 [EndpointMux] 丢弃无 connectionId 的帧: msgId=22 seq=0 type=1
+2026/06/19 05:57:16 [EndpointMux] 丢弃无 connectionId 的帧: msgId=23 seq=0 type=1
+2026/06/19 05:57:17 [EndpointMux] 新逻辑连接: connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c
+2026/06/19 05:57:17 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 05:57:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId= connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c route= payloadLen=130 hexPreview=3034656262363039306461356635306238633535666639373562313666333934
+[server] connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c hello 收到, clientNodeId=fd490d30727bf7d5, 开始 TLS 握手
+2026/06/19 05:57:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=fd490d30727bf7d5 connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c route= payloadLen=130 hexPreview=3034656262363039306461356635306238633535666639373562313666333934
+2026/06/19 05:57:17 [EndpointMux] 丢弃无 connectionId 的帧: msgId=24 seq=0 type=1
+2026/06/19 05:57:17 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=fd490d30727bf7d5 connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c route= payloadLen=129 hexPreview=3639316236393237356163643736333165376231316535653965643732376636
+2026/06/19 05:57:17 [TcpStream] SetCryptoSuite: nodeId=fd490d30727bf7d5 connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c suite=*crypoto.TLSCrypto
+[server][共享] connId=903ccf16-d9b0-4ec1-92c2-6877baa75e6c TLS 握手完成, 开始流量测试 + 大象检测
+🚀 测试开始... sender workers=32 (floodDelay=5s)
+2026/06/19 05:57:18 [EndpointMux] 丢弃无 connectionId 的帧: msgId=25 seq=0 type=1
+2026/06/19 05:57:18 [EndpointMux] 新逻辑连接: connId=8afbec64-05bf-4917-a030-14c86866f7ab
+2026/06/19 05:57:18 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 05:57:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId= connId=8afbec64-05bf-4917-a030-14c86866f7ab route= payloadLen=130 hexPreview=3034636238376338326666386430353161623563643538633531343432363262
+[server] connId=8afbec64-05bf-4917-a030-14c86866f7ab hello 收到, clientNodeId=29c6dd36d587be22, 开始 TLS 握手
+2026/06/19 05:57:18 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab route= payloadLen=130 hexPreview=3034636238376338326666386430353161623563643538633531343432363262
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:19 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab route= payloadLen=129 hexPreview=3135323766373637633033363764333366376339396335386638373466646539
+2026/06/19 05:57:19 [TcpStream] SetCryptoSuite: nodeId=29c6dd36d587be22 connId=8afbec64-05bf-4917-a030-14c86866f7ab suite=*crypoto.TLSCrypto
+[server][共享] connId=8afbec64-05bf-4917-a030-14c86866f7ab TLS 握手完成, 开始流量测试 + 大象检测
+🚀 测试开始... sender workers=32 (floodDelay=5s)
+2026/06/19 05:57:19 [EndpointMux] 丢弃无 connectionId 的帧: msgId=26 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:20 [EndpointMux] 丢弃无 connectionId 的帧: msgId=27 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:21 [EndpointMux] 丢弃无 connectionId 的帧: msgId=28 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:21 [EndpointMux] 丢弃无 connectionId 的帧: msgId=29 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:22 [EndpointMux] 丢弃无 connectionId 的帧: msgId=30 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 21.24 KB/s (5 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:24 [EndpointMux] 丢弃无 connectionId 的帧: msgId=31 seq=0 type=1
+⏱️ 实时: ⬆️ 63.72 KB/s (15 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 114.70 KB/s (27 pkts) | ⬇️ 135.94 KB/s (32 pkts)    2026/06/19 05:57:25 [EndpointMux] 丢弃无 connectionId 的帧: msgId=32 seq=0 type=1
+⏱️ 实时: ⬆️ 25.49 KB/s (6 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 21.24 KB/s (5 pkts) | ⬇️ 114.70 KB/s (27 pkts)    ⏱️ 实时: ⬆️ 25.49 KB/s (6 pkts) | ⬇️ 84.96 KB/s (20 pkts)    ⏱️ 实时: ⬆️ 101.95 KB/s (24 pkts) | ⬇️ 21.24 KB/s (5 pkts)    2026/06/19 05:57:27 [EndpointMux] 丢弃无 connectionId 的帧: msgId=33 seq=0 type=1
+[FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:28 [EndpointMux] 丢弃无 connectionId 的帧: msgId=34 seq=0 type=1
+⏱️ 实时: ⬆️ 33.98 KB/s (8 pkts) | ⬇️ 59.47 KB/s (14 pkts)    ⏱️ 实时: ⬆️ 50.98 KB/s (12 pkts) | ⬇️ 50.98 KB/s (12 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 67.97 KB/s (16 pkts)    2026/06/19 05:57:29 [EndpointMux] 丢弃无 connectionId 的帧: msgId=35 seq=0 type=1
+⏱️ 实时: ⬆️ 16.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:30 [EndpointMux] 丢弃无 connectionId 的帧: msgId=36 seq=0 type=1
+2026/06/19 05:57:30 [EndpointMux] 丢弃无 connectionId 的帧: msgId=37 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 67.97 KB/s (16 pkts)    ⏱️ 实时: ⬆️ 16.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:31 [EndpointMux] 丢弃无 connectionId 的帧: msgId=38 seq=0 type=1
+2026/06/19 05:57:31 [EndpointMux] 丢弃无 connectionId 的帧: msgId=39 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:32 [EndpointMux] 丢弃无 connectionId 的帧: msgId=40 seq=0 type=1
+2026/06/19 05:57:32 [EndpointMux] 丢弃无 connectionId 的帧: msgId=41 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 50.98 KB/s (12 pkts) | ⬇️ 84.96 KB/s (20 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 59.47 KB/s (14 pkts)    2026/06/19 05:57:34 [EndpointMux] 丢弃无 connectionId 的帧: msgId=42 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:35 [EndpointMux] 丢弃无 connectionId 的帧: msgId=43 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 76.46 KB/s (18 pkts)    2026/06/19 05:57:35 [EndpointMux] 丢弃无 connectionId 的帧: msgId=44 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:36 [EndpointMux] 丢弃无 connectionId 的帧: msgId=45 seq=0 type=1
+⏱️ 实时: ⬆️ 55.22 KB/s (13 pkts) | ⬇️ 50.98 KB/s (12 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:37 [EndpointMux] 丢弃无 connectionId 的帧: msgId=46 seq=0 type=1
+⏱️ 实时: ⬆️ 4.25 KB/s (1 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:38 [EndpointMux] 丢弃无 connectionId 的帧: msgId=47 seq=0 type=1
+⏱️ 实时: ⬆️ 8.50 KB/s (2 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    2026/06/19 05:57:39 [EndpointMux] 丢弃无 connectionId 的帧: msgId=48 seq=0 type=1
+⏱️ 实时: ⬆️ 16.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:40 [EndpointMux] 丢弃无 connectionId 的帧: msgId=49 seq=0 type=1
+⏱️ 实时: ⬆️ 12.74 KB/s (3 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:41 [EndpointMux] 丢弃无 connectionId 的帧: msgId=50 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:41 [EndpointMux] 丢弃无 connectionId 的帧: msgId=51 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:42 [EndpointMux] 丢弃无 connectionId 的帧: msgId=52 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 38.23 KB/s (9 pkts) | ⬇️ 84.96 KB/s (20 pkts)    ⏱️ 实时: ⬆️ 4.25 KB/s (1 pkts) | ⬇️ 59.47 KB/s (14 pkts)    2026/06/19 05:57:44 [EndpointMux] 丢弃无 connectionId 的帧: msgId=53 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:45 [EndpointMux] 丢弃无 connectionId 的帧: msgId=54 seq=0 type=1
+⏱️ 实时: ⬆️ 131.69 KB/s (31 pkts) | ⬇️ 76.46 KB/s (18 pkts)    2026/06/19 05:57:45 [EndpointMux] 丢弃无 connectionId 的帧: msgId=55 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:46 [EndpointMux] 丢弃无 connectionId 的帧: msgId=56 seq=0 type=1
+⏱️ 实时: ⬆️ 21.24 KB/s (5 pkts) | ⬇️ 50.98 KB/s (12 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    [FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+2026/06/19 05:57:47 [EndpointMux] 丢弃无 connectionId 的帧: msgId=57 seq=0 type=1
+⏱️ 实时: ⬆️ 33.98 KB/s (8 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:48 [EndpointMux] 丢弃无 connectionId 的帧: msgId=58 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 12.74 KB/s (3 pkts) | ⬇️ 0 B/s (0 pkts)    [FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+⏱️ 实时: ⬆️ 4.25 KB/s (1 pkts) | ⬇️ 63.72 KB/s (15 pkts)    2026/06/19 05:57:49 [EndpointMux] 丢弃无 connectionId 的帧: msgId=59 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 131.69 KB/s (31 pkts) | ⬇️ 72.22 KB/s (17 pkts)    2026/06/19 05:57:50 [EndpointMux] 丢弃无 connectionId 的帧: msgId=60 seq=0 type=1
+2026/06/19 05:57:50 [EndpointMux] 丢弃无 connectionId 的帧: msgId=61 seq=0 type=1
+⏱️ 实时: ⬆️ 12.74 KB/s (3 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 16.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:51 [EndpointMux] 丢弃无 connectionId 的帧: msgId=62 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:52 [EndpointMux] 丢弃无 connectionId 的帧: msgId=63 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:53 [EndpointMux] 丢弃无 connectionId 的帧: msgId=64 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:54 [EndpointMux] 丢弃无 connectionId 的帧: msgId=65 seq=0 type=1
+⏱️ 实时: ⬆️ 38.23 KB/s (9 pkts) | ⬇️ 84.96 KB/s (20 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:55 [EndpointMux] 丢弃无 connectionId 的帧: msgId=66 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:56 [EndpointMux] 丢弃无 connectionId 的帧: msgId=67 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    [FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+2026/06/19 05:57:57 [EndpointMux] 丢弃无 connectionId 的帧: msgId=68 seq=0 type=1
+⏱️ 实时: ⬆️ 21.24 KB/s (5 pkts) | ⬇️ 50.98 KB/s (12 pkts)    ⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    2026/06/19 05:57:58 [EndpointMux] 丢弃无 connectionId 的帧: msgId=69 seq=0 type=1
+2026/06/19 05:57:58 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+⏱️ 实时: ⬆️ 33.98 KB/s (8 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:57:59 [EndpointMux] 丢弃无 connectionId 的帧: msgId=70 seq=0 type=1
+⏱️ 实时: ⬆️ 12.74 KB/s (3 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:00 [EndpointMux] 丢弃无 connectionId 的帧: msgId=71 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:00 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 05:58:00 [FrameSize] 标准MTU(1500)，使用验证最优值1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+🐘 [server] connId=8afbec64-05bf-4917-a030-14c86866f7ab 判为大象(累计入站=1.12 MB) → 迁到独立 identity 0fc5345134651b8e
+2026/06/19 05:58:00 [EndpointMux] 丢弃无 connectionId 的帧: msgId=72 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:01 [EndpointMux] 丢弃无 connectionId 的帧: msgId=73 seq=0 type=1
+⏱️ 实时: ⬆️ 29.74 KB/s (7 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 4.25 KB/s (1 pkts) | ⬇️ 50.98 KB/s (12 pkts)    2026/06/19 05:58:02 [EndpointMux] 丢弃无 connectionId 的帧: msgId=74 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 25.49 KB/s (6 pkts) | ⬇️ 55.22 KB/s (13 pkts)    2026/06/19 05:58:03 [EndpointMux] 丢弃无 connectionId 的帧: msgId=75 seq=0 type=1
+⏱️ 实时: ⬆️ 12.74 KB/s (3 pkts) | ⬇️ 16.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 106.20 KB/s (25 pkts) | ⬇️ 29.74 KB/s (7 pkts)    2026/06/19 05:58:04 [EndpointMux] 丢弃无 connectionId 的帧: msgId=76 seq=0 type=1
+⏱️ 实时: ⬆️ 25.49 KB/s (6 pkts) | ⬇️ 67.97 KB/s (16 pkts)    2026/06/19 05:58:05 [EndpointMux] 丢弃无 connectionId 的帧: msgId=77 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    
+
+📊 --- 测试完成 ---
+🏆 峰值上传: 135.94 KB/s
+🏆 峰值下载: 135.94 KB/s
+📈 总上传: 1.19 MB (288 个包)
+📈 总下载: 1.25 MB (302 个包)
+🔎 Trace: unique_rx=302 duplicate_rx=0 parse_failures=0 sender_id=b6635ad4dbf11ae1
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=0 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=1 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=2 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=3 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=4 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=5 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=6 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=7 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=8 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=9 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=10 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=11 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=12 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=13 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=14 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=15 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=16 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=17 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=18 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=19 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=20 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=21 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=22 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=23 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=24 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=25 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=26 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=27 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=28 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=29 unique=10 max_seq=10 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=30 unique=9 max_seq=9 missing_est=0
+🔎 Trace stream sender=279bd1aaeaca73b0 worker=31 unique=10 max_seq=10 missing_est=0
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:06 [EndpointMux] 丢弃无 connectionId 的帧: msgId=78 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:06 [EndpointMux] 丢弃无 connectionId 的帧: msgId=79 seq=0 type=1
+2026/06/19 05:58:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=0fc5345134651b8e connId= route= payloadLen=130 hexPreview=3034363263626531353035623262383135356137616564623537346235653931
+2026/06/19 05:58:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101 route= payloadLen=130 hexPreview=3034363263626531353035623262383135356137616564623537346235653931
+2026/06/19 05:58:07 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101 route= payloadLen=129 hexPreview=3033396162396461303863356665613138376434396432363965613066343263
+2026/06/19 05:58:07 [TcpStream] SetCryptoSuite: nodeId=62f2547c552b600f connId=d482f39c-0b25-4de4-8081-1ea3723b4101 suite=*crypoto.TLSCrypto
+[server][独连 0fc5345134651b8e] 重流迁入完成, 独立连接开始压测
+🚀 测试开始... sender workers=32 (floodDelay=0s)
+⏱️ 实时: ⬆️ 38.23 KB/s (9 pkts) | ⬇️ 50.98 KB/s (12 pkts)    2026/06/19 05:58:08 [EndpointMux] 丢弃无 connectionId 的帧: msgId=80 seq=0 type=1
+⏱️ 实时: ⬆️ 59.47 KB/s (14 pkts) | ⬇️ 135.94 KB/s (32 pkts)    2026/06/19 05:58:08 [EndpointMux] 丢弃无 connectionId 的帧: msgId=81 seq=0 type=1
+⏱️ 实时: ⬆️ 42.48 KB/s (10 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:09 [EndpointMux] 丢弃无 connectionId 的帧: msgId=82 seq=0 type=1
+⏱️ 实时: ⬆️ 106.20 KB/s (25 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:10 [EndpointMux] 丢弃无 connectionId 的帧: msgId=83 seq=0 type=1
+⏱️ 实时: ⬆️ 186.91 KB/s (44 pkts) | ⬇️ 140.19 KB/s (33 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:11 [EndpointMux] 丢弃无 connectionId 的帧: msgId=84 seq=0 type=1
+⏱️ 实时: ⬆️ 76.46 KB/s (18 pkts) | ⬇️ 131.69 KB/s (31 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:12 [EndpointMux] 丢弃无 connectionId 的帧: msgId=85 seq=0 type=1
+⏱️ 实时: ⬆️ 140.19 KB/s (33 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:13 [EndpointMux] 丢弃无 connectionId 的帧: msgId=86 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:14 [EndpointMux] 丢弃无 connectionId 的帧: msgId=87 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:15 [EndpointMux] 丢弃无 connectionId 的帧: msgId=88 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 140.19 KB/s (33 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:15 [EndpointMux] 丢弃无 connectionId 的帧: msgId=89 seq=0 type=1
+⏱️ 实时: ⬆️ 110.45 KB/s (26 pkts) | ⬇️ 131.69 KB/s (31 pkts)    2026/06/19 05:58:16 [EndpointMux] 丢弃无 connectionId 的帧: msgId=90 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:17 [EndpointMux] 丢弃无 connectionId 的帧: msgId=91 seq=0 type=1
+⏱️ 实时: ⬆️ 144.43 KB/s (34 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:18 [EndpointMux] 丢弃无 connectionId 的帧: msgId=92 seq=0 type=1
+⏱️ 实时: ⬆️ 127.44 KB/s (30 pkts) | ⬇️ 131.69 KB/s (31 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:19 [EndpointMux] 丢弃无 connectionId 的帧: msgId=93 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 131.69 KB/s (31 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:20 [EndpointMux] 丢弃无 connectionId 的帧: msgId=94 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:21 [EndpointMux] 丢弃无 connectionId 的帧: msgId=95 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:22 [EndpointMux] 丢弃无 connectionId 的帧: msgId=96 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:23 [EndpointMux] 丢弃无 connectionId 的帧: msgId=97 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 127.44 KB/s (30 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:24 [EndpointMux] 丢弃无 connectionId 的帧: msgId=98 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 131.69 KB/s (31 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:25 [EndpointMux] 丢弃无 connectionId 的帧: msgId=99 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 131.69 KB/s (31 pkts)    2026/06/19 05:58:25 [EndpointMux] 丢弃无 connectionId 的帧: msgId=100 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:26 [EndpointMux] 丢弃无 connectionId 的帧: msgId=101 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 46.73 KB/s (11 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:27 [EndpointMux] 丢弃无 connectionId 的帧: msgId=102 seq=0 type=1
+⏱️ 实时: ⬆️ 123.19 KB/s (29 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    [FrameAdaptor] 链路吞吐过低( 0 KB/s < 10 KB/s), 禁止增大帧
+2026/06/19 05:58:28 [EndpointMux] 丢弃无 connectionId 的帧: msgId=103 seq=0 type=1
+⏱️ 实时: ⬆️ 131.69 KB/s (31 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:29 [EndpointMux] 丢弃无 connectionId 的帧: msgId=104 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:30 [EndpointMux] 丢弃无 connectionId 的帧: msgId=105 seq=0 type=1
+[FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+⏱️ 实时: ⬆️ 131.69 KB/s (31 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:31 [EndpointMux] 丢弃无 connectionId 的帧: msgId=106 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:32 [EndpointMux] 丢弃无 connectionId 的帧: msgId=107 seq=0 type=1
+⏱️ 实时: ⬆️ 140.19 KB/s (33 pkts) | ⬇️ 140.19 KB/s (33 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:33 [EndpointMux] 丢弃无 connectionId 的帧: msgId=108 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:33 [EndpointMux] 丢弃无 connectionId 的帧: msgId=109 seq=0 type=1
+⏱️ 实时: ⬆️ 80.71 KB/s (19 pkts) | ⬇️ 127.44 KB/s (30 pkts)    2026/06/19 05:58:34 [EndpointMux] 丢弃无 connectionId 的帧: msgId=110 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:35 [EndpointMux] 丢弃无 connectionId 的帧: msgId=111 seq=0 type=1
+⏱️ 实时: ⬆️ 114.70 KB/s (27 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:36 [EndpointMux] 丢弃无 connectionId 的帧: msgId=112 seq=0 type=1
+⏱️ 实时: ⬆️ 118.95 KB/s (28 pkts) | ⬇️ 123.19 KB/s (29 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:37 [EndpointMux] 丢弃无 connectionId 的帧: msgId=113 seq=0 type=1
+⏱️ 实时: ⬆️ 110.45 KB/s (26 pkts) | ⬇️ 97.71 KB/s (23 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:38 [EndpointMux] 丢弃无 connectionId 的帧: msgId=114 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 127.44 KB/s (30 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:39 [EndpointMux] 丢弃无 connectionId 的帧: msgId=115 seq=0 type=1
+⏱️ 实时: ⬆️ 131.69 KB/s (31 pkts) | ⬇️ 131.69 KB/s (31 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:40 [EndpointMux] 丢弃无 connectionId 的帧: msgId=116 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 135.94 KB/s (32 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:41 [EndpointMux] 丢弃无 connectionId 的帧: msgId=117 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 127.44 KB/s (30 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:42 [EndpointMux] 丢弃无 connectionId 的帧: msgId=118 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 127.44 KB/s (30 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:42 [EndpointMux] 丢弃无 connectionId 的帧: msgId=119 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 127.44 KB/s (30 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:44 [EndpointMux] 丢弃无 connectionId 的帧: msgId=120 seq=0 type=1
+2026/06/19 05:58:44 [EndpointMux] 丢弃无 connectionId 的帧: msgId=121 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 131.69 KB/s (31 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:45 [EndpointMux] 丢弃无 connectionId 的帧: msgId=122 seq=0 type=1
+⏱️ 实时: ⬆️ 135.94 KB/s (32 pkts) | ⬇️ 127.44 KB/s (30 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:46 [EndpointMux] 丢弃无 connectionId 的帧: msgId=123 seq=0 type=1
+⏱️ 实时: ⬆️ 131.69 KB/s (31 pkts) | ⬇️ 127.44 KB/s (30 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:47 [EndpointMux] 丢弃无 connectionId 的帧: msgId=124 seq=0 type=1
+⏱️ 实时: ⬆️ 127.44 KB/s (30 pkts) | ⬇️ 123.19 KB/s (29 pkts)    
+⏰ 测试时间到，正在关闭...
+
+
+📊 --- 测试完成 ---
+🏆 峰值上传: 63.72 KB/s
+🏆 峰值下载: 135.94 KB/s
+📈 总上传: 760.40 KB (179 个包)
+📈 总下载: 815.62 KB (192 个包)
+🔎 Trace: unique_rx=192 duplicate_rx=0 parse_failures=0 sender_id=b6635ad4dbf11ae1
+🔎 Trace stream sender=00cdd6230cf9a466 worker=0 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=1 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=2 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=3 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=4 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=5 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=6 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=7 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=8 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=9 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=10 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=11 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=12 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=13 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=14 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=15 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=16 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=17 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=18 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=19 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=20 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=21 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=22 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=23 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=24 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=25 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=26 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=27 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=28 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=29 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=30 unique=6 max_seq=6 missing_est=0
+🔎 Trace stream sender=00cdd6230cf9a466 worker=31 unique=6 max_seq=6 missing_est=0
+2026/06/19 05:58:48 [EndpointMux] 丢弃无 connectionId 的帧: msgId=125 seq=0 type=1
+⏱️ 实时: ⬆️ 93.46 KB/s (22 pkts) | ⬇️ 131.69 KB/s (31 pkts)    2026/06/19 05:58:49 [EndpointMux] 丢弃无 connectionId 的帧: msgId=126 seq=0 type=1
+⏱️ 实时: ⬆️ 80.71 KB/s (19 pkts) | ⬇️ 118.95 KB/s (28 pkts)    2026/06/19 05:58:50 [EndpointMux] 丢弃无 connectionId 的帧: msgId=127 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:51 [EndpointMux] 丢弃无 connectionId 的帧: msgId=128 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:51 [EndpointMux] 丢弃无 connectionId 的帧: msgId=129 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:52 [EndpointMux] 丢弃无 connectionId 的帧: msgId=130 seq=0 type=1
+2026/06/19 05:58:53 [EndpointMux] 丢弃无 connectionId 的帧: msgId=131 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:54 [EndpointMux] 丢弃无 connectionId 的帧: msgId=132 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:55 [EndpointMux] 丢弃无 connectionId 的帧: msgId=133 seq=0 type=1
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    2026/06/19 05:58:56 [EndpointMux] 丢弃无 connectionId 的帧: msgId=134 seq=0 type=1

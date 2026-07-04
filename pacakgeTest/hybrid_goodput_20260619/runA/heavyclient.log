@@ -1,0 +1,109 @@
+mode: client, address: 10.10.0.1:9000, targetId: 8c341004ae32a9a2be111cadb3980a348413723292be1b83774a1e44ae30f27a, size: 14336, duration: 2m0s, floodDelay: 3s, elephantMB: 2
+2026/06/19 19:05:49 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 19:05:51 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 19:05:51 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 19:05:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=8c341004ae32a9a2 connId=d356b74d-ff34-4458-988f-44f3230f8ec3 route= payloadLen=130 hexPreview=3034626234316261353263653832353836323238626139356562613135326662
+2026/06/19 19:05:51 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=8c341004ae32a9a2 connId=d356b74d-ff34-4458-988f-44f3230f8ec3 route= payloadLen=129 hexPreview=3863333463383932353737313136653339386631346635386362636564336636
+2026/06/19 19:05:51 [TcpStream] SetCryptoSuite: nodeId=8c341004ae32a9a2 connId=d356b74d-ff34-4458-988f-44f3230f8ec3 suite=*crypoto.TLSCrypto
+relay connect success connectionID: d356b74d-ff34-4458-988f-44f3230f8ec3 target=8c341004ae32a9a2
+🚀 测试开始... sender workers=32 (floodDelay=3s)
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 284.96 KB/s (20 pkts)    ⏱️ 实时: ⬆️ 71.24 KB/s (5 pkts) | ⬇️ 128.23 KB/s (9 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 284.96 KB/s (20 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 99.74 KB/s (7 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 227.97 KB/s (16 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 356.20 KB/s (25 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 99.74 KB/s (7 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 242.22 KB/s (17 pkts)    ⏱️ 实时: ⬆️ 170.98 KB/s (12 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 128.23 KB/s (9 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    [FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 99.74 KB/s (7 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 170.98 KB/s (12 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 313.46 KB/s (22 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 128.23 KB/s (9 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 327.71 KB/s (23 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 199.47 KB/s (14 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 113.98 KB/s (8 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    
+
+📊 --- 测试完成 ---
+🏆 峰值上传: 356.20 KB/s
+🏆 峰值下载: 313.46 KB/s
+📈 总上传: 2.06 MB (148 个包)
+📈 总下载: 2.13 MB (153 个包)
+🔎 Trace: unique_rx=153 duplicate_rx=0 parse_failures=0 sender_id=16422ccfb466c5e3
+🔎 Trace stream sender=ee59c975b5c70857 worker=0 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=1 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=2 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=3 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=4 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=5 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=6 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=7 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=8 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=9 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=10 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=11 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=12 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=13 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=14 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=15 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=16 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=17 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=18 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=19 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=20 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=21 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=22 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=23 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=24 unique=5 max_seq=5 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=25 unique=4 max_seq=4 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=26 unique=4 max_seq=4 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=27 unique=4 max_seq=4 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=28 unique=4 max_seq=4 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=29 unique=4 max_seq=4 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=30 unique=4 max_seq=4 missing_est=0
+🔎 Trace stream sender=ee59c975b5c70857 worker=31 unique=4 max_seq=4 missing_est=0
+📦 收到迁移指令 → 重连到专用 identity e0806e06cf95f3be
+2026/06/19 19:07:02 [FrameSize] 非TCP连接，使用默认上限: 1400
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
+2026/06/19 19:07:03 [FrameSize] 找到匹配网卡: eth0, MTU: 1500
+2026/06/19 19:07:03 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
+[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
+2026/06/19 19:07:03 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=e0806e06cf95f3be connId=39c1bef1-37cd-413e-9aea-ccf0e51cce66 route= payloadLen=130 hexPreview=3034663964386134666536323437636564656633356231636234396437313835
+2026/06/19 19:07:04 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=e0806e06cf95f3be connId=39c1bef1-37cd-413e-9aea-ccf0e51cce66 route= payloadLen=129 hexPreview=6634633132343134306465343337613463376438333837613863313435373237
+2026/06/19 19:07:04 [TcpStream] SetCryptoSuite: nodeId=e0806e06cf95f3be connId=39c1bef1-37cd-413e-9aea-ccf0e51cce66 suite=*crypoto.TLSCrypto
+relay connect success connectionID: 39c1bef1-37cd-413e-9aea-ccf0e51cce66 target=e0806e06cf95f3be
+🚀 测试开始... sender workers=32 (floodDelay=0s)
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 384.70 KB/s (27 pkts)    ⏱️ 实时: ⬆️ 185.22 KB/s (13 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 270.71 KB/s (19 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 256.46 KB/s (18 pkts)    ⏱️ 实时: ⬆️ 128.23 KB/s (9 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 128.23 KB/s (9 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 142.48 KB/s (10 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 14.25 KB/s (1 pkts) | ⬇️ 85.49 KB/s (6 pkts)    ⏱️ 实时: ⬆️ 113.98 KB/s (8 pkts) | ⬇️ 199.47 KB/s (14 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 113.98 KB/s (8 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 156.73 KB/s (11 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 14.25 KB/s (1 pkts) | ⬇️ 128.23 KB/s (9 pkts)    ⏱️ 实时: ⬆️ 113.98 KB/s (8 pkts) | ⬇️ 85.49 KB/s (6 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 113.98 KB/s (8 pkts)    ⏱️ 实时: ⬆️ 71.24 KB/s (5 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 142.48 KB/s (10 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 128.23 KB/s (9 pkts) | ⬇️ 170.98 KB/s (12 pkts)    [FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
+⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 28.50 KB/s (2 pkts) | ⬇️ 113.98 KB/s (8 pkts)    ⏱️ 实时: ⬆️ 128.23 KB/s (9 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 113.98 KB/s (8 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 14.25 KB/s (1 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 113.98 KB/s (8 pkts) | ⬇️ 128.23 KB/s (9 pkts)    ⏱️ 实时: ⬆️ 14.25 KB/s (1 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 28.50 KB/s (2 pkts) | ⬇️ 85.49 KB/s (6 pkts)    ⏱️ 实时: ⬆️ 142.48 KB/s (10 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 85.49 KB/s (6 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 14.25 KB/s (1 pkts) | ⬇️ 113.98 KB/s (8 pkts)    ⏱️ 实时: ⬆️ 113.98 KB/s (8 pkts) | ⬇️ 142.48 KB/s (10 pkts)    ⏱️ 实时: ⬆️ 14.25 KB/s (1 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 213.72 KB/s (15 pkts) | ⬇️ 85.49 KB/s (6 pkts)    
+⏰ 测试时间到，正在关闭...
+2026/06/19 19:07:51 [DualStream] SendMessage 无 backup leg, 返回错误: nodeId=e0806e06cf95f3be connId=39c1bef1-37cd-413e-9aea-ccf0e51cce66
+2026/06/19 19:07:51 [DualStream] SendMessage 无 backup leg, 返回错误: nodeId=e0806e06cf95f3be connId=39c1bef1-37cd-413e-9aea-ccf0e51cce66
+2026/06/19 19:07:51 [DualStream] SendMessage 无 backup leg, 返回错误: nodeId=e0806e06cf95f3be connId=39c1bef1-37cd-413e-9aea-ccf0e51cce66
+
+
+📊 --- 测试完成 ---
+🏆 峰值上传: 270.71 KB/s
+🏆 峰值下载: 384.70 KB/s
+📈 总上传: 3.02 MB (217 个包)
+📈 总下载: 3.09 MB (222 个包)
+🔎 Trace: unique_rx=224 duplicate_rx=0 parse_failures=0 sender_id=78ad3ac4be698e2d
+🔎 Trace stream sender=78ad3ac4be698e2d worker=0 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=1 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=2 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=3 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=4 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=5 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=6 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=7 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=8 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=9 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=10 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=11 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=12 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=13 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=14 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=15 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=16 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=17 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=18 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=19 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=20 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=21 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=22 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=23 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=24 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=25 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=26 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=27 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=28 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=29 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=30 unique=7 max_seq=7 missing_est=0
+🔎 Trace stream sender=78ad3ac4be698e2d worker=31 unique=7 max_seq=7 missing_est=0
