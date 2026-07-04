@@ -1,5 +1,10 @@
 # 跨中继隧道吞吐优化测试报告（方案A + 方案E）
 
+> ⚠️ **本报告拓扑有误，已作废，请以 `真实拓扑测试报告_家庭NAT两端.md` 为准。**
+> 本报告把 client 与 relay1 同机（loopback）、natserver 与 relay2 同机（loopback），
+> 真正跨区只有 relay1↔relay2 一段，client/natserver 两跳是零 RTT 假链路，
+> 数字（868 / 1163 / 2543 KB/s）不代表真实端到端吞吐。仅保留作方案对比参考。
+>
 > 测试日期：2026-07-04
 > 分支：`feat/pipeline`（对应远端 `dev_local`）
 > 优化提交：`perf(tunnel): 应用层 accumCopy + bridge-mux 可选 KCP`
