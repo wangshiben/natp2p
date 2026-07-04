@@ -1,8 +1,0 @@
-[1] http SHA=d8d30193b09352c7892b853fec49747e6c011c55147e8cda4b3d30d56193f728
-[2] tunserver ID=ccd9503437c66fda9c4e84fd813cf712f48bbdc18e3acfef394421e1ba07f90e
-[3] tunnel OK
-[4] health: {"status":"ok"}
-  迭代1: HTTP=200 大小=20971520 耗时=101.770847073s 速度=.19MB/s SHA=OK
-  迭代2: HTTP=200 大小=20971520 耗时=102.496783221s 速度=.19MB/s SHA=OK
-  迭代3: HTTP=200 大小=20971520 耗时=104.261537110s 速度=.19MB/s SHA=OK
-DONE_ALL

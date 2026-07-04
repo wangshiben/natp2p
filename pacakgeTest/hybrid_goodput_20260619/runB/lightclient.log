@@ -1,55 +1,0 @@
-mode: client, address: 10.10.0.1:9000, targetId: ce89b1ff2fdcb3451c630d40ecabfdf492c211bb8123237ec8b092129dedc70b, size: 14336, duration: 2m0s, floodDelay: 3s, elephantMB: 2
-2026/06/19 19:11:59 [FrameSize] 非TCP连接，使用默认上限: 1400
-[FrameAdaptor] 更新最大帧大小:  1400  ->  1400
-2026/06/19 19:12:01 [FrameSize] 找到匹配网卡: wlp3s0, MTU: 1500
-2026/06/19 19:12:01 [FrameSize] MTU(1500) 标准最优=1337，减10%安全余量 → 最优帧大小=1204
-[FrameAdaptor] 更新最大帧大小:  1400  ->  1204
-2026/06/19 19:12:05 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=ce89b1ff2fdcb345 connId=cd52d189-f719-40fc-b220-941006c12412 route= payloadLen=130 hexPreview=3034626238333365383137316139343539613638646364333463303263653033
-2026/06/19 19:12:10 [TcpStream] handleData 入 inbox 时 crypto=nil, 标记 needDecrypt: nodeId=ce89b1ff2fdcb345 connId=cd52d189-f719-40fc-b220-941006c12412 route= payloadLen=129 hexPreview=6138616130313232376361303562326561656265343866366239303935363034
-2026/06/19 19:12:11 [TcpStream] SetCryptoSuite: nodeId=ce89b1ff2fdcb345 connId=cd52d189-f719-40fc-b220-941006c12412 suite=*crypoto.TLSCrypto
-relay connect success connectionID: cd52d189-f719-40fc-b220-941006c12412 target=ce89b1ff2fdcb345
-🚀 测试开始... sender workers=32 (floodDelay=3s)
-⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 99.74 KB/s (7 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 99.74 KB/s (7 pkts)    ⏱️ 实时: ⬆️ 313.46 KB/s (22 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 42.74 KB/s (3 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    [FrameAdaptor] 准备 增大 帧( 800 -> 864 ), 等待下次确认（防振荡 1 /2）
-⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 99.74 KB/s (7 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 99.74 KB/s (7 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 128.23 KB/s (9 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 256.46 KB/s (18 pkts) | ⬇️ 71.24 KB/s (5 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 99.74 KB/s (7 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 42.74 KB/s (3 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 99.74 KB/s (7 pkts) | ⬇️ 14.25 KB/s (1 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 85.49 KB/s (6 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 113.98 KB/s (8 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 142.48 KB/s (10 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 113.98 KB/s (8 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 42.74 KB/s (3 pkts)    ⏱️ 实时: ⬆️ 56.99 KB/s (4 pkts) | ⬇️ 56.99 KB/s (4 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 28.50 KB/s (2 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 42.74 KB/s (3 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 99.74 KB/s (7 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    [FrameAdaptor] 吞吐稳定, 请求 增大 帧:  800  ->  864  (当前: 125 KB/s, 上次: 117 KB/s)
-⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    ⏱️ 实时: ⬆️ 0 B/s (0 pkts) | ⬇️ 0 B/s (0 pkts)    
-⏰ 测试时间到，正在关闭...
-
-
-📊 --- 测试完成 ---
-🏆 峰值上传: 313.46 KB/s
-🏆 峰值下载: 128.23 KB/s
-📈 总上传: 1.43 MB (103 个包)
-📈 总下载: 1.34 MB (96 个包)
-🔎 Trace: unique_rx=96 duplicate_rx=0 parse_failures=0 sender_id=98c9f39969084b26
-🔎 Trace stream sender=b05da8138575a245 worker=0 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=1 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=2 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=3 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=4 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=5 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=6 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=7 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=8 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=9 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=10 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=11 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=12 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=13 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=14 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=15 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=16 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=17 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=18 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=19 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=20 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=21 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=22 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=23 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=24 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=25 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=26 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=27 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=28 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=29 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=30 unique=3 max_seq=3 missing_est=0
-🔎 Trace stream sender=b05da8138575a245 worker=31 unique=3 max_seq=3 missing_est=0
