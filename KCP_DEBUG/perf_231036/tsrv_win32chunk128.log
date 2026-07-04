@@ -1,0 +1,14 @@
+=== Tunnel Server ===
+本节点 ID: a05d4c0bd19e289e3ba16d87a45629f854d66f014852e05091adc553bfc096dc
+转发目标: 127.0.0.1:15173
+使用指定 relay: 129.0.0.1:9000
+
+服务端已就绪，等待客户端连接。客户端使用上面的 NodeID 连接。
+按 Ctrl+C 退出。
+2026/07/02 23:16:36 [INFO] [Dialers] KCP 不通, 补第二条 TCP leg(id=tcp#2) 组成双 TCP failover: target=a05d4c0bd19e289e connId=
+[隧道] 客户端 3762ad4ec3715a2c5a029c8d6228331dc48de49281002a7316111069185aec40 已连接
+2026/07/02 23:17:43 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=3762ad4ec3715a2c connId=ff89e8cc-7c05-4191-aa6b-ea02f0818ea2 leg=tcp err=cipher: message authentication failed
+2026/07/02 23:17:43 [WARN] [DualStream] TCP leg 失败, 关闭并触发重连: nodeId=3762ad4ec3715a2c connId=ff89e8cc-7c05-4191-aa6b-ea02f0818ea2
+2026/07/02 23:17:43 [WARN] [DualStream] SendMessage primary TCP 失败, 尝试 backup: nodeId=3762ad4ec3715a2c connId=ff89e8cc-7c05-4191-aa6b-ea02f0818ea2 err=cipher: message authentication failed
+2026/07/02 23:17:43 [WARN] [DualStream] TCP leg 失败, 关闭并触发重连: nodeId=3762ad4ec3715a2c connId=ff89e8cc-7c05-4191-aa6b-ea02f0818ea2
+2026/07/02 23:17:43 [INFO] [DualStream] TCP 重连成功: nodeId=3762ad4ec3715a2c connId=ff89e8cc-7c05-4191-aa6b-ea02f0818ea2 leg=tcp 第1次尝试

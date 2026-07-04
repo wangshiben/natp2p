@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/xtaci/kcp-go/v5"
 	"net"
+	"os"
 	"time"
 )
 
@@ -18,7 +19,22 @@ const (
 	tcpMode              = "tcp"
 	udpMode              = "udp"
 	dialHandshakeTimeout = 1500 * time.Millisecond
+	// kcpPriorityWindow 是客户端拨号时优先等待 KCP leg 完成握手的窗口。
+	// 窗口内 KCP 完成则 preferred=KCP(保跨境高吞吐)；超时则用已就绪 TCP 建 preferred，
+	// KCP 之后完成仅作 backup。与 relay 侧 kcpWaitWindow 对齐。
+	kcpPriorityWindow = 200 * time.Millisecond
 )
+
+// disableKCP 返回是否显式禁用 KCP leg（走纯双 TCP failover）。
+// 场景：家庭 NAT / 运营商限制 UDP，KCP 回程不可靠，relay 优先用 KCP 建桥反而导致
+// 端到端握手在丢包的 KCP leg 上失败。设 BNFS_DISABLE_KCP=1 强制 TCP-only。
+func disableKCP() bool {
+	switch os.Getenv("BNFS_DISABLE_KCP") {
+	case "1", "true", "TRUE", "yes":
+		return true
+	}
+	return false
+}
 
 // TryConnectTCPStream 客户端主动连指定 relay 并把首条消息送出去，
 // 拿到一个已绑定 targetNodeId / connectionId 的逻辑流。
@@ -239,39 +255,111 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 		return tcpClientStreamContext(ctx, fm, tcpAddr, originalNodeId, connectionId, true)
 	}
 
-	kcpClient, err := kcpStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId, true)
-	if err != nil {
-		kcpErr = err
-		// KCP 不通（运营商高峰期限流跨地域 UDP）→ 补一条 TCP leg，组成"双 TCP"保留 failover 冗余。
-		// 第二条 TCP 首帧带 legExtraMarker，relay 据此并存而非顶替。
-		extraFirst := cloneMessage(FirstMessage)
-		markExtraLeg(extraFirst)
-		tcp2, e2 := tcpClientStreamContext(context.Background(), extraFirst, tcpAddr, originalNodeId, connectionId, true)
-		if e2 != nil {
-			kcpErr = fmt.Errorf("KCP 失败(%v) 且备用 TCP 失败(%v)", err, e2)
-		} else if legID, err := dual.attachLeg(streamTransportTCP, tcp2); err != nil {
-			_ = tcp2.Close()
-			kcpErr = err
-		} else {
-			dual.SetReconnectDialer(legID, extraTCPDialer)
-			logx.Infof("[Dialers] KCP 不通, 改用第二条 TCP leg(id=%s) 组成双 TCP failover: target=%.16s connId=%s",
-				legID, originalNodeId, connectionId)
-		}
-	} else if legID, err := dual.attachLeg(streamTransportKCP, kcpClient); err != nil {
-		_ = kcpClient.Close()
-		kcpErr = err
+	// KCP 优先 + 200ms 窗口：KCP 与 TCP 并发拨号(各自发首帧、等端到端 ACK)。偏向 KCP：
+	//   - KCP 在 kcpPriorityWindow(200ms) 内完成握手 → preferred=KCP(保跨境高吞吐)；
+	//   - 窗口内 KCP 未完成(家庭 NAT UDP 回程不通等) → 用已就绪的 TCP 建 preferred，
+	//     KCP 之后若完成则作 backup failover leg 补入(不抢 preferred)。
+	// 用「有界并发」而非旧的「无条件同步等 KCP 1500ms 再 fallback」，规避 NAT 客户端注册/连接
+	// 必然超时的缺陷(见记忆 natclient-relay-kcp-preferred-bug)：KCP 卡死最多只拖 200ms。
+	type dialResult struct {
+		kind   streamTransport
+		stream network.Stream
+		err    error
+	}
+	resCh := make(chan dialResult, 2)
+	if disableKCP() {
+		resCh <- dialResult{streamTransportKCP, nil, fmt.Errorf("KCP disabled by BNFS_DISABLE_KCP")}
 	} else {
-		dual.SetReconnectDialer(legID, kcpDialer)
+		go func() {
+			s, e := kcpStreamContext(context.Background(), cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+			resCh <- dialResult{streamTransportKCP, s, e}
+		}()
+	}
+	go func() {
+		s, e := tcpClientStreamContext(context.Background(), cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+		resCh <- dialResult{streamTransportTCP, s, e}
+	}()
+
+	kcpOK := false
+	attach := func(r dialResult) {
+		if r.err != nil {
+			if r.kind == streamTransportKCP {
+				kcpErr = r.err
+			} else {
+				tcpErr = r.err
+			}
+			return
+		}
+		dialer := tcpDialer
+		if r.kind == streamTransportKCP {
+			dialer = kcpDialer
+		}
+		legID, aerr := dual.attachLeg(r.kind, r.stream)
+		if aerr != nil {
+			_ = r.stream.Close()
+			if r.kind == streamTransportKCP {
+				kcpErr = aerr
+			} else {
+				tcpErr = aerr
+			}
+			return
+		}
+		dual.SetReconnectDialer(legID, dialer)
+		if r.kind == streamTransportKCP {
+			kcpOK = true
+		}
 	}
 
-	tcpClient, err := tcpClientStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId, true)
-	if err != nil {
-		tcpErr = err
-	} else if legID, err := dual.attachLeg(streamTransportTCP, tcpClient); err != nil {
-		_ = tcpClient.Close()
-		tcpErr = err
-	} else {
-		dual.SetReconnectDialer(legID, tcpDialer)
+	// 优先等 KCP 最多 kcpPriorityWindow；期间先到的 TCP 暂存，让 KCP 有机会先成 preferred。
+	received := 0
+	var tcpPending *dialResult
+	kcpWindowOpen := true
+	timer := time.NewTimer(kcpPriorityWindow)
+	for received < 2 {
+		if kcpWindowOpen {
+			select {
+			case r := <-resCh:
+				received++
+				if r.kind == streamTransportKCP {
+					attach(r) // KCP 有结果：成功则成 preferred；无论成败都结束优先窗口
+					kcpWindowOpen = false
+					if tcpPending != nil {
+						attach(*tcpPending)
+						tcpPending = nil
+					}
+				} else {
+					rr := r
+					tcpPending = &rr // TCP 先到，暂存继续等 KCP
+				}
+			case <-timer.C:
+				kcpWindowOpen = false // 200ms 到，KCP 未定：用已到 TCP 建 preferred
+				if tcpPending != nil {
+					attach(*tcpPending)
+					tcpPending = nil
+				}
+			}
+		} else {
+			r := <-resCh
+			received++
+			attach(r)
+		}
+	}
+	timer.Stop()
+
+	// KCP 失败但已有 TCP：补一条 extra TCP leg 保「双 TCP failover」冗余。
+	// extra 首帧带 legExtraMarker，relay 据此并存而非顶替已有同协议 leg。
+	if !kcpOK && len(dual.legStreams()) > 0 {
+		extraFirst := cloneMessage(FirstMessage)
+		markExtraLeg(extraFirst)
+		if tcp2, e2 := tcpClientStreamContext(context.Background(), extraFirst, tcpAddr, originalNodeId, connectionId, true); e2 == nil {
+			if legID, aerr := dual.attachLeg(streamTransportTCP, tcp2); aerr != nil {
+				_ = tcp2.Close()
+			} else {
+				dual.SetReconnectDialer(legID, extraTCPDialer)
+				logx.Infof("[Dialers] KCP 不通, 补第二条 TCP leg(id=%s) 组成双 TCP failover: target=%.16s connId=%s",
+					legID, originalNodeId, connectionId)
+			}
+		}
 	}
 
 	if len(dual.legStreams()) == 0 {

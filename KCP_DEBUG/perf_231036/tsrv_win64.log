@@ -1,0 +1,12 @@
+=== Tunnel Server ===
+本节点 ID: 83446908d0f8814d52c9e8190bc6e51a33fe4d9b3d8fc593ffad645491aa2502
+转发目标: 127.0.0.1:15173
+使用指定 relay: 129.0.0.1:9000
+
+服务端已就绪，等待客户端连接。客户端使用上面的 NodeID 连接。
+按 Ctrl+C 退出。
+2026/07/02 23:14:27 [INFO] [Dialers] KCP 不通, 补第二条 TCP leg(id=tcp#2) 组成双 TCP failover: target=83446908d0f8814d connId=
+[隧道] 客户端 9d8ace62f0b44ce4f7801d71821ba0f00514ca0bbd4a46a23b2711b7f2622b16 已连接
+2026/07/02 23:14:37 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=9d8ace62f0b44ce4 connId=e038e848-3669-4fd7-a7fe-115f144f1c3f leg=tcp err=cipher: message authentication failed
+2026/07/02 23:14:37 [WARN] [DualStream] TCP leg 失败, 关闭并触发重连: nodeId=9d8ace62f0b44ce4 connId=e038e848-3669-4fd7-a7fe-115f144f1c3f
+2026/07/02 23:14:38 [INFO] [DualStream] TCP 重连成功: nodeId=9d8ace62f0b44ce4 connId=e038e848-3669-4fd7-a7fe-115f144f1c3f leg=tcp 第1次尝试

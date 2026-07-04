@@ -7,9 +7,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/xtaci/kcp-go/v5"
 )
 
 // =============================================================================
@@ -388,6 +391,17 @@ type MuxStream struct {
 	once     sync.Once
 	// deliverHook 非 nil 时，入站字节交给它（条带化 LogicalConn 的重排器）而非本地 buf。
 	deliverHook func(seq uint64, data []byte)
+	// hookPending 暂存「hook 设置之前」就到达的条带化分片(seq,data)。
+	// 条带化归并(collectStripedLeg)需聚齐 M 条 leg 才 attach hook，但 leg0 可能在其余 leg
+	// 完成 OPEN 之前就收到 DATA 帧（如握手首帧）。这些早到分片若直接落入 st.buf 就对
+	// 重排器不可见 → 永久丢失 → 重排器卡在 seq 缺口、握手挂死。改为先暂存，attach 时回放。
+	hookPending []pendingSeqChunk
+}
+
+// pendingSeqChunk 是 hook attach 前暂存的一个带序号分片。
+type pendingSeqChunk struct {
+	seq  uint64
+	data []byte
 }
 
 func newMuxStream(sess *MuxSession, id string) *MuxStream {
@@ -433,10 +447,21 @@ func (st *MuxStream) deliverSeq(seq uint64, data []byte) {
 	st.mu.Lock()
 	hook := st.deliverHook
 	closed := st.closed
-	st.mu.Unlock()
+	striped := st.openInfo.legCount > 1
 	if closed {
+		st.mu.Unlock()
 		return
 	}
+	if hook == nil && striped {
+		// 条带化 leg 但 hook 尚未 attach（其余 leg 还没聚齐）：暂存早到分片，等 attach 回放。
+		// 复制一份：底层读缓冲会被复用。
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		st.hookPending = append(st.hookPending, pendingSeqChunk{seq: seq, data: cp})
+		st.mu.Unlock()
+		return
+	}
+	st.mu.Unlock()
 	if hook != nil {
 		// 条带化：交给 LogicalConn 的重排器（自带其内部缓冲与唤醒）。
 		hook(seq, data)
@@ -456,10 +481,16 @@ func (st *MuxStream) deliverSeq(seq uint64, data []byte) {
 }
 
 // setDeliverHook 让上层（条带化 LogicalConn）接管该 leg 的入站投递。
+// attach 时把「hook 设置前」暂存的早到分片按到达顺序回放给 hook，消除条带化归并竞态丢帧。
 func (st *MuxStream) setDeliverHook(h func(seq uint64, data []byte)) {
 	st.mu.Lock()
 	st.deliverHook = h
+	pending := st.hookPending
+	st.hookPending = nil
 	st.mu.Unlock()
+	for _, pc := range pending {
+		h(pc.seq, pc.data)
+	}
 }
 
 // Read 实现 io.Reader：阻塞直到有数据或 stream 关闭（缓冲耗尽后返回 io.EOF）。
@@ -574,19 +605,43 @@ func (st *MuxStream) SetWriteDeadline(t time.Time) error { return nil }
 // 与 relaynode.RelayBridgeMuxRoute 同值；在本包内重复定义以避免反向依赖 relaynode 包。
 const muxHandshakeRoute = "/relay/bridge-mux"
 
-// DialBridgeMuxSession 裸拨一条到对端 relay 的物理 TCP 连接，发送一次物理连接级握手，
-// 然后在其上建立 client 侧 MuxSession。之后用 session.OpenStream(connID,...) 开多路会话。
+// bridgeUseKCP 报告跨中继桥接物理连接是否走 KCP(可靠 UDP)而非 TCP。
+// 默认 TCP;设 BNFS_BRIDGE_KCP=1 改走 KCP,消除跨区 TCP 队头阻塞。egress relay 的
+// 框架 KCP listener(relayStarter.go)本就监听同一 addr 的 UDP,接受侧无需改动。
+func bridgeUseKCP() bool {
+	return os.Getenv("BNFS_BRIDGE_KCP") == "1"
+}
+
+// DialBridgeMuxSession 裸拨一条到对端 relay 的物理连接(TCP 或 KCP,见 bridgeUseKCP)，
+// 发送一次物理连接级握手，然后在其上建立 client 侧 MuxSession。
+// 之后用 session.OpenStream(connID,...) 开多路会话。
 //
 //	selfNodeID 入口 relay 自身 NodeId（握手帧 Header.NodeId）。
 func DialBridgeMuxSession(parent context.Context, addr, selfNodeID string) (*MuxSession, error) {
-	conn, err := net.Dial("tcp4", addr)
-	if err != nil {
-		return nil, err
-	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetNoDelay(true)
-		_ = tcpConn.SetReadBuffer(2 * 1024 * 1024)
-		_ = tcpConn.SetWriteBuffer(2 * 1024 * 1024)
+	var conn net.Conn
+	if bridgeUseKCP() {
+		// KCP 拨号:与 client→relay 的 kcpStreamContext / relayStarter accept 侧调参一致。
+		kconn, err := kcp.DialWithOptions(addr, nil, 1, 1)
+		if err != nil {
+			return nil, err
+		}
+		kconn.SetNoDelay(1, 10, 2, 1)
+		kconn.SetMtu(1400)
+		kconn.SetWriteBuffer(4 * 1024 * 1024)
+		kconn.SetWindowSize(256, 1024)
+		conn = kconn
+		logx.Infof("[bridge-mux] 桥接物理连接走 KCP: addr=%s self=%.16s", addr, selfNodeID)
+	} else {
+		tconn, err := net.Dial("tcp4", addr)
+		if err != nil {
+			return nil, err
+		}
+		if tcpConn, ok := tconn.(*net.TCPConn); ok {
+			_ = tcpConn.SetNoDelay(true)
+			_ = tcpConn.SetReadBuffer(2 * 1024 * 1024)
+			_ = tcpConn.SetWriteBuffer(2 * 1024 * 1024)
+		}
+		conn = tconn
 	}
 	// 物理连接级握手：一条普通 Message 首帧，RouteName 标记 mux 桥接物理连接。
 	header := &network.Header{

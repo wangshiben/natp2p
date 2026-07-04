@@ -1,0 +1,12 @@
+=== Tunnel Client ===
+本节点 ID: 33c6d2a110760542d4863cad9ab0882eaec885ea2460ed08a8426741c322bda8
+目标节点:  ccd9503437c66fda9c4e84fd813cf712f48bbdc18e3acfef394421e1ba07f90e
+使用指定 relay: 129.0.0.1:9000
+正在连接目标节点 ...
+2026/07/02 14:06:58 [INFO] [Dialers] KCP 不通, 补第二条 TCP leg(id=tcp#2) 组成双 TCP failover: target=33c6d2a110760542 connId=
+2026/07/02 14:06:58 [INFO] [Dialers] KCP 不通, 补第二条 TCP leg(id=tcp#2) 组成双 TCP failover: target=ccd9503437c66fda connId=26cdcf5e-097e-4cdb-9ed6-96d6cceb9c0e
+已建立隧道连接。
+
+本地监听: 127.0.0.1:18888
+在浏览器打开: http://127.0.0.1:18888
+按 Ctrl+C 退出。

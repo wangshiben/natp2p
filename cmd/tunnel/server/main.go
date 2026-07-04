@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"bnfs_p2p/cmd/tunnel/mux"
 	"bnfs_p2p/logx"
@@ -139,14 +140,81 @@ func forwardToLocal(stream *mux.Stream, target string) {
 }
 
 // pipe copies bytes in both directions until either side closes.
-// 用大缓冲 io.CopyBuffer 而非裸 io.Copy(32KB)：裸 Copy 每次最多喂 32KB 给 mux.Write，
-// 会把单条消息钉死在 32KB，跨境高 RTT 下吞吐受限于 32KB/RTT。大缓冲让一次 Read 能拿到
-// 更多字节、合成更大的单条 mux 消息（一个 ACK 往返摊更多字节）。缓冲大小经 pumpBufSize 配置。
+// 朝 mux 写的方向(dst=a=stream)用 accumCopy 聚合:单次阻塞读后在短窗内贪婪 drain 源上
+// 已就绪字节、填满 pumpBuf 再一次 Write，让每条 mux 消息携带 W×chunk 字节、激活 W 个并发
+// sendData(在途深度→W 而非 1)。这是下载大流(httpfile→mux)的关键路径。反方向(源为 mux
+// stream,发端已聚合)用普通 CopyBuffer。
 func pipe(a io.ReadWriteCloser, b io.ReadWriteCloser) {
 	done := make(chan struct{}, 2)
-	go func() { io.CopyBuffer(a, b, make([]byte, pumpBufSize())); done <- struct{}{} }()
+	go func() { accumCopy(a, b, pumpBufSize()); done <- struct{}{} }()
 	go func() { io.CopyBuffer(b, a, make([]byte, pumpBufSize())); done <- struct{}{} }()
 	<-done
+}
+
+// deadlineReader 是支持读超时的源(如 *net.TCPConn)，用于 accumCopy 的贪婪 drain。
+type deadlineReader interface {
+	SetReadDeadline(t time.Time) error
+}
+
+// accumCopy 从 src 拷到 dst，聚合小段:每轮先做一次阻塞读拿到首段数据，再在
+// coalesceWindow 短窗内非阻塞地把源上已就绪的字节继续读进同一 buf(填满即止)，
+// 然后一次性 Write。既能把连续大流(下载)合成满 buf 写(depth→W)，又不会让
+// 小响应干等——首段一到、短窗内无更多数据就立即 flush。
+// src 若不支持 SetReadDeadline 则回退普通 CopyBuffer。
+func accumCopy(dst io.Writer, src io.Reader, bufSize int) (int64, error) {
+	dr, ok := src.(deadlineReader)
+	if !ok {
+		return io.CopyBuffer(dst, src, make([]byte, bufSize))
+	}
+	buf := make([]byte, bufSize)
+	window := coalesceWindow()
+	var total int64
+	for {
+		_ = dr.SetReadDeadline(time.Time{})
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if n < len(buf) && rerr == nil {
+				_ = dr.SetReadDeadline(time.Now().Add(window))
+				for n < len(buf) {
+					m, derr := src.Read(buf[n:])
+					n += m
+					if derr != nil {
+						if ne, isNet := derr.(net.Error); isNet && ne.Timeout() {
+							rerr = nil
+						} else {
+							rerr = derr
+						}
+						break
+					}
+				}
+				_ = dr.SetReadDeadline(time.Time{})
+			}
+			wn, werr := dst.Write(buf[:n])
+			total += int64(wn)
+			if werr != nil {
+				return total, werr
+			}
+			if wn < n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if rerr != nil {
+			if rerr == io.EOF {
+				return total, nil
+			}
+			return total, rerr
+		}
+	}
+}
+
+// coalesceWindow 返回贪婪 drain 的短窗时长，默认 2ms，可用 TUNNEL_COALESCE_MS 覆盖。
+func coalesceWindow() time.Duration {
+	if v := os.Getenv("TUNNEL_COALESCE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 2 * time.Millisecond
 }
 
 // pumpBufSize 返回数据泵缓冲字节数，默认 512KB，可用 TUNNEL_PUMP_BUF 覆盖（压测用）。

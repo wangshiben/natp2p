@@ -111,15 +111,17 @@ type RelayNode struct {
 
 // localBridgeEntry 跟踪一条已建立跨中继桥接的本地源连接。
 //
-// dual 拨号会对同一 connID 产生 KCP+TCP 两条 leg。为恢复跨境吞吐又规避双 leg
-// 在桥接 active 字段上的竞态，这里**确定性地只用 KCP leg(send-preferred)建桥**：
-//   - KCP 先到：立即建桥；
-//   - TCP 先到：登记为待定，等待窗口期内若 KCP 到达则改用 KCP，超时则 TCP 兜底。
-// bridge 一旦建立，后到的同 connID leg 一律关闭。
+// dual 拨号会对同一 connID 产生 KCP+TCP 两条 leg。relay 侧**先到先建桥**：
+// 哪条 leg 先到就用它建桥，后到的同 connID leg 一律 splice 成 failover。
+// 不在 relay 侧偏好 KCP —— relay 只能观测到"收到 KCP 首帧"，无法区分 KCP 双向可用
+// 还是仅出方向可用而回程已死（家庭 NAT）；只有客户端等到 ACK 才知道 KCP 是否真可用。
+// 故 KCP 优先决策全部下放到客户端(kcpPriorityWindow)，relay 侧只做先到先得 + failover。
+// 见记忆 natclient-relay-kcp-preferred-bug。
 type localBridgeEntry struct {
 	bridge   *networkFrameWork.CrossRelayBridge
-	bridged  bool        // 是否已用某条 leg 建成桥接
-	kcpReady chan struct{} // KCP leg 到达信号（TCP 等待方监听）
+	bridged  bool          // 是否已用某条 leg 建成桥接
+	bridging bool          // 是否有某条 leg 正在建桥（防并发双发同时 doBridge）
+	kcpReady chan struct{} // 建桥完成信号（并发到达的另一条 leg 监听后转 failover）
 }
 
 // stripedAccept 跟踪接入侧一条条带化逻辑连接的 leg 归并状态（F3）。
@@ -601,47 +603,49 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 		return n.spliceFailoverLeg(br, stream, target, connID)
 	}
 
-	if leg == "tcp" {
-		// TCP 先到: 不立即建桥, 等待窗口期内 KCP 是否到达。
+	// relay 侧【先到先建桥】，不在此偏好 KCP。关键不对称：家庭 NAT 的 UDP 是单向的——
+	// 客户端 KCP 首帧能出方向到达 relay，但 relay 的 KCP 回包穿不回 NAT。relay 光凭
+	// "收到 KCP 首帧" 无法区分 "KCP 双向可用" 与 "KCP 仅出方向、回程已死"；只有客户端
+	// (等到端到端 ACK 才算数) 才知道。故 "KCP 优先" 只放在客户端 (见 Dialers.go
+	// kcpPriorityWindow)：客户端 200ms 内 KCP 握手成功才 preferred=KCP。relay 这边谁先到
+	// 谁建桥，靠桥接 active-follows-data 自动跟随客户端实际在用的 leg。
+	// 若在此等 KCP，家庭 NAT 下会把桥建在死 KCP leg 上 → 端到端握手 reset/EOF
+	// (见记忆 natclient-relay-kcp-preferred-bug)。
+	if entry.bridging {
+		// 另一条同 connID leg 正在建桥（并发到达）：等它建成后本 leg 转 failover splice。
 		kcpReady := entry.kcpReady
 		n.mu.Unlock()
-		select {
-		case <-kcpReady:
-			// KCP 已到并由它建桥, 本 TCP leg 作为 failover splice 进桥接（不再关闭）。
-			n.mu.Lock()
-			br := entry.bridge
-			n.mu.Unlock()
+		<-kcpReady
+		n.mu.Lock()
+		br := entry.bridge
+		bridged := entry.bridged
+		n.mu.Unlock()
+		if bridged && br != nil {
 			return n.spliceFailoverLeg(br, stream, target, connID)
-		case <-time.After(kcpWaitWindow):
-			// KCP 未在窗口期到达, 用 TCP 兜底建桥。
-			n.mu.Lock()
-			if entry.bridged { // 竞争: 窗口边界 KCP 刚建桥 → 本 leg 转 failover
-				br := entry.bridge
-				n.mu.Unlock()
-				return n.spliceFailoverLeg(br, stream, target, connID)
-			}
-			n.mu.Unlock()
-			logx.Infof("[relaynode] KCP leg 未在 %v 内到达, TCP 兜底建桥: target=%.16s connId=%s",
-				kcpWaitWindow, target, connID)
-			return n.doBridge(stream, firstMsg, entry, target, connID)
 		}
+		// 建桥失败（对端不可达等）：不在此重建（会撞 kcpReady 双关、orphan entry）。
+		// 直接关本 leg，交由客户端重试（客户端本就重试 12 次）。
+		_ = stream.Close()
+		return fmt.Errorf("relaynode: 并发建桥的另一条 leg 失败, 关闭本 leg 待客户端重试 (target=%.16s connId=%s)", target, connID)
 	}
-
-	// KCP 到达(或无法判别 leg 类型): 立即建桥, 并通知等待中的 TCP leg。
+	_ = leg // leg 类型不影响建桥决策，先到先得
+	entry.bridging = true // 认领建桥
 	n.mu.Unlock()
-	err := n.doBridge(stream, firstMsg, entry, target, connID)
-	return err
+	return n.doBridge(stream, firstMsg, entry, target, connID)
 }
-
-// kcpWaitWindow 是 TCP leg 先到时等待 KCP leg 的窗口期。
-// 跨境下 KCP(UDP) 首包可能因丢包重传晚于 TCP 到达; 给一个短等待让 KCP 优先建桥,
-// 超时则 TCP 兜底, 保证可用性。
-const kcpWaitWindow = 400 * time.Millisecond
 
 // doBridge 用给定 leg 建立跨中继桥接。建成后置 entry.bridged 并关闭 kcpReady 通知等待方。
 func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, entry *localBridgeEntry, target, connID string) error {
 	cleanup := func() {
 		n.mu.Lock()
+		// 建桥失败：清除认领标记并关闭 kcpReady，唤醒并发等待的另一条 leg（否则它永久阻塞）。
+		// 该 leg 醒来见 bridged=false，会顶上重建。
+		entry.bridging = false
+		select {
+		case <-entry.kcpReady: // 已关闭
+		default:
+			close(entry.kcpReady)
+		}
 		delete(n.localLegs, connID)
 		n.mu.Unlock()
 		_ = stream.Close()
