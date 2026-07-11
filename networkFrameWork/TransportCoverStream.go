@@ -46,8 +46,44 @@ type TransportCover struct {
 	// relayNode 用它把本地托管的 nat 节点登记进 natNodes DHT 并记录来源地址。
 	onRegister func(nodeId, remoteAddr string)
 
+	// onRegisterVerify 是可选的「注册准入校验」钩子，在【建 StreamGroup 之前】被调用。
+	// 参数：被托管节点 NodeId、注册消息里携带的 indexSign(admission.SignedCert JSON, 可空)、
+	// 底层远端地址。返回非 nil error 表示拒绝该注册（框架关闭流、不建 group）。
+	// 为 nil（默认）时不做任何校验，行为与旧版一致。relayNode 用它做无交互 indexSign 离线验签 + 落角色。
+	onRegisterVerify func(nodeId string, signJSON []byte, remoteAddr string) error
+
+	// onBusinessConnect 是可选的「业务连接接入校验」钩子，在业务连接被路由到某个【本地已托管】
+	// 目标节点、且【StreamOn 之前】被调用。返回非 nil error 表示拒绝该业务连接（框架关闭流）。
+	// 为 nil（默认）时不做任何校验，行为与旧版一致。
+	//
+	// 参数：
+	//   targetNodeId    被连接/被服务的目标（server）NodeId（= 业务首帧 Header.NodeId）。
+	//   clientPubKeyHex 发起方（client）公钥 hex（= 业务首帧 Payload，供 TLS 握手用），
+	//                   relayNode 据它派生 client NodeId。
+	//   connID          本次业务连接标识。
+	//
+	// relayNode 用它实现两件事：
+	//   1) 方案B 服务边界角色强制——只有 role=server 的被托管节点才能作为业务连接目标被服务；
+	//   2) 连接保证金——建连时对 client/server 各扣一笔入场费（经 CA /reserve），任一方不足即拒。
+	// 二者都在此点一次性完成（每条业务连接首帧触发一次）。
+	onBusinessConnect func(targetNodeId, clientPubKeyHex, connID string) error
+
 	// forwardHookConfig 转发 hook 配置（可选），传递给新创建的 StreamGroup
 	forwardHookConfig *ForwardHookConfig
+}
+
+// SetBusinessConnectHook 安装「业务连接接入校验」钩子（StreamOn 前调用，返回 error 则拒绝接入）。传 nil 卸载。
+func (t *TransportCover) SetBusinessConnectHook(h func(targetNodeId, clientPubKeyHex, connID string) error) {
+	t.lock.Lock()
+	t.onBusinessConnect = h
+	t.lock.Unlock()
+}
+
+// SetRegisterVerifyHook 安装「注册准入校验」钩子（建 group 前调用，返回 error 则拒绝注册）。传 nil 卸载。
+func (t *TransportCover) SetRegisterVerifyHook(h func(nodeId string, signJSON []byte, remoteAddr string) error) {
+	t.lock.Lock()
+	t.onRegisterVerify = h
+	t.lock.Unlock()
 }
 
 // SetMissingGroupHandler 安装「业务连接未命中本地 group」的回调。传 nil 卸载，恢复默认报错行为。
@@ -58,7 +94,7 @@ func (t *TransportCover) SetMissingGroupHandler(h func(stream network.Stream, fi
 }
 
 // SetRegisterHook 安装「新 relay 注册流建立 group」的回调。传 nil 卸载。
-// 回调参数：被托管节点 NodeId、其底层连接远端地址（如 "1.2.3.4:5678"）。
+// 回调参数：被托管节点 NodeId、其底层连接远端地址（如 "203.0.113.10:5678"）。
 func (t *TransportCover) SetRegisterHook(h func(nodeId, remoteAddr string)) {
 	t.lock.Lock()
 	t.onRegister = h
@@ -68,6 +104,9 @@ func (t *TransportCover) SetRegisterHook(h func(nodeId, remoteAddr string)) {
 // SetForwardHook 设置转发 hook 配置，将传递给后续创建的所有 StreamGroup。
 // 必须在任何连接建立前调用（通常在 RelayStarter 启动前）。
 func (t *TransportCover) SetForwardHook(config *ForwardHookConfig) {
+	if config != nil {
+		config.ensureRetransmitCache()
+	}
 	t.lock.Lock()
 	t.forwardHookConfig = config
 	t.lock.Unlock()
@@ -79,6 +118,21 @@ func (t *TransportCover) HasGroup(nodeId string) bool {
 	_, ok := t.StreamGroup[nodeId]
 	t.lock.RUnlock()
 	return ok
+}
+
+// CloseHostedConnection 关闭挂在某被托管节点(nodeId)的 group 下的一条业务连接(connID)。
+//
+// 用于「连接终止 server 也能参与」：托管 server B 的 relay 据 (B 的 nodeId, connID) 拆掉
+// 对应 client leg（复用 StreamGroup.CloseTargetConnection：删除映射 + 关闭底层 stream +
+// 取消 ctx，pump/loop 立即退出）。找不到 group / 连接返回 error。
+func (t *TransportCover) CloseHostedConnection(nodeId, connID string) error {
+	t.lock.RLock()
+	group := t.StreamGroup[nodeId]
+	t.lock.RUnlock()
+	if group == nil {
+		return fmt.Errorf("relay: 未托管 nodeId=%.16s, 无法终止连接", nodeId)
+	}
+	return group.CloseTargetConnection(connID)
 }
 
 func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
@@ -192,6 +246,28 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 
 		if len(message.Header.ConnectionId) == 0 {
 			// 注册流：ConnectionId 为空表示这是 relay 注册流。
+
+			// 网络准入(indexSign): 注册 payload 可能是「裸公钥 hex」(旧/无证书)或「JSON 信封
+			// {pk,is}」(带 CA 证书)。信封情况下 SHA256(payload) != SHA256(pk)，需按内部 pk 修正
+			// 真实 nodeId(作为 group key)。裸公钥情况下 realNodeId == stream.NodeId()，为无操作。
+			pubKeyHex, signJSON := DecodeRegisterPayload(message.Payload)
+			realNodeId := NodeIDFromPubKeyHex(pubKeyHex)
+			if realNodeId != stream.NodeId() {
+				SetStreamIdentity(stream, realNodeId, message.Header.ConnectionId)
+			}
+			// 准入校验钩子（建 group 之前）：验签失败/角色不符则拒绝注册。为 nil 时不校验。
+			t.lock.RLock()
+			verify := t.onRegisterVerify
+			t.lock.RUnlock()
+			if verify != nil {
+				if err := verify(realNodeId, signJSON, remoteAddr); err != nil {
+					logx.Errorf("[relay] 注册准入校验失败, 拒绝: nodeId=%.16s remote=%s err=%v", realNodeId, remoteAddr, err)
+					stream.Close()
+					errChan <- err
+					return
+				}
+			}
+
 			// 注册流不切 pure-forwarder（它就是被 StreamGroup 用 Message 语义消费/转发的载体），
 			// 故可立即启动读循环。
 			stream.StartLoops()
@@ -227,6 +303,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			t.lock.RLock()
 			group := t.StreamGroup[message.Header.NodeId]
 			missingHandler := t.onMissingGroup
+			businessConnectHook := t.onBusinessConnect
 			t.lock.RUnlock()
 			if group == nil {
 				// 本地没有该目标的 group。若安装了 missing-group 回调（relayNode），
@@ -251,6 +328,18 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 				stream.Close()
 				errChan <- fmt.Errorf("relay group not found for nodeId %s", message.Header.NodeId)
 				return
+			}
+			// 服务边界角色强制（方案B）：本地托管该目标节点, 在把业务连接接上它之前校验其角色。
+			// relayNode 用它拒绝「非 server 角色的节点作为被连接的目标」——即堵死「client 节点
+			// 提供服务却逃计费」的路径。为 nil（默认/准入关闭）时不校验, 行为与旧版一致。
+			if businessConnectHook != nil {
+				if err := businessConnectHook(message.Header.NodeId, string(message.Payload), message.Header.ConnectionId); err != nil {
+					logx.Errorf("[relay] 业务连接被拒(角色/保证金): targetNodeId=%.16s connId=%s err=%v",
+						message.Header.NodeId, message.Header.ConnectionId, err)
+					stream.Close()
+					errChan <- err
+					return
+				}
 			}
 			forwardFirstMessage, err := group.StreamOn(stream, message)
 			if err != nil {

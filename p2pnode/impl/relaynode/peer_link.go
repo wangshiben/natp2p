@@ -1,6 +1,7 @@
 package relaynode
 
 import (
+	"bnfs_p2p/admission"
 	"bnfs_p2p/logx"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
@@ -125,7 +126,9 @@ func (pl *peerLink) manage() {
 		}
 
 		pl.setStream(sc)
-		// 发送 HELLO，交换身份。
+
+		// 发送 HELLO，交换身份。准入证书(indexSign)随 HELLO 一并携带(见 sendHello),
+		// 对端在 dispatch(ctrlHello) 里离线验签; 无交互, 每条 leg 各自验证。
 		if err := pl.sendHello(); err != nil {
 			logx.Warnf("[relaynode] 向 %s 发送 HELLO 失败: %v", pl.addr, err)
 			sc.Close()
@@ -152,6 +155,10 @@ func (pl *peerLink) manage() {
 
 // dial 建立到对端 relay 的底层控制流。targetNodeId 用对端地址占位即可——
 // 对端没有对应该 ID 的 group, 会落进 MissingGroupHandler, 据 RouteName 识别为控制链路。
+//
+// 保持 dual(KCP+TCP): 准入改为【无交互 indexSign】——每条 leg 在自己的 HELLO 里各带一份
+// CA 签名证书, 对端在收到 HELLO 时【离线】独立验签, 无需两条 leg 之间 rendezvous, 天然规避
+// 双 leg 握手竞态。故控制链路无需降级为单 TCP。
 func (pl *peerLink) dial() (*client.StreamClient, error) {
 	stream, _, err := networkFrameWork.TryConnectControlStream(
 		pl.addr, pl.owner.controlTargetID(), pl.owner.pubKeyHex(), RelayControlRoute)
@@ -169,6 +176,8 @@ func (pl *peerLink) adoptInbound(sc *client.StreamClient) {
 
 func (pl *peerLink) sendHello() error {
 	cm := &controlMessage{Type: ctrlHello, NodeId: pl.owner.idStr(), Addr: pl.owner.getAddr()}
+	// 无交互准入：HELLO 携带本端准入证书(indexSign)，对端离线验签。未启用准入时为 nil。
+	cm.IndexSign = pl.owner.selfCertJSON()
 	return pl.send(cm)
 }
 
@@ -204,6 +213,15 @@ func (pl *peerLink) serve(sc *client.StreamClient) {
 func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 	switch cm.Type {
 	case ctrlHello:
+		// 无交互准入：校验对端 HELLO 携带的准入证书(indexSign)。绑定到对端自报 NodeId,
+		// 要求角色为 relay。enforce 下校验失败即关闭链路; warn/off 放行。未启用时直接放行。
+		if pl.owner.admissionEnabled() {
+			cert, verr := pl.owner.verifyPeerCertJSON(cm.IndexSign, admission.RoleRelay, cm.NodeId)
+			if !pl.owner.gateAdmission(cert, verr, "control-hello "+cm.NodeId[:min(16, len(cm.NodeId))]) {
+				pl.clearStream(sc) // 关闭该 leg; outbound 由 manage 退避重连, inbound 直接废弃
+				return
+			}
+		}
 		pl.mu.Lock()
 		pl.peerID = cm.NodeId
 		pl.peerAddr = cm.Addr
@@ -236,6 +254,7 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 			if obs := pl.observedDialAddr(); obs != "" {
 				reply.ObservedAddr = obs
 			}
+			reply.IndexSign = pl.owner.selfCertJSON() // 回程 HELLO 也带 indexSign, 供对端离线验签
 			_ = pl.send(reply)
 		}
 	case ctrlFind:

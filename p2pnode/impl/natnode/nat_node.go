@@ -114,6 +114,18 @@ func (n *NATNode) ID() p2pnode.NodeID {
 	return p2pnode.NodeID(n.identity.PeerID())
 }
 
+// SetIndexSign 设置本节点向 relay 注册时携带的 CA 准入证书(indexSign, admission.SignedCert JSON)。
+// 空则不携带（无准入模式）。必须在 Listen/注册之前调用。证书里的 Role 决定本节点被 relay
+// 视作 client 还是 server（计费方向据此区分）。
+func (n *NATNode) SetIndexSign(signJSON []byte) {
+	if t, ok := n.transport.(*NATTransport); ok {
+		t.SetIndexSign(signJSON)
+	}
+}
+
+// PubKeyHex 返回本节点公钥 hex（申请 indexSign 时作为 subject 公钥提交给 CA）。
+func (n *NATNode) PubKeyHex() string { return n.identity.Pubkey() }
+
 // OnConnection 设置入站连接握手完成后的回调。
 func (n *NATNode) OnConnection(cb p2pnode.OnConnectionCallback) {
 	n.mu.Lock()

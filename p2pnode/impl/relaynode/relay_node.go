@@ -97,6 +97,22 @@ type RelayNode struct {
 	// forwardHookConfig 转发 hook 配置（可选）
 	forwardHookConfig *ForwardHookConfig
 
+	// admission 准入配置（可选）。nil 或 Mode=AdmissionOff 时准入握手完全不启用,
+	// 既有行为零变更。见 admission_link.go。
+	admission *AdmissionConfig
+
+	// accounts 被托管 NAT 节点的角色/上行账户表（准入通过后落 Role, forward hook 累加上行）。
+	// 见 admission_register.go。
+	accounts *accountStore
+
+	// settleLoopOnce 保证周期结算循环只启动一次（SetAdmission 可能被多次调用）。
+	settleLoopOnce sync.Once
+
+	// reservedPairs 记录 (clientNodeID|serverNodeID) → *depositReservation。
+	// 预扣进行中时，后续同对端连接必须等待同一份 CA 裁决；只有 CA 已成功扣费的结果才能在
+	// depositWindow 内复用。这样 dual-leg 与重试不重复扣费，也不会把“正在扣费”误当作“已扣费”。
+	reservedPairs sync.Map // map[string]*depositReservation
+
 	// indexAddr 是本 relay 注册到的 index 地址（RegisterToIndex 设置, 可空）。
 	// onIndexRegistered 在与该 index 完成 HELLO、自动获知其真实 NodeID 后回调一次,
 	// 供上层（如 cmd）打印「已注册到 index: id=… addr=…」确认。
@@ -127,18 +143,17 @@ type localBridgeEntry struct {
 // stripedAccept 跟踪接入侧一条条带化逻辑连接的 leg 归并状态（F3）。
 // M 条 leg 从 M 条不同物理连接的 Accept 陆续到达，聚齐 want 条后组装成一条 LogicalConn。
 type stripedAccept struct {
-	want   int                          // 期望 leg 数（= 入口侧 legCount）
+	want   int                           // 期望 leg 数（= 入口侧 legCount）
 	legs   []*networkFrameWork.MuxStream // 已到达的 leg
-	target string                       // 合成 hello 用的目标 NodeId
-	pubKey string                       // 合成 hello 用的源节点公钥
+	target string                        // 合成 hello 用的目标 NodeId
+	pubKey string                        // 合成 hello 用的源节点公钥
 }
-
 
 // NewRelayNode 创建一个中继节点。
 //
 //	privKey   为 nil 时自动生成；持有私钥即持有节点身份。
 //	listenAddr 是 relay 服务器监听地址（如 ":9000"）。
-//	publicAddr 是对端用来拨号本 relay 的可达地址（如 "1.2.3.4:9000"）；
+//	publicAddr 是对端用来拨号本 relay 的可达地址（如 "203.0.113.10:9000"）；
 //	           为空时回退用 listenAddr，便于本地测试。
 func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*RelayNode, error) {
 	if privKey == nil {
@@ -187,6 +202,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 	n.localLegs = make(map[string]*localBridgeEntry)
 	n.bridgePools = make(map[string]*relayPeerPool)
 	n.stripedLegs = make(map[string]*stripedAccept)
+	n.accounts = newAccountStore()
 
 	// 安装框架回调：注册流建立时登记到 natNodes；业务连接未命中本地 group 时走跨中继逻辑。
 	cover := n.starter.Cover()
@@ -201,6 +217,9 @@ func (n *RelayNode) ID() p2pnode.NodeID { return p2pnode.NodeID(n.identity.PeerI
 
 func (n *RelayNode) idStr() string     { return n.identity.PeerID() }
 func (n *RelayNode) pubKeyHex() string { return n.identity.Pubkey() }
+
+// PubKeyHex 返回本 relay 公钥 hex（向 CA 申请 indexSign 时作为 subject 公钥）。
+func (n *RelayNode) PubKeyHex() string { return n.identity.Pubkey() }
 
 // controlTargetID 是本 relay 拨向对端 relay 时, 首条 hello 的 Header.NodeId 占位值。
 // 取本端 NodeId 即可：对端只用它来确认「不是自己托管的 nat 节点」, 据 RouteName 识别控制链路。
@@ -340,6 +359,13 @@ func (n *RelayNode) HostedNatNodesDetailed() []HostedNatInfo {
 // hostsLocally 判断某个 nat 节点是否当前注册在本 relay 上。
 func (n *RelayNode) hostsLocally(nodeId string) bool {
 	return n.starter.Cover().HasGroup(nodeId)
+}
+
+// TerminateHostedConnection 让托管某 server 节点(nodeId)的 relay 拆掉其一条业务连接(connID)。
+// 这是「连接终止 server 也能参与」的 relay 侧能力：server 判定某入站连接为滥用后，
+// 经其 nat→relay 控制通道请求本方法（控制通道 wire 信号为后续增强，见 BILLING 报告）。
+func (n *RelayNode) TerminateHostedConnection(nodeId, connID string) error {
+	return n.starter.Cover().CloseHostedConnection(nodeId, connID)
 }
 
 // onPeerHello 在收到对端 relay 的 HELLO 后被调用：登记对端 relay 身份与地址（需求 1、2）。
@@ -628,7 +654,7 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 		_ = stream.Close()
 		return fmt.Errorf("relaynode: 并发建桥的另一条 leg 失败, 关闭本 leg 待客户端重试 (target=%.16s connId=%s)", target, connID)
 	}
-	_ = leg // leg 类型不影响建桥决策，先到先得
+	_ = leg               // leg 类型不影响建桥决策，先到先得
 	entry.bridging = true // 认领建桥
 	n.mu.Unlock()
 	return n.doBridge(stream, firstMsg, entry, target, connID)
@@ -708,7 +734,6 @@ func (n *RelayNode) spliceFailoverLeg(br *networkFrameWork.CrossRelayBridge, str
 		target, connID, networkFrameWork.LegTransport(stream))
 	return nil
 }
-
 
 // findHostRelay 向所有已建立的控制链路并发 FIND, 返回首个声称托管 target 的「控制链路」。
 // 调用方用该链路的 dialHostAddr() 得到可路由的桥接地址（而非对端自报的可能不可路由的 Addr）。

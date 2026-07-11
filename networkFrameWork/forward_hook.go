@@ -3,6 +3,7 @@ package networkFrameWork
 import (
 	"bnfs_p2p/network"
 	"context"
+	"sync"
 )
 
 // ForwardHookFunc 是每转发到指定大小时调用的 hook。
@@ -30,6 +31,12 @@ type ForwardStats struct {
 	TotalFrames int64
 	// LastFrame 是最后一个转发的帧（只读，用于日志/监控）
 	LastFrame *network.Frame
+	// NodeID 是产生该转发的 StreamGroup 所代表的对端节点 NodeId（即被托管节点/设备1）。
+	// 计费方向据它把上行净荷归属到具体的 serverNode。空串表示调用方未提供归属身份。
+	NodeID string
+	// Direction 是本次转发方向："relay_to_clients"（被托管节点→客户端，即 serverNode 上行）
+	// 或 "client_to_relay"（客户端→被托管节点）。计费只累计 serverNode 上行，据此过滤。
+	Direction string
 }
 
 // ForwardHookConfig 转发 hook 配置
@@ -40,42 +47,64 @@ type ForwardHookConfig struct {
 	Hook ForwardHookFunc
 	// ErrorHook 是错误处理 hook
 	ErrorHook ForwardErrorHookFunc
+	cacheOnce sync.Once
+	cache     *globalRetransmitCache
 }
 
 // forwardHookState 转发 hook 的运行时状态
 type forwardHookState struct {
-	config        *ForwardHookConfig
-	accumulatedBytes int64
+	config            *ForwardHookConfig
+	nodeID            string // 该 hook 所属 StreamGroup 代表的对端 NodeId（计费按节点归因用）
+	accumulatedBytes  int64
 	accumulatedFrames int64
-	lastFrame     *network.Frame
+	lastFrame         *network.Frame
 }
 
-// newForwardHookState 创建 hook 状态
-func newForwardHookState(config *ForwardHookConfig) *forwardHookState {
+// newForwardHookState 创建 hook 状态。
+// nodeID 是该 hook 所属 StreamGroup 代表的对端 NodeId，会填入每次触发的 ForwardStats，
+// 供计费方向按 serverNode 归因上行流量；不需要归因时传空串即可（向后兼容）。
+func newForwardHookState(config *ForwardHookConfig, nodeID string) *forwardHookState {
 	if config == nil {
 		return nil
 	}
 	return &forwardHookState{
 		config: config,
+		nodeID: nodeID,
 	}
+}
+
+func (c *ForwardHookConfig) ensureRetransmitCache() *globalRetransmitCache {
+	if c == nil {
+		return nil
+	}
+	c.cacheOnce.Do(func() {
+		c.cache = newGlobalRetransmitCache()
+	})
+	return c.cache
 }
 
 // onFrame 在每个帧转发前调用，返回 true 表示可以继续转发，false 表示需要停止
 //
 // 统计口径 = 净荷（goodput），不是带宽（throughput）：
-//   - 只累计「首发数据帧」`FrameTypeData` 的 payload 字节；
+//   - 首次见到的 Data 或 Retransmit 帧均累计其 payload 字节；
 //   - **不含帧头**（每帧 39B 头不计）；
-//   - **跳过** ACK(`FrameTypeAck`) / 重传(`FrameTypeRetransmit`) / 帧大小控制帧(`FrameTypeFrameSizeChange`)，
-//     它们既不携带新的业务净荷（重传是丢包重发的同一份数据），又会在 WAN 上把计数顶高，
-//     不计入才能贴近应用层「成功送达的有效载荷」。
+//   - 跳过 ACK(`FrameTypeAck`) / 帧大小控制帧(`FrameTypeFrameSizeChange`)；
+//   - 仅在同一连接的 ACK 回收前（且仍在 TTL/配额内），`(message, seq, total, payload digest)`
+//     完全一致的 Data/Retransmit 帧才视为已计量重传并跳过。
+//
 // 这样 relay 累计 ≈ 应用层 payload 总量；带宽口径（含双向/重传/头/ACK）见 git 历史。
 func (s *forwardHookState) onFrame(ctx context.Context, f *network.Frame, direction string) bool {
 	if s == nil || s.config == nil {
 		return true
 	}
 
-	// 非首发数据帧（ACK/重传/控制帧）不携带新净荷，直接放行不计数。
-	if f == nil || f.FrameType != network.FrameTypeData {
+	if f == nil {
+		return true
+	}
+	if f.FrameType != network.FrameTypeData && f.FrameType != network.FrameTypeRetransmit {
+		return true
+	}
+	if direction != "client_to_relay" && !s.config.ensureRetransmitCache().recordFrame(s.nodeID, f) {
 		return true
 	}
 
@@ -88,6 +117,8 @@ func (s *forwardHookState) onFrame(ctx context.Context, f *network.Frame, direct
 	// 检查是否达到阈值
 	if s.accumulatedBytes >= s.config.ThresholdBytes {
 		stats := &ForwardStats{
+			NodeID:      s.nodeID,
+			Direction:   direction,
 			TotalBytes:  s.accumulatedBytes,
 			TotalFrames: s.accumulatedFrames,
 			LastFrame:   s.lastFrame,

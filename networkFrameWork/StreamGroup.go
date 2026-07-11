@@ -188,7 +188,7 @@ func (s *StreamGroup) startFramePump(connectionId string, resource *connectionRe
 	if frame == nil || relayFrame == nil {
 		return
 	}
-	go pumpClientToRelay(ctx, frame, relayFrame, s.frameRoutes, hookConfig)
+	go pumpClientToRelay(ctx, frame, relayFrame, s.frameRoutes, hookConfig, s.nodeId)
 }
 
 // startConnectionLoop 是 fallback 路径：当 frame relay 不可用时用 Message 语义中转。
@@ -244,7 +244,7 @@ func (s *StreamGroup) StartListen() {
 				return nil
 			}
 			return resource.frame
-		}, s.frameRoutes, s.forwardHookConfig)
+		}, s.frameRoutes, s.forwardHookConfig, s.nodeId)
 		return
 	}
 
@@ -291,6 +291,9 @@ func (s *StreamGroup) CloseTargetConnection(connectionId string) error {
 		return errors.New("connectionId not exist or it's already closed")
 	}
 	delete(s.connectionMap, connectionId)
+	if s.forwardHookConfig != nil {
+		s.forwardHookConfig.ensureRetransmitCache().forgetConnection(s.nodeId, connectionId)
+	}
 	c.Close()
 	return nil
 }

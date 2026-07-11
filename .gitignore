@@ -8,3 +8,31 @@
 
 # 测试下载的临时大文件
 *.bin
+
+# 本机部署生成的生产节点私钥；不得提交。
+.credentials/
+
+# 本地审计/设计/测试记录与日志；不得提交。
+*.log
+BILLING_*.md
+BNFS_NET_*.md
+DESIGN_*.md
+P2P_*.md
+REVIEW_*.md
+BUG_*.md
+*_设计*.md
+*_方案*.md
+*_报告*.md
+*_测试*.md
+/cmd/tunnel/*_ANALYSIS.md
+/cmd/tunnel/*_DESIGN.md
+/cmd/tunnel/*_IMPLEMENTATION.md
+/cmd/tunnel/*_PLAN.md
+/cmd/tunnel/localsim/results_*/
+
+# 本地生成的测试程序和脱敏辅助脚本；不得提交。
+/billingpoc
+/billingpoc-race
+/hooktest
+/test_validator
+/scrub-and-push*.ps1

@@ -142,6 +142,28 @@ func TryRegisterRelayStream(pubKey, relayAddress string) (network.Stream, error)
 	return clientStream(body, relayAddress, originalNodeId, "", true)
 }
 
+// TryRegisterRelayStreamWithSign 与 TryRegisterRelayStream 相同, 但在注册消息 payload 里
+// 携带 CA 签发的 indexSign(admission.SignedCert JSON)——网络准入用。
+//
+// 关键: originalNodeId 仍由【裸公钥】哈希派生(与不带证书时一致), 只有 payload 换成信封
+// {pk, is}。接收侧 TransportCover 用 DecodeRegisterPayload 取回内部 pk、以 SHA256(pk) 修正
+// 真实 nodeId, 故 group key 不变、路由不受影响。signJSON 为空时退化为裸公钥(等价旧函数)。
+func TryRegisterRelayStreamWithSign(pubKey, relayAddress string, signJSON []byte) (network.Stream, error) {
+	hash := sha256.Sum256([]byte(pubKey))
+	originalNodeId := hex.EncodeToString(hash[:])
+	header := &network.Header{
+		RouteName:     "",
+		NodeId:        originalNodeId,
+		NodeIdVersion: 1,
+		ConnectionId:  "",
+	}
+	body := &network.Message{
+		Header:  header,
+		Payload: EncodeRegisterPayload(pubKey, signJSON),
+	}
+	return clientStream(body, relayAddress, originalNodeId, "", true)
+}
+
 // TryRegisterRelayStreamTCP 与 TryRegisterRelayStream 相同, 但只用单条 TCP leg 注册（不走 dual KCP+TCP）。
 // 用于跨中继场景下避免 relayStream 的 KCP/TCP 双 leg 在中继转发处的 failover 竞态。
 func TryRegisterRelayStreamTCP(pubKey, relayAddress string) (network.Stream, error) {
@@ -267,11 +289,17 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 		err    error
 	}
 	resCh := make(chan dialResult, 2)
+	// kcpCtx 允许在 TCP 赢得优先窗口时立即取消 KCP goroutine，消除最长 1300ms 的后台等待。
+	// 家庭 NAT / 运营商封 UDP 场景：KCP 握手的 SendMessage 阻塞在等回程 ACK，cancellation
+	// 让它立即返回 context error，BNFS_DISABLE_KCP=1 不再是必要的绕过手段。
+	kcpCtx, kcpCancel := context.WithCancel(context.Background())
+	defer kcpCancel() // 函数返回时兜底清理; 若 TCP 先赢则在 timer 分支提前 cancel
 	if disableKCP() {
+		kcpCancel()
 		resCh <- dialResult{streamTransportKCP, nil, fmt.Errorf("KCP disabled by BNFS_DISABLE_KCP")}
 	} else {
 		go func() {
-			s, e := kcpStreamContext(context.Background(), cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+			s, e := kcpStreamContext(kcpCtx, cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
 			resCh <- dialResult{streamTransportKCP, s, e}
 		}()
 	}
@@ -332,7 +360,11 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 					tcpPending = &rr // TCP 先到，暂存继续等 KCP
 				}
 			case <-timer.C:
-				kcpWindowOpen = false // 200ms 到，KCP 未定：用已到 TCP 建 preferred
+				// 200ms 到，KCP 未定：TCP 获胜；立即取消 KCP goroutine，不再等 1500ms 握手超时。
+				// cancel 后 kcpStreamContext 的 SendMessage 因 context 被取消而迅速返回，
+				// resCh 里会补一条 kcpErr 结果，else 分支 attach 后设 kcpErr 即可。
+				kcpWindowOpen = false
+				kcpCancel()
 				if tcpPending != nil {
 					attach(*tcpPending)
 					tcpPending = nil

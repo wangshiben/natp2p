@@ -47,6 +47,9 @@ type controlMessage struct {
 	Target       string `json:"target,omitempty"`
 	Hosts        bool   `json:"hosts,omitempty"`
 	ObservedAddr string `json:"observed_addr,omitempty"`
+	// IndexSign 是 HELLO 携带的准入证书(indexSign)JSON（admission.SignedCert）。
+	// 无交互准入：对端收到 HELLO 即离线验签。未启用准入/老对端时为空。
+	IndexSign []byte `json:"index_sign,omitempty"`
 }
 
 // encodeControl 把控制消息编码为一条 network.Message。

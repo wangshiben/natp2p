@@ -117,8 +117,8 @@ func parseFrameHeader(f *network.Frame) (*network.Header, bool) {
 //
 // 找不到目标 client（还没连上 / 已断开）就丢弃该帧。写失败则退出 pump。
 // hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
-func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig) {
-	hookState := newForwardHookState(hookConfig)
+func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string) {
+	hookState := newForwardHookState(hookConfig, nodeID)
 
 	for {
 		f, err := relay.NextFrame(ctx)
@@ -171,8 +171,8 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 //
 // 写失败则退出 pump。
 // hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
-func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig) {
-	hookState := newForwardHookState(hookConfig)
+func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string) {
+	hookState := newForwardHookState(hookConfig, nodeID)
 
 	for {
 		f, err := client.NextFrame(ctx)
@@ -196,6 +196,9 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 
 		entry := routes.clientGet(client.ConnectionId(), f.MessageId)
 		if entry == nil {
+			if f.FrameType == network.FrameTypeAck {
+				continue
+			}
 			if f.SeqId != 0 {
 				continue
 			}
@@ -205,7 +208,6 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 			// 反向回程：relay 用 dstID 回的 ACK -> 写回该 client 的原始 MessageId。
 			routes.relaySet(entry.dstID, &frameRouteEntry{dest: client, dstID: f.MessageId})
 		}
-
 		out := *f
 		out.MessageId = entry.dstID
 		if err := entry.dest.HandleFrame(ctx, &out); err != nil {
@@ -213,6 +215,13 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 				logBridge("C2R HandleFrame->relay 失败 connId=%s err=%v", client.ConnectionId(), err)
 			}
 			return
+		}
+		if f.FrameType == network.FrameTypeAck && hookConfig != nil {
+			if ranges, err := network.DecodeAckRanges(f.Payload); err == nil && len(ranges) > 0 {
+				hookConfig.ensureRetransmitCache().acknowledge(
+					nodeID, client.ConnectionId(), entry.dstID, f.TotalFrames, ranges,
+				)
+			}
 		}
 	}
 }
