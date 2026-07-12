@@ -142,6 +142,28 @@ func TryRegisterRelayStream(pubKey, relayAddress string) (network.Stream, error)
 	return clientStream(body, relayAddress, originalNodeId, "", true)
 }
 
+// TryRegisterRelayStreamWithSign 与 TryRegisterRelayStream 相同, 但在注册消息 payload 里
+// 携带 CA 签发的 indexSign(admission.SignedCert JSON)——网络准入用。
+//
+// 关键: originalNodeId 仍由【裸公钥】哈希派生(与不带证书时一致), 只有 payload 换成信封
+// {pk, is}。接收侧 TransportCover 用 DecodeRegisterPayload 取回内部 pk、以 SHA256(pk) 修正
+// 真实 nodeId, 故 group key 不变、路由不受影响。signJSON 为空时退化为裸公钥(等价旧函数)。
+func TryRegisterRelayStreamWithSign(pubKey, relayAddress string, signJSON []byte) (network.Stream, error) {
+	hash := sha256.Sum256([]byte(pubKey))
+	originalNodeId := hex.EncodeToString(hash[:])
+	header := &network.Header{
+		RouteName:     "",
+		NodeId:        originalNodeId,
+		NodeIdVersion: 1,
+		ConnectionId:  "",
+	}
+	body := &network.Message{
+		Header:  header,
+		Payload: EncodeRegisterPayload(pubKey, signJSON),
+	}
+	return clientStream(body, relayAddress, originalNodeId, "", true)
+}
+
 // TryRegisterRelayStreamTCP 与 TryRegisterRelayStream 相同, 但只用单条 TCP leg 注册（不走 dual KCP+TCP）。
 // 用于跨中继场景下避免 relayStream 的 KCP/TCP 双 leg 在中继转发处的 failover 竞态。
 func TryRegisterRelayStreamTCP(pubKey, relayAddress string) (network.Stream, error) {
@@ -259,19 +281,25 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 	//   - KCP 在 kcpPriorityWindow(200ms) 内完成握手 → preferred=KCP(保跨境高吞吐)；
 	//   - 窗口内 KCP 未完成(家庭 NAT UDP 回程不通等) → 用已就绪的 TCP 建 preferred，
 	//     KCP 之后若完成则作 backup failover leg 补入(不抢 preferred)。
-	// 用「有界并发」而非旧的「无条件同步等 KCP 1500ms 再 fallback」，规避 NAT 客户端注册/连接
-	// 必然超时的缺陷(见记忆 natclient-relay-kcp-preferred-bug)：KCP 卡死最多只拖 200ms。
+	// 用「有界并发」而非串行先拨 KCP 再拨 TCP：200ms 后 TCP 可以先成为 preferred，
+	// 但本函数仍等待 KCP 在 1500ms 握手期限内给出最终结果，才能决定并入 KCP 还是补第二条 TCP。
 	type dialResult struct {
 		kind   streamTransport
 		stream network.Stream
 		err    error
 	}
 	resCh := make(chan dialResult, 2)
+	// kcpCtx 只用于显式禁用和函数退出时清理。200ms 优先窗口只决定 preferred，不能取消
+	// 仍在完整握手期限内推进的 KCP；否则真实 WAN 上 200ms 后才完成的健康 KCP 会被错误吞掉，
+	// dual 随后退化成双 TCP，与“晚到 KCP 作为 backup 并入”的设计相矛盾。
+	kcpCtx, kcpCancel := context.WithCancel(context.Background())
+	defer kcpCancel()
 	if disableKCP() {
+		kcpCancel()
 		resCh <- dialResult{streamTransportKCP, nil, fmt.Errorf("KCP disabled by BNFS_DISABLE_KCP")}
 	} else {
 		go func() {
-			s, e := kcpStreamContext(context.Background(), cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+			s, e := kcpStreamContext(kcpCtx, cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
 			resCh <- dialResult{streamTransportKCP, s, e}
 		}()
 	}
@@ -332,7 +360,9 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 					tcpPending = &rr // TCP 先到，暂存继续等 KCP
 				}
 			case <-timer.C:
-				kcpWindowOpen = false // 200ms 到，KCP 未定：用已到 TCP 建 preferred
+				// 200ms 到，KCP 未定：已就绪 TCP 成为 preferred；KCP 继续使用自己的
+				// dialHandshakeTimeout，若随后成功则作为 backup attach，实现 KCP/TCP 共存。
+				kcpWindowOpen = false
 				if tcpPending != nil {
 					attach(*tcpPending)
 					tcpPending = nil

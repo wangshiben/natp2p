@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"sort"
 	"sync"
+	"time"
 )
 
 // KBucketImpl K 桶实现，包含距离范围信息
@@ -99,17 +100,37 @@ func (k *KBucketImpl) UpdateLastSeen(nodeId string) {
 	k.bucket.UpdateLastSeen(nodeId)
 }
 
+func (k *KBucketImpl) Touch(nodeId string, at time.Time) bool {
+	return k.bucket.Touch(nodeId, at)
+}
+
+func (k *KBucketImpl) SetNodeHealth(nodeId string, health interfaces.NodeHealth) bool {
+	return k.bucket.SetNodeHealth(nodeId, health)
+}
+
+func (k *KBucketImpl) NodeHealth(nodeId string) (interfaces.NodeHealth, bool) {
+	return k.bucket.NodeHealth(nodeId)
+}
+
+func (k *KBucketImpl) RankedNodes(policy interfaces.NodeRankingPolicy) []interfaces.Node {
+	return k.bucket.RankedNodes(policy)
+}
+
+func (k *KBucketImpl) Maintain(policy interfaces.DHTMaintenancePolicy) interfaces.MaintenanceResult {
+	return k.bucket.Maintain(policy)
+}
+
 // updateActualRange 更新实际距离范围
 func (k *KBucketImpl) updateActualRange() {
-	nodes := k.bucket.nodes
+	nodes := k.bucket.GetNodes()
 	if len(nodes) == 0 {
 		k.sr = nil
 		k.er = nil
 		return
 	}
 
-	minDist := new(big.Int).SetUint64(^uint64(0))
-	minDist.Lsh(minDist, 160) // 设置为最大值
+	minDist := new(big.Int).Lsh(big.NewInt(1), 256)
+	minDist.Sub(minDist, big.NewInt(1))
 	maxDist := new(big.Int)
 
 	for _, node := range nodes {
@@ -155,12 +176,7 @@ func (k *KBucketImpl) IsFull() bool {
 
 // GetNodes 获取桶中所有节点
 func (k *KBucketImpl) GetNodes() []interfaces.Node {
-	k.mu.RLock()
-	defer k.mu.RUnlock()
-
-	result := make([]interfaces.Node, len(k.bucket.nodes))
-	copy(result, k.bucket.nodes)
-	return result
+	return k.bucket.GetNodes()
 }
 
 // DHTTableImpl DHT 路由表实现
@@ -303,15 +319,84 @@ func (d *DHTTableImpl) LocalNodeId() string {
 }
 
 func (d *DHTTableImpl) UpdateLastSeen(nodeId string) {
+	d.Touch(nodeId, time.Now())
+}
+
+func (d *DHTTableImpl) Touch(nodeId string, at time.Time) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	bucketIdx := d.findBucketIndexById(nodeId)
 	if bucketIdx == -1 {
-		return
+		return false
 	}
 
-	d.buckets[bucketIdx].UpdateLastSeen(nodeId)
+	return d.buckets[bucketIdx].Touch(nodeId, at)
+}
+
+func (d *DHTTableImpl) SetNodeHealth(nodeId string, health interfaces.NodeHealth) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	bucketIdx := d.findBucketIndexById(nodeId)
+	if bucketIdx == -1 {
+		return false
+	}
+	return d.buckets[bucketIdx].SetNodeHealth(nodeId, health)
+}
+
+func (d *DHTTableImpl) NodeHealth(nodeId string) (interfaces.NodeHealth, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	bucketIdx := d.findBucketIndexById(nodeId)
+	if bucketIdx == -1 {
+		return interfaces.NodeHealth{}, false
+	}
+	return d.buckets[bucketIdx].NodeHealth(nodeId)
+}
+
+func (d *DHTTableImpl) RankedNodes(policy interfaces.NodeRankingPolicy) []interfaces.Node {
+	d.mu.RLock()
+	buckets := append([]*KBucketImpl(nil), d.buckets...)
+	d.mu.RUnlock()
+	var nodes []interfaces.Node
+	health := make(map[string]interfaces.NodeHealth)
+	for _, bucket := range buckets {
+		bucketNodes, bucketHealth := bucket.bucket.snapshot()
+		nodes = append(nodes, bucketNodes...)
+		for nodeID, entry := range bucketHealth {
+			health[nodeID] = entry
+		}
+	}
+	return rankNodeSnapshot(nodes, health, policy)
+}
+
+func (d *DHTTableImpl) Maintain(policy interfaces.DHTMaintenancePolicy) []interfaces.MaintenanceResult {
+	d.mu.RLock()
+	buckets := append([]*KBucketImpl(nil), d.buckets...)
+	d.mu.RUnlock()
+	results := make([]interfaces.MaintenanceResult, 0, len(buckets))
+	for _, bucket := range buckets {
+		// 防止探测期间该桶被 split 后仍修改已经脱离路由表的旧 bucket。
+		// Probe 回调只能执行网络探测，不得反向修改同一张 DHTTable。
+		d.mu.RLock()
+		current := false
+		for _, activeBucket := range d.buckets {
+			if activeBucket == bucket {
+				current = true
+				break
+			}
+		}
+		if !current {
+			d.mu.RUnlock()
+			continue
+		}
+		result := bucket.Maintain(policy)
+		d.mu.RUnlock()
+		if result.Action != interfaces.MaintenanceNone {
+			results = append(results, result)
+		}
+	}
+	return results
 }
 
 // Clear �空路由表
@@ -363,10 +448,7 @@ func (d *DHTTableImpl) splitBucket(bucketIdx int) {
 	newBucket2 := NewKBucket(d.maxSize, d.localId, new(big.Int).Add(midPoint, big.NewInt(1)), oldBucket.el)
 
 	// 获取旧桶的节点（不直接清空，避免并发期间新节点加入旧桶）
-	oldBucket.mu.Lock()
-	nodes := make([]interfaces.Node, len(oldBucket.bucket.nodes))
-	copy(nodes, oldBucket.bucket.nodes)
-	oldBucket.mu.Unlock()
+	nodes, health := oldBucket.bucket.snapshot()
 
 	// 使用 map 跟踪已分配的节点，确保不重复
 	assignedNodes := make(map[string]bool)
@@ -391,12 +473,14 @@ func (d *DHTTableImpl) splitBucket(bucketIdx int) {
 			// 直接添加到新桶的内部节点列表，避免触发距离范围更新和递归分裂
 			newBucket1.bucket.mu.Lock()
 			newBucket1.bucket.nodes = append(newBucket1.bucket.nodes, node)
+			newBucket1.bucket.health[node.PeerID()] = health[node.PeerID()]
 			newBucket1.bucket.mu.Unlock()
 			assignedNodes[node.PeerID()] = true
 		} else {
 			// 直接添加到新桶的内部节点列表，避免触发距离范围更新和递归分裂
 			newBucket2.bucket.mu.Lock()
 			newBucket2.bucket.nodes = append(newBucket2.bucket.nodes, node)
+			newBucket2.bucket.health[node.PeerID()] = health[node.PeerID()]
 			newBucket2.bucket.mu.Unlock()
 			assignedNodes[node.PeerID()] = true
 		}

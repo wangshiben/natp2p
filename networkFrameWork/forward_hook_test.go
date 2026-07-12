@@ -25,7 +25,7 @@ func TestForwardHookTriggersOnThreshold(t *testing.T) {
 		},
 	}
 
-	state := newForwardHookState(config)
+	state := newForwardHookState(config, "")
 
 	// 净荷口径：每帧只按 payload 字节计（不含帧头）。
 	frameSize := 50
@@ -77,7 +77,7 @@ func TestForwardHookErrorTriggersErrorHook(t *testing.T) {
 		},
 	}
 
-	state := newForwardHookState(config)
+	state := newForwardHookState(config, "")
 
 	f := &network.Frame{Payload: make([]byte, 10)}
 	cont := state.onFrame(context.Background(), f, "client_to_relay")
@@ -107,7 +107,7 @@ func TestForwardHookErrorTriggersErrorHook(t *testing.T) {
 
 // TestForwardHookNilConfigNoop 验证未配置 hook 时不影响转发。
 func TestForwardHookNilConfigNoop(t *testing.T) {
-	state := newForwardHookState(nil)
+	state := newForwardHookState(nil, "")
 
 	f := &network.Frame{Payload: make([]byte, 100)}
 	// nil config 的 state 应始终返回 true（继续转发）
@@ -131,7 +131,7 @@ func TestForwardHookAccumulatesAcrossFrames(t *testing.T) {
 		},
 	}
 
-	state := newForwardHookState(config)
+	state := newForwardHookState(config, "")
 
 	// 发送 9 帧，应触发 3 次 hook（每 3 帧一次）
 	for i := 0; i < 9; i++ {
@@ -147,7 +147,7 @@ func TestForwardHookAccumulatesAcrossFrames(t *testing.T) {
 }
 
 // TestForwardHookCountsPayloadOnly 验证净荷口径：
-// 只统计 FrameTypeData 的 payload 字节，跳过 ACK / 重传 / 控制帧，且不含帧头。
+// 首见 Data/Retransmit 均计 payload，ACK / 控制帧不计，且不含帧头。
 func TestForwardHookCountsPayloadOnly(t *testing.T) {
 	var mu sync.Mutex
 	var lastStats *ForwardStats
@@ -163,10 +163,10 @@ func TestForwardHookCountsPayloadOnly(t *testing.T) {
 			return nil
 		},
 	}
-	state := newForwardHookState(config)
+	state := newForwardHookState(config, "")
 
-	// 这些非数据帧都不应被计数（payload 各 1000 字节，远超阈值，但应被跳过）。
-	for _, ft := range []uint8{network.FrameTypeAck, network.FrameTypeRetransmit, network.FrameTypeFrameSizeChange} {
+	// 控制帧不应被计数（payload 各 1000 字节，远超阈值，但应被跳过）。
+	for _, ft := range []uint8{network.FrameTypeAck, network.FrameTypeFrameSizeChange} {
 		f := &network.Frame{FrameType: ft, Payload: make([]byte, 1000)}
 		if !state.onFrame(context.Background(), f, "test") {
 			t.Fatal("非数据帧应放行")
@@ -175,7 +175,22 @@ func TestForwardHookCountsPayloadOnly(t *testing.T) {
 	mu.Lock()
 	if hookCalls != 0 {
 		mu.Unlock()
-		t.Fatalf("ACK/重传/控制帧不应触发 hook，实际触发 %d 次", hookCalls)
+		t.Fatalf("ACK/控制帧不应触发 hook，实际触发 %d 次", hookCalls)
+	}
+	mu.Unlock()
+
+	// 首见的 Retransmit 可能是首发帧在 relay 前丢失后的合法补发，也可能是伪造帧；两者都必须计量。
+	state.onFrame(context.Background(), &network.Frame{
+		FrameType:    network.FrameTypeRetransmit,
+		ConnectionId: "conn-retransmit",
+		MessageId:    1,
+		TotalFrames:  1,
+		Payload:      make([]byte, 1000),
+	}, "test")
+	mu.Lock()
+	if hookCalls != 1 || lastStats == nil || lastStats.TotalBytes != 1000 {
+		mu.Unlock()
+		t.Fatalf("首见 Retransmit 应按 1000B 计量，calls=%d stats=%v", hookCalls, lastStats)
 	}
 	mu.Unlock()
 
@@ -187,8 +202,8 @@ func TestForwardHookCountsPayloadOnly(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if hookCalls != 1 {
-		t.Fatalf("期望数据帧触发 1 次，实际 %d 次", hookCalls)
+	if hookCalls != 2 {
+		t.Fatalf("期望数据帧额外触发 1 次，实际总次数 %d", hookCalls)
 	}
 	// 累计应为 2*60=120（纯净荷，不含帧头；若含头会是 120+2*39）。
 	if lastStats == nil || lastStats.TotalBytes != 120 {
@@ -196,5 +211,128 @@ func TestForwardHookCountsPayloadOnly(t *testing.T) {
 	}
 	if lastStats.TotalFrames != 2 {
 		t.Fatalf("应只计 2 个数据帧，实际 %d", lastStats.TotalFrames)
+	}
+}
+
+func TestForwardHookRetransmitDedupeRequiresExactRecentFrame(t *testing.T) {
+	var totalBytes int64
+	config := &ForwardHookConfig{
+		ThresholdBytes: 1,
+		Hook: func(ctx context.Context, stats *ForwardStats) error {
+			totalBytes += stats.TotalBytes
+			return nil
+		},
+	}
+	state := newForwardHookState(config, "server-1")
+	original := &network.Frame{
+		FrameType:    network.FrameTypeData,
+		ConnectionId: "conn-1",
+		MessageId:    7,
+		SeqId:        3,
+		TotalFrames:  4,
+		Payload:      []byte("original"),
+	}
+	if !state.onFrame(context.Background(), original, "relay_to_clients") {
+		t.Fatal("首发帧应继续转发")
+	}
+
+	repeated := *original
+	repeated.FrameType = network.FrameTypeRetransmit
+	if !state.onFrame(context.Background(), &repeated, "relay_to_clients") {
+		t.Fatal("真实重传应继续转发")
+	}
+	if totalBytes != int64(len(original.Payload)) {
+		t.Fatalf("真实重复帧不应重复计量，实际=%d", totalBytes)
+	}
+
+	forged := repeated
+	forged.Payload = []byte("forged")
+	if !state.onFrame(context.Background(), &forged, "relay_to_clients") {
+		t.Fatal("伪造 retransmit 仍应转发并被计量")
+	}
+	wantAfterForged := int64(len(original.Payload) + len(forged.Payload))
+	if totalBytes != wantAfterForged {
+		t.Fatalf("载荷不同的 retransmit 必须计量，实际=%d 期望=%d", totalBytes, wantAfterForged)
+	}
+
+	for repeatIndex := 1; repeatIndex < retransmitCacheMaxFreeRepeats; repeatIndex++ {
+		if !state.onFrame(context.Background(), &repeated, "relay_to_clients") {
+			t.Fatal("协议上限内的真实重传应继续转发")
+		}
+	}
+	if totalBytes != wantAfterForged {
+		t.Fatalf("最多 6 次真实重传不应重复计量，实际=%d", totalBytes)
+	}
+	if !state.onFrame(context.Background(), &repeated, "relay_to_clients") {
+		t.Fatal("超过免费次数的重传应继续转发")
+	}
+	wantAfterLimit := wantAfterForged + int64(len(original.Payload))
+	if totalBytes != wantAfterLimit {
+		t.Fatalf("超过免费次数的重传应重新计量，实际=%d 期望=%d", totalBytes, wantAfterLimit)
+	}
+
+	ackRanges := network.FullAckRange(original.TotalFrames)
+	config.ensureRetransmitCache().acknowledge(
+		"server-1", original.ConnectionId, original.MessageId, original.TotalFrames, ackRanges,
+	)
+	if !state.onFrame(context.Background(), &repeated, "relay_to_clients") {
+		t.Fatal("ACK 回收后的重传应继续转发")
+	}
+	if totalBytes != wantAfterLimit+int64(len(original.Payload)) {
+		t.Fatalf("ACK 回收后应重新计量，实际=%d", totalBytes)
+	}
+}
+
+func TestGlobalRetransmitCacheSharedAcrossStates(t *testing.T) {
+	config := &ForwardHookConfig{ThresholdBytes: 1, Hook: func(context.Context, *ForwardStats) error { return nil }}
+	serverStateA := newForwardHookState(config, "server-a")
+	serverStateB := newForwardHookState(config, "server-b")
+	frame := &network.Frame{
+		FrameType:    network.FrameTypeData,
+		ConnectionId: "conn-shared",
+		MessageId:    11,
+		TotalFrames:  1,
+		Payload:      []byte("payload"),
+	}
+	serverStateA.onFrame(context.Background(), frame, "relay_to_clients")
+	retransmit := *frame
+	retransmit.FrameType = network.FrameTypeRetransmit
+	serverStateA.onFrame(context.Background(), &retransmit, "relay_to_clients")
+	serverStateB.onFrame(context.Background(), &retransmit, "relay_to_clients")
+
+	stats := config.ensureRetransmitCache().snapshot()
+	if stats.Misses != 2 || stats.Hits != 1 || stats.Entries != 2 {
+		t.Fatalf("全局缓存应共享但按 NatServer 隔离，stats=%+v", stats)
+	}
+}
+
+func TestGlobalRetransmitCacheConcurrent(t *testing.T) {
+	cache := newGlobalRetransmitCache()
+	const workers = 16
+	const framesPerWorker = 200
+	var waitGroup sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		waitGroup.Add(1)
+		go func(worker int) {
+			defer waitGroup.Done()
+			for frameIndex := 0; frameIndex < framesPerWorker; frameIndex++ {
+				frame := &network.Frame{
+					FrameType:    network.FrameTypeData,
+					ConnectionId: "conn-concurrent",
+					MessageId:    uint64(worker*framesPerWorker + frameIndex),
+					TotalFrames:  1,
+					Payload:      []byte("payload"),
+				}
+				if !cache.recordFrame("server-concurrent", frame) {
+					t.Errorf("首见帧不应命中缓存 worker=%d frame=%d", worker, frameIndex)
+					return
+				}
+			}
+		}(worker)
+	}
+	waitGroup.Wait()
+	stats := cache.snapshot()
+	if stats.Misses != workers*framesPerWorker || stats.Entries != workers*framesPerWorker {
+		t.Fatalf("并发写入统计不符: %+v", stats)
 	}
 }

@@ -5,7 +5,7 @@
 //	-mode relay   -listen :9000 [-public IP:9000] [-peer IP2:9000[,IP3:9000]] [-key file]
 //	    启动一个公网中继节点（RelayNode）。
 //	    -listen  本地监听地址（如 0.0.0.0:9000）。
-//	    -public  对外可达地址（如 1.2.3.4:9000）；为空时回退用 -listen, 仅适合本机测试。
+//	    -public  对外可达地址（如 203.0.113.10:9000）；为空时回退用 -listen, 仅适合本机测试。
 //	    -peer    要主动建立控制链路的对端 relay 地址, 逗号分隔可填多个;
 //	             控制链路用于跨中继 FIND, 任一端发起即可（双向对称）。
 //	    每 5 秒打印一次状态: relay 邻居数 / 本地托管的 NAT 节点数。
@@ -65,6 +65,7 @@ import (
 	"syscall"
 	"time"
 
+	"bnfs_p2p/admissioncli"
 	"bnfs_p2p/logx"
 	"bnfs_p2p/p2pnode"
 	"bnfs_p2p/p2pnode/impl/natnode"
@@ -107,6 +108,8 @@ func main() {
 	connTimeout := flag.Int("connTimeout", 15, "连接/每轮接收的超时秒数 (connect 模式; 跨境多跳链路可调大)")
 	keyFile := flag.String("key", "", "私钥文件, 用同一身份再次上线")
 	logLevel := flag.String("log", "", "日志等级: debug|info|warn|error (默认: index 模式为 error 静音监控信息, 其余为 info)")
+	caURL := flag.String("ca", "", "独立 CA/indexServer Web 服务地址(如 http://IP:9000); 给了即启用网络准入+计费")
+	admissionMode := flag.String("admission", "", "准入强制级别: off|warn|enforce (默认: 给了 -ca 则 enforce, 否则 off)")
 	flag.Usage = printUsage
 	flag.Parse()
 
@@ -117,13 +120,13 @@ func main() {
 	switch *mode {
 	case "index":
 		// index 本质 = 无上级(无 -peer)的 RelayNode。
-		runRelay(*listen, *public, "", "", *keyFile)
+		runRelay(*listen, *public, "", "", *keyFile, *caURL, *admissionMode)
 	case "relay":
-		runRelay(*listen, *public, *peer, *index, *keyFile)
+		runRelay(*listen, *public, *peer, *index, *keyFile, *caURL, *admissionMode)
 	case "listen":
-		runListen(*relayAddr, *index, *keyFile)
+		runListen(*relayAddr, *index, *keyFile, *caURL)
 	case "connect":
-		runConnect(*relayAddr, *index, *target, *rounds, *msg, *keyFile, *connTimeout)
+		runConnect(*relayAddr, *index, *target, *rounds, *msg, *keyFile, *connTimeout, *caURL)
 	case "interactive":
 		runInteractive()
 	default:
@@ -153,14 +156,14 @@ func printUsage() {
   interactive  交互式控制台(默认)
 
 三机端到端示例(server1=index, server2=relay, server3=server/callee, 本机=client):
-  # server1 (38.0.0.1) 起 index
-  relaychat -mode index -listen 0.0.0.0:9000 -public 38.0.0.1:9000
-  # server2 (104.0.0.1) 起 relay 并注册到 index
-  relaychat -mode relay -listen 0.0.0.0:9000 -public 104.0.0.1:9000 -index 38.0.0.1:9000
-  # server3 (129.0.0.1) 起 callee, 经 index bootstrap(试 server2 不可达→回退 index), 记下 NodeID
-  relaychat -mode listen -index 38.0.0.1:9000
+  # server1 (203.0.113.10) 起 index
+  relaychat -mode index -listen 0.0.0.0:9000 -public 203.0.113.10:9000
+  # server2 (203.0.113.10) 起 relay 并注册到 index
+  relaychat -mode relay -listen 0.0.0.0:9000 -public 203.0.113.10:9000 -index 203.0.113.10:9000
+  # server3 (203.0.113.10) 起 callee, 经 index bootstrap(试 server2 不可达→回退 index), 记下 NodeID
+  relaychat -mode listen -index 203.0.113.10:9000
   # 本机 client 经 index bootstrap(命中 server2), 跨中继连接 callee, 3 轮通信
-  relaychat -mode connect -index 38.0.0.1:9000 -target <NodeID> -rounds 3 -msg hello
+  relaychat -mode connect -index 203.0.113.10:9000 -target <NodeID> -rounds 3 -msg hello
 
 flags:
 `)
@@ -179,7 +182,7 @@ func loadKey(path string) (*ecdh.PrivateKey, error) {
 
 // runRelay 启动一个公网中继节点并维持到各对端 relay 的控制链路（阻塞）。
 // index 非空时, 启动后向 index 注册成为其邻居（建可重试控制链路）。
-func runRelay(listen, public, peer, index, keyFile string) {
+func runRelay(listen, public, peer, index, keyFile, caURL, admissionMode string) {
 	privKey, err := loadKey(keyFile)
 	if err != nil {
 		fmt.Printf("加载私钥失败: %v\n", err)
@@ -192,6 +195,13 @@ func runRelay(listen, public, peer, index, keyFile string) {
 	}
 	fmt.Printf("RelayNode ID: %s\n", rn.ID())
 	fmt.Printf("监听: %s  对外地址: %s\n", listen, rn.Addr())
+
+	// 网络准入 + 计费（-ca 给了才启用）：拉 CA 公钥 + 申请 relay 证书 + SetAdmission。
+	// 必须在 Start/ConnectPeer 之前。
+	if err := admissioncli.SetupRelay(rn, caURL, admissionMode); err != nil {
+		fmt.Printf("启用网络准入失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	if index != "" {
 		fmt.Printf("正在向 index 注册(只需地址, 其 ID 将自动获知): %s\n", index)
@@ -246,7 +256,7 @@ func runRelay(listen, public, peer, index, keyFile string) {
 
 // runListen 启动一个 NAT 节点, 注册到 relay, 对每条消息回显。
 // index 非空时先经 index bootstrap 就近选定入口 relay（不可达回退次近/index）; 否则直连 relayAddr。
-func runListen(relayAddr, index, keyFile string) {
+func runListen(relayAddr, index, keyFile, caURL string) {
 	privKey, err := loadKey(keyFile)
 	if err != nil {
 		fmt.Printf("加载私钥失败: %v\n", err)
@@ -262,6 +272,12 @@ func runListen(relayAddr, index, keyFile string) {
 		os.Exit(1)
 	}
 	defer node.Close()
+
+	// listen = server 角色：申请 server 证书并注入（-ca 给了才做）。
+	if err := admissioncli.SetupNat(node, caURL, admissioncli.RoleServer()); err != nil {
+		fmt.Printf("申请 indexSign 失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -320,7 +336,7 @@ func echoLoop(ctx context.Context, conn p2pnode.Connection) {
 
 // runConnect 启动一个 NAT 节点, 注册到 relay, 连接 target 并发起 N 轮请求/响应通信。
 // index 非空时先经 index bootstrap 就近选定入口 relay; 否则直连 relayAddr。
-func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile string, connectTimeoutSec int) {
+func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile string, connectTimeoutSec int, caURL string) {
 	if len(target) != 64 {
 		fmt.Printf("无效的 target NodeID 长度: %d (应为64位hex)\n", len(target))
 		os.Exit(1)
@@ -340,6 +356,12 @@ func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile 
 		os.Exit(1)
 	}
 	defer node.Close()
+
+	// connect = client 角色：申请 client 证书并注入（-ca 给了才做）。
+	if err := admissioncli.SetupNat(node, caURL, admissioncli.RoleClient()); err != nil {
+		fmt.Printf("申请 indexSign 失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -441,7 +463,7 @@ func runInteractive() {
 			if len(fields) > 2 {
 				peer = fields[2]
 			}
-			runRelay(listen, "", peer, "", "")
+			runRelay(listen, "", peer, "", "", "", "")
 		case "node":
 			addr := "127.0.0.1:9000"
 			if len(fields) > 1 {

@@ -1,0 +1,14 @@
+已申请 indexSign: CA=http://129.28.42.247:9000 role=client
+=== Tunnel Client ===
+本节点 ID: 2ea4771177901cbe5ce4ecde002a29da280fabb6ad8c948b8138509746062540
+目标节点:  5758b6b0b4191698101b33f134674a4a9db4769b7166c21d4ecb5958c97afdd9
+2026/07/12 12:02:34 [INFO] [natnode] index 129.28.42.247:9010 返回 2 个 relay
+2026/07/12 12:02:35 [INFO] [relay-select] candidates=2 selected=cb235cf8780338c1 addr=193.112.62.9:9000 role=sub-relay rtt=89.328159ms band=0 stable=45.186075462s reason=best-band,longest-stable
+2026/07/12 12:02:35 [INFO] [natnode] 选定就近可达的子 relay 作为入口: 193.112.62.9:9000
+注册到 relay: 193.112.62.9:9000
+正在连接目标节点 ...
+已建立隧道连接。
+
+本地监听: 127.0.0.1:18881
+在浏览器打开: http://127.0.0.1:18881
+按 Ctrl+C 退出。

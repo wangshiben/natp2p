@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"sort"
 	"time"
 )
@@ -19,15 +20,16 @@ const (
 	// relayQueryTimeout 是向 index 拉取 relay 列表的整体超时。
 	relayQueryTimeout = 5 * time.Second
 	// relayProbeTimeout 是探测某个 relay 是否可达（TCP 连得上）的单次超时。
-	relayProbeTimeout = 3 * time.Second
+	relayProbeTimeout = 1500 * time.Millisecond
 )
 
-// Bootstrap 让 NAT 节点在上线前先向 index 询问已知 relay, 按「就近优先 + 不可达回退」选定入口 relay。
+// Bootstrap 让 NAT 节点在上线前先向 index 询问已知 relay, 按「RTT 档位 + 稳定时间」选定入口 relay。
 //
 // 流程（对应需求 2）:
 //  1. 向 indexAddr 发一次性查询, 取回 index 已知的 relay 列表（含 index 自身作为兜底）。
-//  2. 在「子 relay」（即非 index 自身的 relay）里按 XOR 距离升序逐个探测可达性,
-//     首个连得上的即入口 relay —— 这实现「最近不可达则切次近」。
+//  2. 并发探测「子 relay」（即非 index 自身的 relay）的 TCP connect RTT；实地验证时可通过
+//     BNFS_RELAY_INCLUDE_INDEX=1 让 index 也参与相同质量排名。
+//     先选最低 RTT 档，再在同档中优先 Index 观察到的连续在线时间最长者。
 //  3. 若没有可达的子 relay（或 index 没有任何子 relay）, 回退到 index 自身作为入口
 //     （即把本节点直接注册为 index 的 NAT 节点）。
 //  4. 把选定的入口 relay 设为本节点唯一入口（entryRelays）, 返回其地址。
@@ -43,14 +45,48 @@ func (n *NATNode) Bootstrap(ctx context.Context, indexAddr string) (string, erro
 	}
 	logx.Infof("[natnode] index %s 返回 %d 个 relay", indexAddr, len(relays))
 
-	entry, viaSubRelay := selectEntryRelay(n.ID(), indexAddr, relays, probeRelayReachable)
+	entry := indexAddr
+	viaSubRelay := false
+	selectedIndex := false
+	if os.Getenv("BNFS_RELAY_SELECTION_POLICY") == "xor" {
+		entry, viaSubRelay = selectEntryRelay(n.ID(), indexAddr, relays, probeRelayReachable)
+	} else {
+		selectionCtx, cancel := context.WithTimeout(ctx, relayQueryTimeout)
+		selector := newRelaySelector()
+		selector.includeIndex = envEnabled("BNFS_RELAY_INCLUDE_INDEX")
+		selection := selector.Select(selectionCtx, n.ID(), indexAddr, relays)
+		cancel()
+		entry = selection.Address
+		selectedIndex = selection.SelectedIndex
+		viaSubRelay = !selection.Fallback && !selection.SelectedIndex
+		if !selection.Fallback {
+			role := "sub-relay"
+			if selection.SelectedIndex {
+				role = "index"
+			}
+			logx.Infof("[relay-select] candidates=%d selected=%.16s addr=%s role=%s rtt=%s band=%d stable=%s reason=best-band,longest-stable",
+				selection.Eligible, selection.NodeID, selection.Address, role, selection.RTT, selection.RTTBand, selection.StableAge)
+		}
+		if selectedIndex {
+			logx.Infof("[natnode] Index 参与质量排名并胜出，选作入口: %s", entry)
+		}
+	}
 	if viaSubRelay {
 		logx.Infof("[natnode] 选定就近可达的子 relay 作为入口: %s", entry)
-	} else {
+	} else if !selectedIndex {
 		logx.Infof("[natnode] 无可达子 relay, 回退注册到 index: %s", entry)
 	}
 	n.setSoleEntryRelay(entry)
 	return entry, nil
+}
+
+func envEnabled(name string) bool {
+	switch os.Getenv(name) {
+	case "1", "true", "TRUE", "yes", "YES", "on", "ON":
+		return true
+	default:
+		return false
+	}
 }
 
 // queryIndexRelays 向 index 发起一次性 RelayQueryRoute 查询, 取回其已知 relay 列表。

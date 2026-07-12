@@ -1,5 +1,7 @@
 package interfaces
 
+import "time"
+
 type Buket interface {
 	AddNode(node Node) // 添加节点/更新节点
 	MaxSize() int      // 当前最大节点数
@@ -9,6 +11,11 @@ type Buket interface {
 	Tail() Node           // 获取尾节点
 	Head() Node           // 获取头节点
 	UpdateLastSeen(NodeId string)
+	Touch(NodeId string, at time.Time) bool
+	SetNodeHealth(NodeId string, health NodeHealth) bool
+	NodeHealth(NodeId string) (NodeHealth, bool)
+	RankedNodes(policy NodeRankingPolicy) []Node
+	Maintain(policy DHTMaintenancePolicy) MaintenanceResult
 }
 
 type ReplacementCache interface {

@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"bnfs_p2p/admissioncli"
 	"bnfs_p2p/cmd/tunnel/mux"
 	"bnfs_p2p/logx"
 	"bnfs_p2p/p2pnode"
@@ -37,6 +38,7 @@ func main() {
 	relayAddr := flag.String("relay", "", "pin to a specific relay address (skip auto-select); use the same value on client")
 	target := flag.String("target", "127.0.0.1:5173", "local TCP address to forward traffic to")
 	keyFile := flag.String("key", "", "optional private key file to keep a stable NodeID")
+	caURL := flag.String("ca", "", "CA/indexServer web 地址; 给了即带 server 角色 indexSign 注册(计费对象)")
 	flag.Parse()
 
 	logx.SetLevel(logx.LevelInfo)
@@ -56,6 +58,11 @@ func main() {
 	node, err := natnode.NewNATNode(privKey, bootstrapAddr)
 	if err != nil {
 		log.Fatalf("创建节点失败: %v", err)
+	}
+
+	// tunnel server = server 角色（计费对象）：申请 server 证书并注入。-ca 为空则不启用。
+	if err := admissioncli.SetupNat(node, *caURL, admissioncli.RoleServer()); err != nil {
+		log.Fatalf("申请 indexSign 失败: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

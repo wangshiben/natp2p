@@ -44,10 +44,10 @@ const (
 	// app-ACK 晚一个 RTO，故绝不能用「单条 ping 的 ACK 是否准时」判死（会把抖动误判成断链）。
 	// 改为：距上次收到对端【任意帧】静默超过 keepAliveIdleBaseline 才开始主动探测；探测按指数退避，
 	// 连续 keepAliveMaxProbes 次都收不到任何回帧才判死。期间收到任意入站帧立即判活、退避清零。
-	keepAliveIdleBaseline = 3 * time.Second  // 静默多久后开始主动探测
-	keepAliveProbeBase    = 1 * time.Second  // 首次探测后的等待，其后每次翻倍(1,2,4,8,16,32)
-	keepAliveMaxProbes    = 6                // 连续这么多次探测无任何回帧才判死
-	keepAliveProbeTimeout = 3 * time.Second  // 单个探测 SendMessage 的发送预算（仅发，不据其超时判死）
+	keepAliveIdleBaseline = 3 * time.Second // 静默多久后开始主动探测
+	keepAliveProbeBase    = 1 * time.Second // 首次探测后的等待，其后每次翻倍(1,2,4,8,16,32)
+	keepAliveMaxProbes    = 6               // 连续这么多次探测无任何回帧才判死
+	keepAliveProbeTimeout = 3 * time.Second // 单个探测 SendMessage 的发送预算（仅发，不据其超时判死）
 )
 
 const KeepAliveRoute = "/ping"
@@ -75,9 +75,9 @@ type TcpStream struct {
 	// 原子 Load/Store 既消除字段本身的竞争，又建立 happens-before —— 保证读到的 EncrypSuite
 	// 是「构造完成」的（否则 readLoop 可能读到 NewTLSCrypto 尚未初始化完的 aesGCMEncryptKey）。
 	// 经 getCrypto/setCrypto 访问，禁止直接读写。
-	crypto       atomic.Pointer[network.EncrypSuite]
-	frameIdGen   network.FrameIdGenerator
-	assembler    *network.FrameAssembler
+	crypto     atomic.Pointer[network.EncrypSuite]
+	frameIdGen network.FrameIdGenerator
+	assembler  *network.FrameAssembler
 
 	streamCtx    context.Context
 	streamCancel context.CancelFunc
@@ -140,6 +140,10 @@ type TcpStream struct {
 	// 是否准时回来」彻底解耦。区别于 recvTracker.lastFrameTime（那是 per-message、只覆盖
 	// 数据帧、组包完即删）。见 KCP_DEBUG/README.md 方案A。
 	lastRecvMicros atomic.Int64
+
+	testAckDelay       time.Duration
+	testDataFrameDelay time.Duration
+	testLogRetransmit  bool
 }
 
 // startTcpStream 在已经建好的连接上开 readLoop 与 recvAckTimer，
@@ -177,6 +181,9 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		e2eDelivered:        make(map[string]struct{}),
 		frameSizeAdaptor:    adaptor,
 		frameSizeChangeAcks: make(map[int]chan bool),
+		testAckDelay:        testDurationFromEnv("BNFS_TEST_ACK_DELAY"),
+		testDataFrameDelay:  testDurationFromEnv("BNFS_TEST_DATA_FRAME_DELAY"),
+		testLogRetransmit:   testBoolFromEnv("BNFS_TEST_LOG_RETRANSMIT"),
 	}
 	// 身份字段经原子指针存储（见字段注释），构造期串行设置，之后任何并发读写都走原子。
 	t.setNodeId(nodeId)
@@ -202,6 +209,27 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 // BNFS_FRAME_FOLLOWER ∈ {1,true,yes} 时为 true：本进程任何流都不主动发起帧大小变更。
 func frameSizeFollowerProcess() bool {
 	switch os.Getenv("BNFS_FRAME_FOLLOWER") {
+	case "1", "true", "yes", "TRUE", "YES":
+		return true
+	default:
+		return false
+	}
+}
+
+func testDurationFromEnv(name string) time.Duration {
+	value := os.Getenv(name)
+	if value == "" {
+		return 0
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration < 0 {
+		return 0
+	}
+	return duration
+}
+
+func testBoolFromEnv(name string) bool {
+	switch os.Getenv(name) {
 	case "1", "true", "yes", "TRUE", "YES":
 		return true
 	default:
@@ -380,11 +408,12 @@ func (t *TcpStream) SetIdentity(nodeId, connectionId string) {
 // 任何回帧」才 failAndClose，交由 DualStream.handleLegFailure→scheduleReconnect 走既有重连。
 //
 // 状态机（判活以 lastRecvMicros 是否被刷新为准，与本次探测 ACK 是否准时无关）：
-//   非探测态：每 keepAliveIdleBaseline 轮询；若期间收到过帧（lastRecv 距今 < 基线）则继续等；
-//             静默超基线 → 进入探测态。
-//   探测态：记录探测前的 lastRecv 快照 → 发探测 ping → 等 backoff(1,2,4,8,16,32s) →
-//           若 lastRecv 被刷新（收到任意帧）→ 判活、退出探测态、退避清零；
-//           否则 probeCount++；连续 keepAliveMaxProbes 次都没刷新 → 判死。
+//
+//	非探测态：每 keepAliveIdleBaseline 轮询；若期间收到过帧（lastRecv 距今 < 基线）则继续等；
+//	          静默超基线 → 进入探测态。
+//	探测态：记录探测前的 lastRecv 快照 → 发探测 ping → 等 backoff(1,2,4,8,16,32s) →
+//	        若 lastRecv 被刷新（收到任意帧）→ 判活、退出探测态、退避清零；
+//	        否则 probeCount++；连续 keepAliveMaxProbes 次都没刷新 → 判死。
 func (t *TcpStream) keepLive() {
 	connType := "TCP"
 	if t.connection != nil && t.connection.RemoteAddr().Network() != "tcp" {
@@ -660,6 +689,14 @@ func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *netwo
 			cp.FrameType = network.FrameTypeRetransmit
 			retrans = append(retrans, &cp)
 		}
+		if t.testLogRetransmit {
+			var retransmitBytes int
+			for _, frame := range retrans {
+				retransmitBytes += len(frame.Payload)
+			}
+			logx.Infof("[retransmit-test] node=%.16s conn=%s frames=%d bytes=%d attempt=%d",
+				t.getNodeId(), t.getConnectionId(), len(retrans), retransmitBytes, attempt+1)
+		}
 		if err := t.writeFrames(retrans); err != nil {
 			return err
 		}
@@ -747,6 +784,27 @@ func (t *TcpStream) writeFrames(frames []*network.Frame) error {
 	if len(frames) == 0 {
 		return nil
 	}
+	if t.testDataFrameDelay > 0 {
+		totalBytes := 0
+		for _, frame := range frames {
+			serialized, err := frame.ParseToBytes()
+			if err != nil {
+				return err
+			}
+			if _, err := t.connection.Write(serialized); err != nil {
+				t.failAndClose(err)
+				return err
+			}
+			totalBytes += len(serialized)
+			if frame.FrameType == network.FrameTypeData || frame.FrameType == network.FrameTypeRetransmit {
+				time.Sleep(t.testDataFrameDelay)
+			}
+		}
+		if t.frameSizeAdaptor != nil {
+			t.frameSizeAdaptor.RecordBytesSent(totalBytes)
+		}
+		return nil
+	}
 
 	// 预估总大小
 	totalSize := 0
@@ -783,6 +841,9 @@ func (t *TcpStream) writeFrame(f *network.Frame) error {
 	}
 	t.sendLock.Lock()
 	defer t.sendLock.Unlock()
+	if f.FrameType == network.FrameTypeAck && t.testAckDelay > 0 {
+		time.Sleep(t.testAckDelay)
+	}
 	if _, err := t.connection.Write(bs); err != nil {
 		t.failAndClose(err)
 		return err
@@ -1203,6 +1264,7 @@ func (t *TcpStream) seenOrRecordE2EMessage(messageID []byte) bool {
 	}
 	return false
 }
+
 // 这些方法添加到 TcpStream 中
 
 // =============================================================================

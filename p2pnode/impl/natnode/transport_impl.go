@@ -10,11 +10,19 @@ import (
 // NATTransport 实现 p2pnode.Transport，委托给 networkFrameWork 的拨号/注册函数。
 type NATTransport struct {
 	pubKeyHex string
+	// signJSON 是本节点持有的 CA 签发准入证书(indexSign, admission.SignedCert JSON)，可空。
+	// 注册时随注册消息携带, relay 离线验签并据证书 Role 区分 client/server。空则走裸公钥(无准入)。
+	signJSON []byte
 }
 
 // NewNATTransport 创建使用指定公钥 hex 进行 relay 通信的 Transport。
 func NewNATTransport(pubKeyHex string) *NATTransport {
 	return &NATTransport{pubKeyHex: pubKeyHex}
+}
+
+// SetIndexSign 设置注册时携带的准入证书(indexSign) JSON。空则不携带（无准入）。
+func (t *NATTransport) SetIndexSign(signJSON []byte) {
+	t.signJSON = signJSON
 }
 
 // Register 将本节点注册为 relay 可达目标（dual: KCP + TCP 双 leg）。
@@ -23,7 +31,8 @@ func NewNATTransport(pubKeyHex string) *NATTransport {
 // leg」规避双 leg 在 relayStream / 桥接 active 字段上的 failover 竞态
 // （见 relaynode.findAndBridge 的 KCP 优先建桥逻辑）。
 func (t *NATTransport) Register(ctx context.Context, relayAddr string, publicKeyHex string) (network.Stream, error) {
-	return networkFrameWork.TryRegisterRelayStream(publicKeyHex, relayAddr)
+	// 带 indexSign 注册（signJSON 为空时等价于裸公钥注册，与旧行为逐字节一致）。
+	return networkFrameWork.TryRegisterRelayStreamWithSign(publicKeyHex, relayAddr, t.signJSON)
 }
 
 // Dial 经指定 relay 连接到目标节点（dual: KCP + TCP 双 leg）。

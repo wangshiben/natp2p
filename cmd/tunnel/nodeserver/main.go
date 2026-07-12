@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"bnfs_p2p/admissioncli"
 	"bnfs_p2p/logx"
 	"bnfs_p2p/p2pnode/impl/relaynode"
 )
@@ -29,6 +30,8 @@ func main() {
 	public := flag.String("public", "", "public address (relay only, auto-inferred if empty)")
 	indexAddr := flag.String("index", "", "index address to register to (relay only)")
 	bridgeWidth := flag.Int("bridge-width", 0, "cross-relay striping width: 0=auto(throughput-driven), 1=off, >1=force M legs")
+	caURL := flag.String("ca", "", "CA/indexServer web 地址(如 http://IP:9000); 给了即启用网络准入+计费")
+	admissionMode := flag.String("admission", "", "准入级别: off|warn|enforce (默认: 有 -ca 则 enforce)")
 	flag.Parse()
 
 	logx.SetLevel(logx.LevelInfo)
@@ -41,6 +44,12 @@ func main() {
 	if *bridgeWidth > 0 {
 		rn.SetBridgeWidth(*bridgeWidth)
 		fmt.Printf("跨中继条带化宽度(强制): %d\n", *bridgeWidth)
+	}
+
+	// 网络准入 + 计费（-ca 给了才启用；index 与 relay 都需持 relay 角色证书）。
+	if err := admissioncli.SetupRelay(rn, *caURL, *admissionMode); err != nil {
+		fmt.Printf("启用网络准入失败: %v\n", err)
+		os.Exit(1)
 	}
 
 	fmt.Printf("=== Node Server (%s) ===\n", *mode)

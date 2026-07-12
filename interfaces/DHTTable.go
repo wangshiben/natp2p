@@ -1,6 +1,49 @@
 package interfaces
 
-import "math/big"
+import (
+	"math/big"
+	"time"
+)
+
+// NodeHealth 是路由表条目自己的健康状态，不写回可被多张表共享的 Node 对象。
+type NodeHealth struct {
+	RTT                    time.Duration
+	ContinuousHealthySince time.Time
+	LastSuccess            time.Time
+	ConsecutiveFailures    uint8
+	Suspect                bool
+}
+
+// NodeRankingPolicy 控制只读网络质量视图。真实桶顺序仍保持 LRU。
+type NodeRankingPolicy struct {
+	Now          time.Time
+	RTTBandMin   time.Duration
+	RTTBandRatio float64
+}
+
+type MaintenanceAction uint8
+
+const (
+	MaintenanceNone MaintenanceAction = iota
+	MaintenanceTouched
+	MaintenanceSuspect
+	MaintenanceRemoved
+)
+
+// DHTMaintenancePolicy 定义一次只检查桶头的陈旧节点维护。
+type DHTMaintenancePolicy struct {
+	Now                 time.Time
+	StaleAfter          time.Duration
+	RemoveAfterFailures uint8
+	Probe               func(Node) bool
+}
+
+type MaintenanceResult struct {
+	NodeID            string
+	ReplacementNodeID string
+	Failures          uint8
+	Action            MaintenanceAction
+}
 
 // KBucket K 桶接口，包含距离范围信息
 type KBucket interface {
@@ -24,6 +67,11 @@ type KBucket interface {
 	Tail() Node
 	Head() Node
 	UpdateLastSeen(nodeId string)
+	Touch(nodeId string, at time.Time) bool
+	SetNodeHealth(nodeId string, health NodeHealth) bool
+	NodeHealth(nodeId string) (NodeHealth, bool)
+	RankedNodes(policy NodeRankingPolicy) []Node
+	Maintain(policy DHTMaintenancePolicy) MaintenanceResult
 
 	// 检查节点是否在当前桶的距离范围内
 	ContainsNode(nodeId string) bool
@@ -52,6 +100,11 @@ type DHTTable interface {
 
 	// 更新节点最后活跃时间
 	UpdateLastSeen(nodeId string)
+	Touch(nodeId string, at time.Time) bool
+	SetNodeHealth(nodeId string, health NodeHealth) bool
+	NodeHealth(nodeId string) (NodeHealth, bool)
+	RankedNodes(policy NodeRankingPolicy) []Node
+	Maintain(policy DHTMaintenancePolicy) []MaintenanceResult
 
 	// 清空路由表
 	Clear()
