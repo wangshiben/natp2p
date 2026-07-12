@@ -1,0 +1,3 @@
+SIZE=5242880 ELAPSED_MS=140192 SOURCE_SHA256=edb116c8fea8abd6aea476b401430783d913267beea3b3821e44f9652cb32779 RECEIVED_SHA256=edb116c8fea8abd6aea476b401430783d913267beea3b3821e44f9652cb32779
+SERVER_SELECTION=2026/07/12 11:53:34 [INFO] [relay-select] candidates=2 selected=243413edaccc6cf2 addr=193.112.62.9:9000 role=sub-relay rtt=43.95885ms band=0 stable=40.772084093s reason=best-band,longest-stable
+CLIENT_SELECTION=2026/07/12 11:53:35 [INFO] [relay-select] candidates=2 selected=243413edaccc6cf2 addr=193.112.62.9:9000 role=sub-relay rtt=47.377691ms band=0 stable=41.138247858s reason=best-band,longest-stable

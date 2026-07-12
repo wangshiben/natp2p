@@ -24,6 +24,11 @@ const Route = "/relay/query"
 type Info struct {
 	NodeID string `json:"node_id"` // relay 的 NodeId (64 hex)
 	Addr   string `json:"addr"`    // relay 的公网业务地址 (host:port)
+
+	ContinuousOnlineSince int64  `json:"continuous_online_since,omitempty"`
+	LastControlSeen       int64  `json:"last_control_seen,omitempty"`
+	CapacityClass         string `json:"capacity_class,omitempty"`
+	LoadPermille          uint16 `json:"load_permille,omitempty"`
 }
 
 // ListResp 是 index 对查询请求的应答: 它已知的 relay 列表。

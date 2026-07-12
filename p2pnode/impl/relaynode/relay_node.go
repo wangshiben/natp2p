@@ -63,11 +63,14 @@ type RelayNode struct {
 
 	starter *networkFrameWork.RelayStarter
 
-	mu             sync.RWMutex
-	peerLinks      map[string]*peerLink // 主动维持的控制链路, key = 对端 relay 拨号地址
-	inboundLinks   []*peerLink          // 对端拨入并被本端接管的控制链路
-	peerIDToAddr   map[string]string    // relay NodeId -> 业务地址
-	relayAddrIndex map[p2pnode.NodeID][]string
+	mu                   sync.RWMutex
+	peerLinks            map[string]*peerLink // 主动维持的控制链路, key = 对端 relay 拨号地址
+	inboundLinks         []*peerLink          // 对端拨入并被本端接管的控制链路
+	peerIDToAddr         map[string]string    // relay NodeId -> 业务地址
+	relayAddrIndex       map[p2pnode.NodeID][]string
+	relayOnlineSince     map[string]time.Time
+	relayLastControlSeen map[string]time.Time
+	relayActiveLinks     map[string]int
 	// hostedNatAddr 记录本 relay 托管的每个 NAT 节点的来源地址（其底层连接远端 IP:port）,
 	// 用于状态打印 / 排障, 判断"托管NAT节点"里每个节点的托管来源。
 	hostedNatAddr map[string]string // NAT 节点 NodeId -> 远端地址
@@ -119,6 +122,7 @@ type RelayNode struct {
 	indexAddr         string
 	onIndexRegistered func(indexID, indexAddr string)
 	indexAckedOnce    sync.Once
+	startedAt         time.Time
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -184,19 +188,23 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 
 	ctx, cancel := context.WithCancel(context.Background())
 	n := &RelayNode{
-		identity:       identity,
-		privKey:        privKey,
-		addr:           publicAddr,
-		natNodes:       natNodes,
-		relayNodes:     relayNodes,
-		starter:        networkFrameWork.NewRelayStarter(listenAddr),
-		peerLinks:      make(map[string]*peerLink),
-		peerIDToAddr:   make(map[string]string),
-		relayAddrIndex: make(map[p2pnode.NodeID][]string),
-		pendingFinds:   make(map[uint64]*pendingFind),
-		hostedNatAddr:  make(map[string]string),
-		ctx:            ctx,
-		cancel:         cancel,
+		identity:             identity,
+		privKey:              privKey,
+		addr:                 publicAddr,
+		natNodes:             natNodes,
+		relayNodes:           relayNodes,
+		starter:              networkFrameWork.NewRelayStarter(listenAddr),
+		peerLinks:            make(map[string]*peerLink),
+		peerIDToAddr:         make(map[string]string),
+		relayAddrIndex:       make(map[p2pnode.NodeID][]string),
+		relayOnlineSince:     make(map[string]time.Time),
+		relayLastControlSeen: make(map[string]time.Time),
+		relayActiveLinks:     make(map[string]int),
+		pendingFinds:         make(map[uint64]*pendingFind),
+		hostedNatAddr:        make(map[string]string),
+		ctx:                  ctx,
+		cancel:               cancel,
+		startedAt:            time.Now(),
 	}
 
 	n.localLegs = make(map[string]*localBridgeEntry)
@@ -375,13 +383,32 @@ func (n *RelayNode) onPeerHello(peerID, peerAddr, dialAddr string) {
 	if peerID == "" || peerID == n.idStr() {
 		return
 	}
+	var replacedPeerIDs []string
 	n.mu.Lock()
+	if peerAddr != "" {
+		for knownPeerID, knownAddr := range n.peerIDToAddr {
+			if knownPeerID == peerID || knownAddr != peerAddr {
+				continue
+			}
+			replacedPeerIDs = append(replacedPeerIDs, knownPeerID)
+			delete(n.peerIDToAddr, knownPeerID)
+			delete(n.relayAddrIndex, p2pnode.NodeID(knownPeerID))
+			delete(n.relayOnlineSince, knownPeerID)
+			delete(n.relayLastControlSeen, knownPeerID)
+			delete(n.relayActiveLinks, knownPeerID)
+		}
+	}
 	n.peerIDToAddr[peerID] = peerAddr
 	n.relayAddrIndex[p2pnode.NodeID(peerID)] = []string{peerAddr}
 	isIndexLink := dialAddr != "" && dialAddr == n.indexAddr
 	cb := n.onIndexRegistered
 	n.mu.Unlock()
+	for _, replacedPeerID := range replacedPeerIDs {
+		n.relayNodes.Remove(replacedPeerID)
+		logx.Infof("[relaynode] Relay 地址身份已更新: addr=%s old=%.16s new=%.16s", peerAddr, replacedPeerID, peerID)
+	}
 	n.relayNodes.AddNode(DHTable.NewNodeFromPeerID(peerID))
+	n.relayNodes.Touch(peerID, time.Now())
 	logx.Infof("[relaynode] 登记对端 relay: id=%.16s addr=%s", peerID, peerAddr)
 
 	// 这条链路就是注册到 index 的那条：index 的真实 NodeID 现已自动获知, 回调确认一次。
@@ -553,14 +580,22 @@ func (n *RelayNode) collectStripedLeg(st *networkFrameWork.MuxStream) {
 func (n *RelayNode) answerRelayQuery(stream network.Stream, firstMsg *network.Message) error {
 	resp := &relayquery.ListResp{}
 	// 本节点自身作为首个候选（最终回退目标）。
-	resp.Relays = append(resp.Relays, relayquery.Info{NodeID: n.idStr(), Addr: n.getAddr()})
+	resp.Relays = append(resp.Relays, relayquery.Info{
+		NodeID:                n.idStr(),
+		Addr:                  n.getAddr(),
+		ContinuousOnlineSince: n.startedAt.Unix(),
+		LastControlSeen:       time.Now().Unix(),
+	})
 	// 已知的对端 relay 邻居（含地址）。
 	for _, p := range n.RelayNeighbors() {
 		addr := ""
 		if len(p.Addresses) > 0 {
 			addr = p.Addresses[0].Relay
 		}
-		resp.Relays = append(resp.Relays, relayquery.Info{NodeID: string(p.ID), Addr: addr})
+		info := n.relayPresence(string(p.ID))
+		info.NodeID = string(p.ID)
+		info.Addr = addr
+		resp.Relays = append(resp.Relays, info)
 	}
 
 	sc := client.NewStreamClient(stream)
@@ -571,6 +606,63 @@ func (n *RelayNode) answerRelayQuery(stream network.Stream, firstMsg *network.Me
 	logx.Infof("[relaynode] 应答 relay 列表查询: 返回 %d 个 relay", len(resp.Relays))
 	_ = stream.Close()
 	return nil
+}
+
+func (n *RelayNode) relayLinkUp(peerID string) {
+	if peerID == "" {
+		return
+	}
+	now := time.Now()
+	n.mu.Lock()
+	if n.relayActiveLinks[peerID] == 0 {
+		n.relayOnlineSince[peerID] = now
+	}
+	n.relayActiveLinks[peerID]++
+	n.relayLastControlSeen[peerID] = now
+	n.mu.Unlock()
+	n.relayNodes.Touch(peerID, now)
+}
+
+func (n *RelayNode) relayControlSeen(peerID string) {
+	if peerID == "" {
+		return
+	}
+	now := time.Now()
+	n.mu.Lock()
+	n.relayLastControlSeen[peerID] = now
+	n.mu.Unlock()
+	n.relayNodes.Touch(peerID, now)
+}
+
+func (n *RelayNode) relayLinkDown(peerID string) {
+	if peerID == "" {
+		return
+	}
+	n.mu.Lock()
+	if count := n.relayActiveLinks[peerID]; count > 1 {
+		n.relayActiveLinks[peerID] = count - 1
+	} else {
+		delete(n.relayActiveLinks, peerID)
+		n.relayLastControlSeen[peerID] = time.Now()
+	}
+	n.mu.Unlock()
+}
+
+func (n *RelayNode) relayPresence(peerID string) relayquery.Info {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	info := relayquery.Info{}
+	if since := n.relayOnlineSince[peerID]; !since.IsZero() {
+		info.ContinuousOnlineSince = since.Unix()
+	}
+	if n.relayActiveLinks[peerID] > 0 {
+		// 控制链路仍由 peerLink 持有时，以本次 Index 观察时间为准。底层 keepalive 在
+		// StreamClient 内被过滤，不会进入 control dispatch，不能让安静但健康的链路误过期。
+		info.LastControlSeen = time.Now().Unix()
+	} else if seen := n.relayLastControlSeen[peerID]; !seen.IsZero() {
+		info.LastControlSeen = seen.Unix()
+	}
+	return info
 }
 
 // acceptControlLink 接管对端 relay 拨入的控制链路。
@@ -848,7 +940,7 @@ func (n *RelayNode) ClosestPeers(target p2pnode.NodeID, k int) []p2pnode.PeerInf
 		result = append(result, p2pnode.PeerInfo{
 			ID:        id,
 			Addresses: idx[id],
-			LastSeen:  time.Unix(node.LastCalled(), 0),
+			LastSeen:  time.Unix(node.LastSeen(), 0),
 		})
 	}
 	return result
@@ -870,7 +962,7 @@ func (n *RelayNode) collect(table interfaces.DHTTable, addrIdx map[p2pnode.NodeI
 				continue
 			}
 			seen[id] = true
-			info := p2pnode.PeerInfo{ID: id, LastSeen: time.Unix(node.LastCalled(), 0)}
+			info := p2pnode.PeerInfo{ID: id, LastSeen: time.Unix(node.LastSeen(), 0)}
 			if addrIdx != nil {
 				info.Addresses = addrIdx[id]
 			}
@@ -898,21 +990,29 @@ func (n *RelayNode) relayAddrIndexSnapshot() map[p2pnode.NodeID][]p2pnode.PeerAd
 func (n *RelayNode) Close() error {
 	n.closeOnce.Do(func() {
 		n.cancel()
-		n.mu.Lock()
-		for _, pl := range n.peerLinks {
-			pl.close()
-		}
-		for _, pl := range n.inboundLinks {
-			pl.close()
-		}
-		n.peerLinks = nil
-		n.inboundLinks = nil
-		n.mu.Unlock()
+		n.closePeerLinks()
 		// 关闭跨中继连接池(Phase B)：closeBridgePools 内部自取 n.mu，必须在解锁后调用。
 		n.closeBridgePools()
 		n.starter.Close()
 	})
 	return nil
+}
+
+func (n *RelayNode) closePeerLinks() {
+	n.mu.Lock()
+	links := make([]*peerLink, 0, len(n.peerLinks)+len(n.inboundLinks))
+	for _, link := range n.peerLinks {
+		links = append(links, link)
+	}
+	links = append(links, n.inboundLinks...)
+	n.peerLinks = nil
+	n.inboundLinks = nil
+	n.mu.Unlock()
+
+	// peerLink.close 会回调 relayLinkDown 并获取 n.mu，必须在释放 n.mu 后执行。
+	for _, link := range links {
+		link.close()
+	}
 }
 
 // 确保 RelayNode 实现 p2pnode.Node 接口。

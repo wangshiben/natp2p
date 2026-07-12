@@ -32,10 +32,11 @@ type peerLink struct {
 	addr     string // 对端 relay 的拨号地址（仅 dial 侧已知；accept 侧为空直到 HELLO）
 	outbound bool   // true=本端主动拨号维持；false=对端拨入
 
-	mu       sync.Mutex
-	sc       *client.StreamClient
-	peerID   string // 对端 relay NodeId（HELLO 后获知）
-	peerAddr string // 对端 relay 公网业务地址（HELLO 后获知）
+	mu        sync.Mutex
+	sc        *client.StreamClient
+	peerID    string // 对端 relay NodeId（HELLO 后获知）
+	peerAddr  string // 对端 relay 公网业务地址（HELLO 后获知）
+	countedUp bool
 	// observedRemoteIP 是对端实际连入/被连的 IP（accept 侧从底层连接的 RemoteAddr 取得）。
 	// HELLO 里对端自报的 Addr 可能是 ":9000" 这类不可路由的占位（relay 不知道自己的公网 IP），
 	// 因此桥接拨号时优先用「可路由地址」: 见 dialHostAddr。
@@ -205,6 +206,10 @@ func (pl *peerLink) serve(sc *client.StreamClient) {
 			logx.Warnf("[relaynode] 解码控制消息失败: %v", err)
 			continue
 		}
+		pl.mu.Lock()
+		peerID := pl.peerID
+		pl.mu.Unlock()
+		pl.owner.relayControlSeen(peerID)
 		pl.dispatch(sc, cm)
 	}
 }
@@ -223,9 +228,16 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 			}
 		}
 		pl.mu.Lock()
+		wasCounted := pl.countedUp
 		pl.peerID = cm.NodeId
 		pl.peerAddr = cm.Addr
+		pl.countedUp = true
 		pl.mu.Unlock()
+		if wasCounted {
+			pl.owner.relayControlSeen(cm.NodeId)
+		} else {
+			pl.owner.relayLinkUp(cm.NodeId)
+		}
 		// 带上本链路的主动拨号地址（accept 侧为空）, 让 owner 能识别「这条正是注册到 index 的链路」,
 		// 从而在自动获知 index 真实 NodeID 后回调确认。
 		dialAddr := ""
@@ -279,10 +291,18 @@ func (pl *peerLink) setStream(sc *client.StreamClient) {
 
 func (pl *peerLink) clearStream(sc *client.StreamClient) {
 	pl.mu.Lock()
+	downPeerID := ""
 	if pl.sc == sc {
 		pl.sc = nil
+		if pl.countedUp {
+			downPeerID = pl.peerID
+			pl.countedUp = false
+		}
 	}
 	pl.mu.Unlock()
+	if downPeerID != "" {
+		pl.owner.relayLinkDown(downPeerID)
+	}
 	sc.Close()
 }
 
@@ -300,7 +320,15 @@ func (pl *peerLink) close() {
 	pl.mu.Lock()
 	sc := pl.sc
 	pl.sc = nil
+	downPeerID := ""
+	if pl.countedUp {
+		downPeerID = pl.peerID
+		pl.countedUp = false
+	}
 	pl.mu.Unlock()
+	if downPeerID != "" {
+		pl.owner.relayLinkDown(downPeerID)
+	}
 	if sc != nil {
 		sc.Close()
 	}

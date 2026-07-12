@@ -281,19 +281,19 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 	//   - KCP 在 kcpPriorityWindow(200ms) 内完成握手 → preferred=KCP(保跨境高吞吐)；
 	//   - 窗口内 KCP 未完成(家庭 NAT UDP 回程不通等) → 用已就绪的 TCP 建 preferred，
 	//     KCP 之后若完成则作 backup failover leg 补入(不抢 preferred)。
-	// 用「有界并发」而非旧的「无条件同步等 KCP 1500ms 再 fallback」，规避 NAT 客户端注册/连接
-	// 必然超时的缺陷(见记忆 natclient-relay-kcp-preferred-bug)：KCP 卡死最多只拖 200ms。
+	// 用「有界并发」而非串行先拨 KCP 再拨 TCP：200ms 后 TCP 可以先成为 preferred，
+	// 但本函数仍等待 KCP 在 1500ms 握手期限内给出最终结果，才能决定并入 KCP 还是补第二条 TCP。
 	type dialResult struct {
 		kind   streamTransport
 		stream network.Stream
 		err    error
 	}
 	resCh := make(chan dialResult, 2)
-	// kcpCtx 允许在 TCP 赢得优先窗口时立即取消 KCP goroutine，消除最长 1300ms 的后台等待。
-	// 家庭 NAT / 运营商封 UDP 场景：KCP 握手的 SendMessage 阻塞在等回程 ACK，cancellation
-	// 让它立即返回 context error，BNFS_DISABLE_KCP=1 不再是必要的绕过手段。
+	// kcpCtx 只用于显式禁用和函数退出时清理。200ms 优先窗口只决定 preferred，不能取消
+	// 仍在完整握手期限内推进的 KCP；否则真实 WAN 上 200ms 后才完成的健康 KCP 会被错误吞掉，
+	// dual 随后退化成双 TCP，与“晚到 KCP 作为 backup 并入”的设计相矛盾。
 	kcpCtx, kcpCancel := context.WithCancel(context.Background())
-	defer kcpCancel() // 函数返回时兜底清理; 若 TCP 先赢则在 timer 分支提前 cancel
+	defer kcpCancel()
 	if disableKCP() {
 		kcpCancel()
 		resCh <- dialResult{streamTransportKCP, nil, fmt.Errorf("KCP disabled by BNFS_DISABLE_KCP")}
@@ -360,11 +360,9 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 					tcpPending = &rr // TCP 先到，暂存继续等 KCP
 				}
 			case <-timer.C:
-				// 200ms 到，KCP 未定：TCP 获胜；立即取消 KCP goroutine，不再等 1500ms 握手超时。
-				// cancel 后 kcpStreamContext 的 SendMessage 因 context 被取消而迅速返回，
-				// resCh 里会补一条 kcpErr 结果，else 分支 attach 后设 kcpErr 即可。
+				// 200ms 到，KCP 未定：已就绪 TCP 成为 preferred；KCP 继续使用自己的
+				// dialHandshakeTimeout，若随后成功则作为 backup attach，实现 KCP/TCP 共存。
 				kcpWindowOpen = false
-				kcpCancel()
 				if tcpPending != nil {
 					attach(*tcpPending)
 					tcpPending = nil

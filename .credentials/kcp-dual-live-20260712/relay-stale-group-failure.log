@@ -1,0 +1,265 @@
+2026/07/12 00:08:01 [INFO] [relaynode] 周期结算循环已启动, 间隔=10s
+已启用网络准入: CA=http://129.28.42.247:9000 mode=enforce role=relay
+=== Node Server (relay) ===
+节点 ID: cf910c5c047d7b07068329a822adcac45f1d7ee90413977bec737a502787acbf
+监听: :9000  对外地址: 193.112.62.9:9000
+正在向 index 注册: 129.28.42.247:9010
+2026/07/12 00:08:01 [INFO] [relaynode] 向 index 注册(建控制链路, ID 将在 HELLO 后自动获知): 129.28.42.247:9010
+2026/07/12 00:08:01 [INFO] [relaynode] 开始维持到 relay 129.28.42.247:9010 的控制链路
+RelayStarter Start AT :9000
+2026/07/12 00:08:01 [INFO] [relaynode] 控制链路已建立(主动): peer=129.28.42.247:9010
+2026/07/12 00:08:01 [INFO] [relaynode] 准入校验通过 control-hello 47266b36bacaac06: subject=47266b36bacaac06 role=relay
+2026/07/12 00:08:01 [INFO] [relaynode] 登记对端 relay: id=47266b36bacaac06 addr=129.28.42.247:9010
+2026/07/12 00:08:01 [INFO] [relaynode] 已注册到 index(自动获知其 ID): id=47266b36bacaac06 addr=129.28.42.247:9010
+已注册到 index: id=47266b36bacaac068707ee0f2c6d1407b805d18e8f229b5d2362ca326e057d17 addr=129.28.42.247:9010
+relay 已就绪
+2026/07/12 00:08:43 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28468
+2026/07/12 00:08:43 [ERROR] [relay] AcceptTcpStream 失败 (local=10.1.0.2:9000 remote=111.30.198.64:28468): EOF
+goroutine 51 [running]:
+bnfs_p2p/logx.stack(...)
+	/root/natP2p/logx/logx.go:77
+bnfs_p2p/logx.Errorf({0x8aeec9, 0x37}, {0xc00004ef88, 0x3, 0x3})
+	/root/natP2p/logx/logx.go:70 +0x89
+bnfs_p2p/networkFrameWork.(*TransportCover).ListenTCPConnection.func1()
+	/root/natP2p/networkFrameWork/TransportCoverStream.go:181 +0x1f9
+created by bnfs_p2p/networkFrameWork.(*TransportCover).ListenTCPConnection in goroutine 11
+	/root/natP2p/networkFrameWork/TransportCoverStream.go:157 +0x285
+2026/07/12 00:08:43 [ERROR] [relay] ListenTCPConnection error: EOF
+goroutine 11 [running]:
+bnfs_p2p/logx.stack(...)
+	/root/natP2p/logx/logx.go:77
+bnfs_p2p/logx.Errorf({0x8a811e, 0x25}, {0xc000055fc0, 0x1, 0x1})
+	/root/natP2p/logx/logx.go:70 +0x89
+bnfs_p2p/networkFrameWork.(*RelayStarter).StartListen.func1()
+	/root/natP2p/networkFrameWork/relayStarter.go:44 +0x9e
+created by bnfs_p2p/networkFrameWork.(*RelayStarter).StartListen in goroutine 9
+	/root/natP2p/networkFrameWork/relayStarter.go:33 +0xd5
+2026/07/12 00:10:21 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28435
+2026/07/12 00:10:21 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28435): nodeId=5e7386dce6b1d286 connId=
+2026/07/12 00:10:21 [INFO] [relaynode] 准入校验通过 register 5e7386dce6b1d286: subject=5e7386dce6b1d286 role=server
+2026/07/12 00:10:21 [INFO] [relaynode] NAT 节点注册准入通过: 5e7386dce6b1d286 role=server remote=111.30.198.64:28435
+2026/07/12 00:10:21 [INFO] [relay] 新建 StreamGroup: nodeId=5e7386dce6b1d286
+2026/07/12 00:10:21 [INFO] [relaynode] 本地托管的 NAT 节点登记到 natNodes: 5e7386dce6b1d286 来源=111.30.198.64:28435
+2026/07/12 00:10:21 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28439
+2026/07/12 00:10:21 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28439): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:10:21 [INFO] [relaynode] 准入校验通过 register 5758b6b0b4191698: subject=5758b6b0b4191698 role=server
+2026/07/12 00:10:21 [INFO] [relaynode] NAT 节点注册准入通过: 5758b6b0b4191698 role=server remote=111.30.198.64:28439
+2026/07/12 00:10:21 [INFO] [relay] 新建 StreamGroup: nodeId=5758b6b0b4191698
+2026/07/12 00:10:21 [INFO] [relaynode] 本地托管的 NAT 节点登记到 natNodes: 5758b6b0b4191698 来源=111.30.198.64:28439
+2026/07/12 00:10:21 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28433
+2026/07/12 00:10:21 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28433): nodeId=5e7386dce6b1d286 connId=
+2026/07/12 00:10:21 [INFO] [relaynode] 准入校验通过 register 5e7386dce6b1d286: subject=5e7386dce6b1d286 role=server
+2026/07/12 00:10:21 [INFO] [relaynode] NAT 节点注册准入通过: 5e7386dce6b1d286 role=server remote=111.30.198.64:28433
+2026/07/12 00:10:21 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=5e7386dce6b1d286
+2026/07/12 00:10:21 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28437
+2026/07/12 00:10:21 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28437): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:10:21 [INFO] [relaynode] 准入校验通过 register 5758b6b0b4191698: subject=5758b6b0b4191698 role=server
+2026/07/12 00:10:21 [INFO] [relaynode] NAT 节点注册准入通过: 5758b6b0b4191698 role=server remote=111.30.198.64:28437
+2026/07/12 00:10:21 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=5758b6b0b4191698
+2026/07/12 00:10:25 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=5758b6b0b4191698 connId= leg=tcp err=EOF
+2026/07/12 00:10:25 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=5758b6b0b4191698 connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:10:25 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:10:25 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:10:25 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=5e7386dce6b1d286 connId= leg=tcp err=EOF
+2026/07/12 00:10:25 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=5e7386dce6b1d286 connId=
+2026/07/12 00:10:25 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=5e7386dce6b1d286 connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:10:25 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=5e7386dce6b1d286 connId=
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28642
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28642): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:11:03 [INFO] [relaynode] 准入校验通过 register 2ea4771177901cbe: subject=2ea4771177901cbe role=client
+2026/07/12 00:11:03 [INFO] [relaynode] NAT 节点注册准入通过: 2ea4771177901cbe role=client remote=111.30.198.64:28642
+2026/07/12 00:11:03 [INFO] [relay] 新建 StreamGroup: nodeId=2ea4771177901cbe
+2026/07/12 00:11:03 [INFO] [relaynode] 本地托管的 NAT 节点登记到 natNodes: 2ea4771177901cbe 来源=111.30.198.64:28642
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28641
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28641): nodeId=5758b6b0b4191698 connId=e8ac1724-784e-4c87-b1ca-844ff38f430f
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28639
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28639): nodeId=5758b6b0b4191698 connId=e8ac1724-784e-4c87-b1ca-844ff38f430f
+2026/07/12 00:11:03 [INFO] [relaynode] 连接保证金已扣: conn=e8ac1724-784e-4c87-b1ca-844ff38f430f client=2ea4771177901cbe(余204472320B) server=5758b6b0b4191698(余209664000B)
+2026/07/12 00:11:03 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=e8ac1724-784e-4c87-b1ca-844ff38f430f forward=true
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28645
+2026/07/12 00:11:03 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=e8ac1724-784e-4c87-b1ca-844ff38f430f forward=false
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28645): nodeId=2693aed5933e206b connId=
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28644
+2026/07/12 00:11:03 [INFO] [relaynode] 准入校验通过 register 2693aed5933e206b: subject=2693aed5933e206b role=client
+2026/07/12 00:11:03 [INFO] [relaynode] NAT 节点注册准入通过: 2693aed5933e206b role=client remote=111.30.198.64:28645
+2026/07/12 00:11:03 [INFO] [relay] 新建 StreamGroup: nodeId=2693aed5933e206b
+2026/07/12 00:11:03 [INFO] [relaynode] 本地托管的 NAT 节点登记到 natNodes: 2693aed5933e206b 来源=111.30.198.64:28645
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28644): nodeId=2693aed5933e206b connId=
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28646
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28646): nodeId=5e7386dce6b1d286 connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed
+2026/07/12 00:11:03 [INFO] [relaynode] 准入校验通过 register 2693aed5933e206b: subject=2693aed5933e206b role=client
+2026/07/12 00:11:03 [INFO] [relaynode] NAT 节点注册准入通过: 2693aed5933e206b role=client remote=111.30.198.64:28644
+2026/07/12 00:11:03 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=2693aed5933e206b
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28640
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28640): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:11:03 [INFO] [relaynode] 准入校验通过 register 2ea4771177901cbe: subject=2ea4771177901cbe role=client
+2026/07/12 00:11:03 [INFO] [relaynode] NAT 节点注册准入通过: 2ea4771177901cbe role=client remote=111.30.198.64:28640
+2026/07/12 00:11:03 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=2ea4771177901cbe
+2026/07/12 00:11:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28643
+2026/07/12 00:11:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28643): nodeId=5e7386dce6b1d286 connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed
+2026/07/12 00:11:03 [INFO] [relaynode] 连接保证金已扣: conn=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed client=2693aed5933e206b(余204472320B) server=5e7386dce6b1d286(余209664000B)
+2026/07/12 00:11:03 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed forward=true
+2026/07/12 00:11:03 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed forward=false
+2026/07/12 00:11:39 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28223
+2026/07/12 00:11:39 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28223): nodeId=5758b6b0b4191698 connId=e8ac1724-784e-4c87-b1ca-844ff38f430f
+2026/07/12 00:11:39 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=e8ac1724-784e-4c87-b1ca-844ff38f430f forward=false
+2026/07/12 00:11:39 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2ea4771177901cbe connId=e8ac1724-784e-4c87-b1ca-844ff38f430f isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:11:39 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28224
+2026/07/12 00:11:39 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28224): nodeId=5e7386dce6b1d286 connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed
+2026/07/12 00:11:39 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed forward=false
+2026/07/12 00:11:39 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2693aed5933e206b connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:11:51 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2693aed5933e206b connId= leg=tcp err=EOF
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=
+2026/07/12 00:11:51 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2693aed5933e206b connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=
+2026/07/12 00:11:51 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2693aed5933e206b connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed
+2026/07/12 00:11:51 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2693aed5933e206b connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed leg=tcp err=EOF
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=e2dbc64b-79f1-4ef6-902e-a1edc9df9bed
+2026/07/12 00:11:51 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2ea4771177901cbe connId= leg=tcp err=EOF
+2026/07/12 00:11:51 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2ea4771177901cbe connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:11:51 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2ea4771177901cbe connId=e8ac1724-784e-4c87-b1ca-844ff38f430f isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=e8ac1724-784e-4c87-b1ca-844ff38f430f
+2026/07/12 00:11:51 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2ea4771177901cbe connId=e8ac1724-784e-4c87-b1ca-844ff38f430f leg=tcp err=EOF
+2026/07/12 00:11:51 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=e8ac1724-784e-4c87-b1ca-844ff38f430f
+2026/07/12 00:12:59 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28406
+2026/07/12 00:12:59 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28406): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:12:59 [INFO] [relaynode] 准入校验通过 register 5758b6b0b4191698: subject=5758b6b0b4191698 role=server
+2026/07/12 00:12:59 [INFO] [relaynode] NAT 节点注册准入通过: 5758b6b0b4191698 role=server remote=111.30.198.64:28406
+2026/07/12 00:12:59 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=5758b6b0b4191698
+2026/07/12 00:12:59 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28408
+2026/07/12 00:12:59 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28408): nodeId=5e7386dce6b1d286 connId=
+2026/07/12 00:12:59 [INFO] [relaynode] 准入校验通过 register 5e7386dce6b1d286: subject=5e7386dce6b1d286 role=server
+2026/07/12 00:12:59 [INFO] [relaynode] NAT 节点注册准入通过: 5e7386dce6b1d286 role=server remote=111.30.198.64:28408
+2026/07/12 00:12:59 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=5e7386dce6b1d286
+2026/07/12 00:12:59 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28405
+2026/07/12 00:12:59 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28405): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:12:59 [INFO] [relaynode] 准入校验通过 register 5758b6b0b4191698: subject=5758b6b0b4191698 role=server
+2026/07/12 00:12:59 [INFO] [relaynode] NAT 节点注册准入通过: 5758b6b0b4191698 role=server remote=111.30.198.64:28405
+2026/07/12 00:12:59 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=5758b6b0b4191698
+2026/07/12 00:12:59 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28407
+2026/07/12 00:12:59 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28407): nodeId=5e7386dce6b1d286 connId=
+2026/07/12 00:12:59 [INFO] [relaynode] 准入校验通过 register 5e7386dce6b1d286: subject=5e7386dce6b1d286 role=server
+2026/07/12 00:12:59 [INFO] [relaynode] NAT 节点注册准入通过: 5e7386dce6b1d286 role=server remote=111.30.198.64:28407
+2026/07/12 00:12:59 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=5e7386dce6b1d286
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28418
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28418): nodeId=5758b6b0b4191698 connId=747536b7-8959-4d6c-b395-c2b84b4c76ad
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28416
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28416): nodeId=5758b6b0b4191698 connId=747536b7-8959-4d6c-b395-c2b84b4c76ad
+2026/07/12 00:13:03 [INFO] [relaynode] 连接保证金已扣: conn=747536b7-8959-4d6c-b395-c2b84b4c76ad client=2ea4771177901cbe(余199229440B) server=5758b6b0b4191698(余209612800B)
+2026/07/12 00:13:03 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=747536b7-8959-4d6c-b395-c2b84b4c76ad forward=true
+2026/07/12 00:13:03 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=747536b7-8959-4d6c-b395-c2b84b4c76ad forward=false
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28419
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28417
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28419): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:13:03 [INFO] [relaynode] 准入校验通过 register 2ea4771177901cbe: subject=2ea4771177901cbe role=client
+2026/07/12 00:13:03 [INFO] [relaynode] NAT 节点注册准入通过: 2ea4771177901cbe role=client remote=111.30.198.64:28419
+2026/07/12 00:13:03 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=2ea4771177901cbe
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28423
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28417): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28423): nodeId=5e7386dce6b1d286 connId=b5e40c89-67a4-4939-ab0f-5472118464f3
+2026/07/12 00:13:03 [INFO] [relaynode] 准入校验通过 register 2ea4771177901cbe: subject=2ea4771177901cbe role=client
+2026/07/12 00:13:03 [INFO] [relaynode] NAT 节点注册准入通过: 2ea4771177901cbe role=client remote=111.30.198.64:28417
+2026/07/12 00:13:03 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=2ea4771177901cbe
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28421
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28421): nodeId=2693aed5933e206b connId=
+2026/07/12 00:13:03 [INFO] [relaynode] 准入校验通过 register 2693aed5933e206b: subject=2693aed5933e206b role=client
+2026/07/12 00:13:03 [INFO] [relaynode] NAT 节点注册准入通过: 2693aed5933e206b role=client remote=111.30.198.64:28421
+2026/07/12 00:13:03 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=2693aed5933e206b
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28422
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28422): nodeId=5e7386dce6b1d286 connId=b5e40c89-67a4-4939-ab0f-5472118464f3
+2026/07/12 00:13:03 [INFO] [relaynode] 连接保证金已扣: conn=b5e40c89-67a4-4939-ab0f-5472118464f3 client=2693aed5933e206b(余199229440B) server=5e7386dce6b1d286(余209612800B)
+2026/07/12 00:13:03 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=b5e40c89-67a4-4939-ab0f-5472118464f3 forward=true
+2026/07/12 00:13:03 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28424
+2026/07/12 00:13:03 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28424): nodeId=2693aed5933e206b connId=
+2026/07/12 00:13:03 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=b5e40c89-67a4-4939-ab0f-5472118464f3 forward=false
+2026/07/12 00:13:03 [INFO] [relaynode] 准入校验通过 register 2693aed5933e206b: subject=2693aed5933e206b role=client
+2026/07/12 00:13:03 [INFO] [relaynode] NAT 节点注册准入通过: 2693aed5933e206b role=client remote=111.30.198.64:28424
+2026/07/12 00:13:03 [INFO] [relay] 附加 relay leg 到已有 StreamGroup: nodeId=2693aed5933e206b
+2026/07/12 00:13:39 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28231
+2026/07/12 00:13:39 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28231): nodeId=5758b6b0b4191698 connId=747536b7-8959-4d6c-b395-c2b84b4c76ad
+2026/07/12 00:13:39 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=747536b7-8959-4d6c-b395-c2b84b4c76ad forward=false
+2026/07/12 00:13:39 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2ea4771177901cbe connId=747536b7-8959-4d6c-b395-c2b84b4c76ad isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:13:39 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28232
+2026/07/12 00:13:39 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28232): nodeId=5e7386dce6b1d286 connId=b5e40c89-67a4-4939-ab0f-5472118464f3
+2026/07/12 00:13:39 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=b5e40c89-67a4-4939-ab0f-5472118464f3 forward=false
+2026/07/12 00:13:39 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2693aed5933e206b connId=b5e40c89-67a4-4939-ab0f-5472118464f3 isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:14:15 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2ea4771177901cbe connId=747536b7-8959-4d6c-b395-c2b84b4c76ad isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:14:15 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=747536b7-8959-4d6c-b395-c2b84b4c76ad
+2026/07/12 00:14:15 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2ea4771177901cbe connId=747536b7-8959-4d6c-b395-c2b84b4c76ad leg=tcp err=EOF
+2026/07/12 00:14:15 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=747536b7-8959-4d6c-b395-c2b84b4c76ad
+2026/07/12 00:14:15 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2693aed5933e206b connId=b5e40c89-67a4-4939-ab0f-5472118464f3 isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:14:15 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=b5e40c89-67a4-4939-ab0f-5472118464f3
+2026/07/12 00:14:15 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2693aed5933e206b connId=b5e40c89-67a4-4939-ab0f-5472118464f3 leg=tcp err=EOF
+2026/07/12 00:14:15 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=b5e40c89-67a4-4939-ab0f-5472118464f3
+2026/07/12 00:14:18 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28332
+2026/07/12 00:14:18 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28332): nodeId=5758b6b0b4191698 connId=2123ab76-844d-4ef8-9fd1-d0ad35909077
+2026/07/12 00:14:18 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28331
+2026/07/12 00:14:18 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28331): nodeId=5758b6b0b4191698 connId=2123ab76-844d-4ef8-9fd1-d0ad35909077
+2026/07/12 00:14:18 [INFO] [relaynode] 连接保证金已扣: conn=2123ab76-844d-4ef8-9fd1-d0ad35909077 client=2ea4771177901cbe(余193986560B) server=5758b6b0b4191698(余209561600B)
+2026/07/12 00:14:18 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=2123ab76-844d-4ef8-9fd1-d0ad35909077 forward=true
+2026/07/12 00:14:18 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28334
+2026/07/12 00:14:18 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28334): nodeId=5e7386dce6b1d286 connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2
+2026/07/12 00:14:18 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=2123ab76-844d-4ef8-9fd1-d0ad35909077 forward=false
+2026/07/12 00:14:18 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28333
+2026/07/12 00:14:18 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28333): nodeId=5e7386dce6b1d286 connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2
+2026/07/12 00:14:18 [INFO] [relaynode] 连接保证金已扣: conn=028ac29d-f6fc-4da0-9bbf-079743c7abe2 client=2693aed5933e206b(余193986560B) server=5e7386dce6b1d286(余209561600B)
+2026/07/12 00:14:18 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2 forward=true
+2026/07/12 00:14:18 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2 forward=false
+2026/07/12 00:14:55 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28571
+2026/07/12 00:14:55 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28571): nodeId=5758b6b0b4191698 connId=2123ab76-844d-4ef8-9fd1-d0ad35909077
+2026/07/12 00:14:55 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=2123ab76-844d-4ef8-9fd1-d0ad35909077 forward=false
+2026/07/12 00:14:55 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2ea4771177901cbe connId=2123ab76-844d-4ef8-9fd1-d0ad35909077 isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:14:55 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28573
+2026/07/12 00:14:55 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28573): nodeId=5e7386dce6b1d286 connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2
+2026/07/12 00:14:55 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2 forward=false
+2026/07/12 00:14:55 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2693aed5933e206b connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2 isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:15:30 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2ea4771177901cbe connId=2123ab76-844d-4ef8-9fd1-d0ad35909077 isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:15:30 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=2123ab76-844d-4ef8-9fd1-d0ad35909077
+2026/07/12 00:15:30 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2ea4771177901cbe connId=2123ab76-844d-4ef8-9fd1-d0ad35909077 leg=tcp err=EOF
+2026/07/12 00:15:30 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=2123ab76-844d-4ef8-9fd1-d0ad35909077
+2026/07/12 00:15:30 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2693aed5933e206b connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2 isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:15:30 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2693aed5933e206b connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2 leg=tcp err=EOF
+2026/07/12 00:15:30 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2
+2026/07/12 00:15:30 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=028ac29d-f6fc-4da0-9bbf-079743c7abe2
+2026/07/12 00:15:33 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28222
+2026/07/12 00:15:33 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28222): nodeId=5758b6b0b4191698 connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5
+2026/07/12 00:15:33 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28221
+2026/07/12 00:15:33 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28221): nodeId=5758b6b0b4191698 connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5
+2026/07/12 00:15:33 [INFO] [relaynode] 连接保证金已扣: conn=9414af3b-d7ac-4458-8d69-073a39c3a1b5 client=2ea4771177901cbe(余188743680B) server=5758b6b0b4191698(余209510400B)
+2026/07/12 00:15:33 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5 forward=true
+2026/07/12 00:15:33 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28227
+2026/07/12 00:15:33 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28227): nodeId=5e7386dce6b1d286 connId=d5bba5b8-b888-47ca-9714-775ebf128976
+2026/07/12 00:15:33 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5 forward=false
+2026/07/12 00:15:33 [INFO] [relay] 新连接: local=10.1.0.2:9000 remote=111.30.198.64:28226
+2026/07/12 00:15:33 [INFO] [relay] AcceptTcpStream 成功 (local=10.1.0.2:9000 remote=111.30.198.64:28226): nodeId=5e7386dce6b1d286 connId=d5bba5b8-b888-47ca-9714-775ebf128976
+2026/07/12 00:15:33 [INFO] [relaynode] 连接保证金已扣: conn=d5bba5b8-b888-47ca-9714-775ebf128976 client=2693aed5933e206b(余188743680B) server=5e7386dce6b1d286(余209510400B)
+2026/07/12 00:15:33 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=d5bba5b8-b888-47ca-9714-775ebf128976 forward=true
+2026/07/12 00:15:33 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=d5bba5b8-b888-47ca-9714-775ebf128976 forward=false
+2026/07/12 00:16:10 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28316
+2026/07/12 00:16:10 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28316): nodeId=5758b6b0b4191698 connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5
+2026/07/12 00:16:10 [INFO] [relay] StreamOn 成功: targetNodeId=5758b6b0b4191698 connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5 forward=false
+2026/07/12 00:16:10 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2ea4771177901cbe connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5 isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:16:10 [INFO] [relay] 新连接: local=[::]:9000 remote=111.30.198.64:28317
+2026/07/12 00:16:10 [INFO] [relay] AcceptTcpStream 成功 (local=[::]:9000 remote=111.30.198.64:28317): nodeId=5e7386dce6b1d286 connId=d5bba5b8-b888-47ca-9714-775ebf128976
+2026/07/12 00:16:10 [INFO] [relay] StreamOn 成功: targetNodeId=5e7386dce6b1d286 connId=d5bba5b8-b888-47ca-9714-775ebf128976 forward=false
+2026/07/12 00:16:10 [WARN] [FrameRelay] KCP NextFrame 失败: nodeId=2693aed5933e206b connId=d5bba5b8-b888-47ca-9714-775ebf128976 isCurrent=false ctxErr=<nil> err=stream closed
+2026/07/12 00:16:18 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=5758b6b0b4191698 connId= leg=tcp err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:16:18 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=5758b6b0b4191698 connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=5758b6b0b4191698 connId=
+2026/07/12 00:16:18 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=5e7386dce6b1d286 connId= leg=tcp err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=5e7386dce6b1d286 connId=
+2026/07/12 00:16:18 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=5e7386dce6b1d286 connId= isCurrent=false ctxErr=<nil> err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP startPump NextMessage 失败: nodeId=2ea4771177901cbe connId= leg=tcp err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:16:18 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2ea4771177901cbe connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=
+2026/07/12 00:16:18 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2693aed5933e206b connId= isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=
+2026/07/12 00:16:18 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2693aed5933e206b connId=d5bba5b8-b888-47ca-9714-775ebf128976 isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2693aed5933e206b connId=d5bba5b8-b888-47ca-9714-775ebf128976
+2026/07/12 00:16:18 [WARN] [FrameRelay] TCP NextFrame 失败: nodeId=2ea4771177901cbe connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5 isCurrent=true ctxErr=<nil> err=EOF
+2026/07/12 00:16:18 [WARN] [DualStream] TCP leg 失败, 关闭(relay 端不重连): nodeId=2ea4771177901cbe connId=9414af3b-d7ac-4458-8d69-073a39c3a1b5

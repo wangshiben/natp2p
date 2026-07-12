@@ -240,7 +240,7 @@ func (n *NATNode) handleInboundHello(relayAddr string, stream network.Stream) er
 	}
 	n.knownRelays[relayAddr] = struct{}{}
 
-	conn := newNATConnection(peerInfo, sc)
+	conn := newNATConnection(peerInfo, sc, func() { n.allNodes.Touch(string(peerID), time.Now()) })
 	n.conns[peerID] = conn
 	// 注：不删除 registeredRelays 中的 entry。
 	// 此注册流已"消费"成 peer 连接，但保留 entry 作为「该 relay 已被占用」的标记，
@@ -399,7 +399,7 @@ func (n *NATNode) connectViaEntryRelay(ctx context.Context, relayAddr string, ta
 		n.knownRelays[r] = struct{}{}
 	}
 	n.knownRelays[relayAddr] = struct{}{}
-	conn := newNATConnection(peerInfo, sc)
+	conn := newNATConnection(peerInfo, sc, func() { n.allNodes.Touch(string(target), time.Now()) })
 	n.conns[target] = conn
 	n.mu.Unlock()
 
@@ -456,7 +456,7 @@ func (n *NATNode) neighborSetLocked() []p2pnode.PeerInfo {
 				result = append(result, p2pnode.PeerInfo{
 					ID:        id,
 					Addresses: n.peerAddrIndex[id],
-					LastSeen:  time.Unix(node.LastCalled(), 0),
+					LastSeen:  time.Unix(node.LastSeen(), 0),
 				})
 			}
 		}
@@ -487,7 +487,7 @@ func (n *NATNode) ClosestPeers(target p2pnode.NodeID, k int) []p2pnode.PeerInfo 
 		result = append(result, p2pnode.PeerInfo{
 			ID:        id,
 			Addresses: n.peerAddrIndex[id],
-			LastSeen:  time.Unix(node.LastCalled(), 0),
+			LastSeen:  time.Unix(node.LastSeen(), 0),
 		})
 	}
 	return result

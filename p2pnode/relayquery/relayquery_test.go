@@ -8,7 +8,13 @@ import (
 func TestListRespRoundTrip(t *testing.T) {
 	want := &ListResp{Relays: []Info{
 		{NodeID: "aa11", Addr: "38.0.0.1:9000"},
-		{NodeID: "bb22", Addr: "104.0.0.1:9000"},
+		{
+			NodeID: "bb22", Addr: "104.0.0.1:9000",
+			ContinuousOnlineSince: 1_700_000_000,
+			LastControlSeen:       1_700_000_123,
+			CapacityClass:         "medium",
+			LoadPermille:          321,
+		},
 	}}
 
 	msg := EncodeListResp(want, "self-node-id")

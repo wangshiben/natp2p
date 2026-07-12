@@ -1,0 +1,25 @@
+已申请 indexSign: CA=http://129.28.42.247:9000 role=server
+=== Tunnel Server ===
+本节点 ID: 5758b6b0b4191698101b33f134674a4a9db4769b7166c21d4ecb5958c97afdd9
+转发目标: 127.0.0.1:19274
+使用指定 relay: 193.112.62.9:9000
+
+服务端已就绪，等待客户端连接。客户端使用上面的 NodeID 连接。
+按 Ctrl+C 退出。
+[隧道] 客户端 2ea4771177901cbe5ce4ecde002a29da280fabb6ad8c948b8138509746062540 已连接
+2026/07/12 00:21:05 [WARN] [DualStream] SendMessage primary KCP 失败, 尝试 backup: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f err=write udp 0.0.0.0:42325: sendmmsg: operation not permitted
+2026/07/12 00:21:05 [WARN] [DualStream] KCP leg 失败, 关闭并触发重连: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f
+2026/07/12 00:21:05 [WARN] [DualStream] KCP startPump NextMessage 失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp err=write udp 0.0.0.0:42325: sendmmsg: operation not permitted
+2026/07/12 00:21:05 [WARN] [DualStream] KCP leg 失败, 关闭并触发重连: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f
+2026/07/12 00:21:06 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第1/10次尝试 err=write udp 0.0.0.0:58024: sendmmsg: operation not permitted
+2026/07/12 00:21:08 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第2/10次尝试 err=write udp 0.0.0.0:48959: sendmmsg: operation not permitted
+2026/07/12 00:21:09 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第3/10次尝试 err=write udp 0.0.0.0:57837: sendmmsg: operation not permitted
+2026/07/12 00:21:12 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第4/10次尝试 err=write udp 0.0.0.0:59482: sendmmsg: operation not permitted
+2026/07/12 00:21:16 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第5/10次尝试 err=write udp 0.0.0.0:50375: sendmmsg: operation not permitted
+2026/07/12 00:21:21 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第6/10次尝试 err=write udp 0.0.0.0:53902: sendmmsg: operation not permitted
+2026/07/12 00:21:27 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第7/10次尝试 err=write udp 0.0.0.0:58623: sendmmsg: operation not permitted
+2026/07/12 00:21:33 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第8/10次尝试 err=write udp 0.0.0.0:56719: sendmmsg: operation not permitted
+2026/07/12 00:21:39 [WARN] [DualStream] KCP 重连拨号失败: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第9/10次尝试 err=write udp 0.0.0.0:40628: sendmmsg: operation not permitted
+2026/07/12 00:21:44 [INFO] [DualStream] KCP 重连成功: nodeId=2ea4771177901cbe connId=1ac7be90-129e-4c38-8449-28a5d8c2780f leg=kcp 第10次尝试
+
+正在关闭...

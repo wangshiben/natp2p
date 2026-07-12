@@ -10,12 +10,14 @@ import (
 type NATConnection struct {
 	peer   p2pnode.PeerInfo
 	stream network.Stream
+	touch  func()
 }
 
-func newNATConnection(peer p2pnode.PeerInfo, stream network.Stream) *NATConnection {
+func newNATConnection(peer p2pnode.PeerInfo, stream network.Stream, touch func()) *NATConnection {
 	return &NATConnection{
 		peer:   peer,
 		stream: stream,
+		touch:  touch,
 	}
 }
 
@@ -23,7 +25,13 @@ func (c *NATConnection) Peer() p2pnode.PeerInfo { return c.peer }
 
 func (c *NATConnection) Send(ctx context.Context, msg *p2pnode.Message) error {
 	netMsg := EncodeMessage(msg, string(c.peer.ID), c.stream.ConnectionId())
-	return c.stream.SendMessage(ctx, netMsg)
+	if err := c.stream.SendMessage(ctx, netMsg); err != nil {
+		return err
+	}
+	if c.touch != nil {
+		c.touch()
+	}
+	return nil
 }
 
 func (c *NATConnection) Receive(ctx context.Context) (*p2pnode.Message, error) {
@@ -31,7 +39,14 @@ func (c *NATConnection) Receive(ctx context.Context) (*p2pnode.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return DecodeMessage(netMsg)
+	message, err := DecodeMessage(netMsg)
+	if err != nil {
+		return nil, err
+	}
+	if c.touch != nil {
+		c.touch()
+	}
+	return message, nil
 }
 
 // Raw 返回底层 network.Stream，供需要直接操作流的场景使用。

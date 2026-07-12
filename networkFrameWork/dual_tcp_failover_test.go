@@ -106,3 +106,59 @@ func TestDualDial_KCPBlocked_FallbackToSecondTCP(t *testing.T) {
 
 	t.Logf("✅ KCP 不通时降级为双 TCP leg 成功 (建连耗时 %v, leg=%v, 含 KCP 握手超时)", dur, legIDs)
 }
+
+func TestDualDial_KCPLateWithinHandshake_CoexistsWithTCP(t *testing.T) {
+	t.Setenv("BNFS_DISABLE_KCP", "")
+	t.Setenv("BNFS_TEST_ACK_DELAY", "350ms")
+
+	relayAddr := startStabilityRelay(t)
+	serverID, err := newRelayTestIdentity("dual-late-kcp-server")
+	if err != nil {
+		t.Fatalf("创建 server 身份失败: %v", err)
+	}
+	serverStream, err := TryRegisterRelayStream(serverID.publicKey, relayAddr)
+	if err != nil {
+		t.Fatalf("server dual 注册失败: %v", err)
+	}
+	defer serverStream.Close()
+
+	connID := "dual-late-kcp-test"
+	header := &network.Header{NodeId: serverID.nodeID, NodeIdVersion: 1, ConnectionId: connID}
+	body := &network.Message{Header: header, Payload: []byte("late-kcp-client")}
+
+	startedAt := time.Now()
+	stream, err := clientStream(body, relayAddr, serverID.nodeID, connID, true)
+	if err != nil {
+		t.Fatalf("慢 KCP dual 拨号失败: %v", err)
+	}
+	defer stream.Close()
+	elapsed := time.Since(startedAt)
+
+	dual, ok := stream.(*DualStream)
+	if !ok {
+		t.Fatalf("期望返回 *DualStream, 实际 %T", stream)
+	}
+	dual.mu.RLock()
+	kcpLegs := 0
+	tcpLegs := 0
+	legIDs := make([]streamTransport, 0, len(dual.legs))
+	for id, entry := range dual.legs {
+		legIDs = append(legIDs, id)
+		switch entry.family {
+		case streamTransportKCP:
+			kcpLegs++
+		case streamTransportTCP:
+			tcpLegs++
+		}
+	}
+	dual.mu.RUnlock()
+
+	if elapsed <= kcpPriorityWindow {
+		t.Fatalf("测试未进入晚到 KCP 分支: elapsed=%v window=%v", elapsed, kcpPriorityWindow)
+	}
+	if kcpLegs != 1 || tcpLegs != 1 {
+		t.Fatalf("200ms 后、握手期限内成功的 KCP 必须与 TCP 共存: kcp=%d tcp=%d legs=%v elapsed=%v",
+			kcpLegs, tcpLegs, legIDs, elapsed)
+	}
+	t.Logf("✅ 晚到 KCP 未被取消并与 TCP 共存: legs=%v elapsed=%v", legIDs, elapsed)
+}
