@@ -76,7 +76,25 @@ func (n *NATNode) Bootstrap(ctx context.Context, indexAddr string) (string, erro
 	} else if !selectedIndex {
 		logx.Infof("[natnode] 无可达子 relay, 回退注册到 index: %s", entry)
 	}
-	n.setSoleEntryRelay(entry)
+	candidates := []string{entry}
+	if os.Getenv("BNFS_RELAY_SELECTION_POLICY") != "xor" {
+		selectionCtx, cancel := context.WithTimeout(ctx, relayQueryTimeout)
+		selector := newRelaySelector()
+		selector.includeIndex = envEnabled("BNFS_RELAY_INCLUDE_INDEX")
+		for _, address := range selector.RankedAddresses(selectionCtx, n.ID(), indexAddr, relays) {
+			if address != entry {
+				candidates = append(candidates, address)
+			}
+		}
+		cancel()
+	} else {
+		for _, address := range rankRelayAddressesByXOR(n.ID(), indexAddr, relays) {
+			if address != entry {
+				candidates = append(candidates, address)
+			}
+		}
+	}
+	n.setRelayCandidates(candidates)
 	return entry, nil
 }
 
@@ -118,10 +136,48 @@ func (n *NATNode) queryIndexRelays(ctx context.Context, indexAddr string) ([]rel
 
 // setSoleEntryRelay 把 addr 设为本节点的唯一入口 relay（清掉 bootstrap 时的占位入口）。
 func (n *NATNode) setSoleEntryRelay(addr string) {
+	n.setRelayCandidates([]string{addr})
+}
+
+func (n *NATNode) setRelayCandidates(candidates []string) {
+	n.relayFailover.setCandidates(candidates)
 	n.mu.Lock()
-	n.entryRelays = map[string]struct{}{addr: {}}
-	n.knownRelays[addr] = struct{}{}
+	n.entryRelays = make(map[string]struct{}, 1)
+	if len(candidates) > 0 {
+		n.entryRelays[candidates[0]] = struct{}{}
+	}
+	for _, address := range candidates {
+		n.knownRelays[address] = struct{}{}
+	}
 	n.mu.Unlock()
+}
+
+func rankRelayAddressesByXOR(selfID p2pnode.NodeID, indexAddr string, relays []relayquery.Info) []string {
+	type candidate struct {
+		address  string
+		distance *big.Int
+	}
+	seen := make(map[string]struct{})
+	candidates := make([]candidate, 0, len(relays)+1)
+	for _, relay := range relays {
+		if relay.Addr == "" || relay.Addr == indexAddr || relay.NodeID == "" {
+			continue
+		}
+		if _, exists := seen[relay.Addr]; exists {
+			continue
+		}
+		seen[relay.Addr] = struct{}{}
+		candidates = append(candidates, candidate{address: relay.Addr, distance: selfID.XOR(p2pnode.NodeID(relay.NodeID))})
+	}
+	sort.SliceStable(candidates, func(left, right int) bool {
+		return candidates[left].distance.Cmp(candidates[right].distance) < 0
+	})
+	addresses := make([]string, 0, len(candidates)+1)
+	for _, candidate := range candidates {
+		addresses = append(addresses, candidate.address)
+	}
+	addresses = append(addresses, indexAddr)
+	return addresses
 }
 
 // selectEntryRelay 是入口 relay 选择的纯逻辑（便于单测）:

@@ -208,3 +208,23 @@ func TestRelaySelectorProbeConcurrencyBound(t *testing.T) {
 		t.Fatalf("探测并发超过上限: %d", got)
 	}
 }
+
+func TestRelaySelectorRankedAddressesKeepsTemporarilyUnreachableRelay(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	indexAddr := "192.0.2.1:9000"
+	reachable := selectorInfo(1, "192.0.2.10:9000", now.Add(-time.Hour), now)
+	unreachable := selectorInfo(2, "192.0.2.11:9000", now.Add(-48*time.Hour), now)
+	selector := selectorWithRTT(now, map[string]time.Duration{reachable.Addr: 20 * time.Millisecond})
+
+	addresses := selector.RankedAddresses(context.Background(), p2pnode.NodeID(fmt.Sprintf("%064x", 0)), indexAddr,
+		[]relayquery.Info{unreachable, reachable})
+	want := []string{reachable.Addr, unreachable.Addr, indexAddr}
+	if len(addresses) != len(want) {
+		t.Fatalf("完整候选数量不符: got=%v want=%v", addresses, want)
+	}
+	for index := range want {
+		if addresses[index] != want[index] {
+			t.Fatalf("候选顺序不符: got=%v want=%v", addresses, want)
+		}
+	}
+}

@@ -33,8 +33,12 @@ const (
 	ConnectionIdLength = 36 //ConnectionId 长度
 )
 
-// LegFlagExtra 是 Header.LegFlags 的 bit0：标记"额外并存 leg"。
-const LegFlagExtra uint8 = 1 << 0
+const (
+	// LegFlagExtra 标记"额外并存 leg"。
+	LegFlagExtra uint8 = 1 << 0
+	// LegFlagResume 标记该 leg 正在恢复已有 ConnectionId，Relay 不应把拨号首帧重复转发给 NAT。
+	LegFlagResume uint8 = 1 << 1
+)
 
 var MagicHeaderBytes = []byte(MagicHeader)
 

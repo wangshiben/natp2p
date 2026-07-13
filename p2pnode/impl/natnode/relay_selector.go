@@ -176,6 +176,134 @@ func (s relaySelector) Select(ctx context.Context, selfID p2pnode.NodeID, indexA
 	}
 }
 
+// RankedAddresses 返回完整故障转移顺序：当前可达候选按正常质量策略排序，暂时不可达候选
+// 随后按稳定时间、负载和逻辑距离排序，Index 作为最终兜底。这样 Bootstrap 时暂时受网络
+// 分区影响的 Relay 不会被永久丢弃，网络恢复后仍可成为故障转移目标。
+func (s relaySelector) RankedAddresses(ctx context.Context, selfID p2pnode.NodeID, indexAddr string, infos []relayquery.Info) []string {
+	s = s.normalized()
+	infos = normalizeRelayCandidates(indexAddr, infos, s.includeIndex)
+
+	type probeResult struct {
+		info relayquery.Info
+		rtt  time.Duration
+		err  error
+	}
+	results := make(chan probeResult, len(infos))
+	semaphore := make(chan struct{}, s.concurrency)
+	var waitGroup sync.WaitGroup
+	for _, info := range infos {
+		info := info
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				results <- probeResult{info: info, err: ctx.Err()}
+				return
+			}
+			defer func() { <-semaphore }()
+			probeCtx, cancel := context.WithTimeout(ctx, s.probeTimeout)
+			rtt, err := s.probe(probeCtx, info)
+			cancel()
+			results <- probeResult{info: info, rtt: rtt, err: err}
+		}()
+	}
+	waitGroup.Wait()
+	close(results)
+
+	now := s.now()
+	reachable := make([]relayCandidate, 0, len(infos))
+	unreachable := make([]relayCandidate, 0, len(infos))
+	bestRTT := time.Duration(0)
+	for result := range results {
+		if result.info.LastControlSeen > 0 && now.Sub(time.Unix(result.info.LastControlSeen, 0)) > s.controlStaleAge {
+			continue
+		}
+		stableAge := time.Duration(0)
+		if result.info.ContinuousOnlineSince > 0 {
+			since := time.Unix(result.info.ContinuousOnlineSince, 0)
+			if !since.After(now) {
+				stableAge = now.Sub(since)
+			}
+		}
+		candidate := relayCandidate{
+			info:      result.info,
+			rtt:       result.rtt,
+			stableAge: stableAge,
+			distance:  selfID.XOR(p2pnode.NodeID(result.info.NodeID)).Text(16),
+		}
+		if result.err == nil && result.rtt > 0 {
+			reachable = append(reachable, candidate)
+			if bestRTT == 0 || result.rtt < bestRTT {
+				bestRTT = result.rtt
+			}
+		} else {
+			unreachable = append(unreachable, candidate)
+		}
+	}
+
+	bandWidth := s.rttBandMin
+	if proportional := time.Duration(float64(bestRTT) * s.rttBandRatio); proportional > bandWidth {
+		bandWidth = proportional
+	}
+	for index := range reachable {
+		reachable[index].rttBand = int64((reachable[index].rtt - bestRTT) / bandWidth)
+	}
+	sort.SliceStable(reachable, func(i, j int) bool {
+		return relayCandidateLess(reachable[i], reachable[j], true)
+	})
+	sort.SliceStable(unreachable, func(i, j int) bool {
+		return relayCandidateLess(unreachable[i], unreachable[j], false)
+	})
+
+	addresses := make([]string, 0, len(reachable)+len(unreachable)+1)
+	seen := make(map[string]struct{}, cap(addresses))
+	appendCandidate := func(address string) {
+		if address == "" {
+			return
+		}
+		if _, exists := seen[address]; exists {
+			return
+		}
+		seen[address] = struct{}{}
+		addresses = append(addresses, address)
+	}
+	for _, candidate := range reachable {
+		appendCandidate(candidate.info.Addr)
+	}
+	for _, candidate := range unreachable {
+		appendCandidate(candidate.info.Addr)
+	}
+	appendCandidate(indexAddr)
+	return addresses
+}
+
+func relayCandidateLess(left, right relayCandidate, compareRTT bool) bool {
+	if compareRTT && left.rttBand != right.rttBand {
+		return left.rttBand < right.rttBand
+	}
+	if left.stableAge != right.stableAge {
+		return left.stableAge > right.stableAge
+	}
+	if left.info.LoadPermille != right.info.LoadPermille {
+		return left.info.LoadPermille < right.info.LoadPermille
+	}
+	if compareRTT && left.rtt != right.rtt {
+		return left.rtt < right.rtt
+	}
+	if len(left.distance) != len(right.distance) {
+		return len(left.distance) < len(right.distance)
+	}
+	if left.distance != right.distance {
+		return left.distance < right.distance
+	}
+	if left.info.NodeID != right.info.NodeID {
+		return left.info.NodeID < right.info.NodeID
+	}
+	return left.info.Addr < right.info.Addr
+}
+
 func (s relaySelector) normalized() relaySelector {
 	if s.probe == nil {
 		s.probe = probeRelayTCP

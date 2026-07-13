@@ -29,7 +29,7 @@ func (h *NATHandshakeHandler) HandshakeIncoming(ctx context.Context, stream netw
 	hash := sha256.Sum256(firstMsg.Payload)
 	peerID := hex.EncodeToString(hash[:])
 
-	crypto, err := crypoto.NewTLSCrypto(stream, h.privKey)
+	crypto, err := crypoto.NewTLSCryptoContext(ctx, stream, h.privKey)
 	if err != nil {
 		return p2pnode.PeerInfo{}, fmt.Errorf("natnode: TLS 握手失败: %w", err)
 	}
@@ -44,7 +44,7 @@ func (h *NATHandshakeHandler) HandshakeIncoming(ctx context.Context, stream netw
 // HandshakeOutgoing 在出站流上执行客户端 TLS 握手。
 // 验证连接到的对端与 expectedID 一致。
 func (h *NATHandshakeHandler) HandshakeOutgoing(ctx context.Context, stream network.Stream, expectedID p2pnode.NodeID) (p2pnode.PeerInfo, error) {
-	crypto, err := crypoto.NewTLSCrypto(stream, h.privKey)
+	crypto, err := crypoto.NewTLSCryptoContext(ctx, stream, h.privKey)
 	if err != nil {
 		return p2pnode.PeerInfo{}, fmt.Errorf("natnode: TLS 握手失败: %w", err)
 	}

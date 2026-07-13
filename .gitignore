@@ -29,6 +29,7 @@ BUG_*.md
 /cmd/tunnel/*_IMPLEMENTATION.md
 /cmd/tunnel/*_PLAN.md
 /cmd/tunnel/localsim/results_*/
+/test/local-chaos/.runtime/
 
 # 本地生成的测试程序和脱敏辅助脚本；不得提交。
 /billingpoc

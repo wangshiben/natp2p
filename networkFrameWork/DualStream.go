@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +19,8 @@ const (
 	initialReconnectBackoff = 200 * time.Millisecond
 	maxReconnectBackoff     = 5 * time.Second
 )
+
+var ErrRelayCandidatesExhausted = errors.New("relay candidates exhausted")
 
 // streamReconnectDialer 在某条协议 leg 失效后被 DualStream 用来重新建立一条同协议的底层流。
 // 实现需要响应 ctx 取消并在失败时清理资源，不需要自己实现退避。
@@ -30,12 +33,22 @@ func markExtraLeg(msg *network.Message) {
 	}
 }
 
+func markResumeLeg(msg *network.Message) {
+	if msg != nil && msg.Header != nil {
+		msg.Header.LegFlags |= network.LegFlagResume
+	}
+}
+
 // isExtraLegMarked 判断首帧是否带"额外并存 leg"标记。
 func isExtraLegMarked(msg *network.Message) bool {
 	if msg == nil || msg.Header == nil {
 		return false
 	}
 	return msg.Header.LegFlags&network.LegFlagExtra != 0
+}
+
+func isResumeLegMarked(msg *network.Message) bool {
+	return msg != nil && msg.Header != nil && msg.Header.LegFlags&network.LegFlagResume != 0
 }
 
 // streamTransport 标识一条 leg 的唯一 ID。
@@ -56,9 +69,9 @@ const (
 
 // legEntry 记录一条现役 leg 的底层流与其物理协议族。
 type legEntry struct {
-	id        streamTransport // 唯一 leg ID（"tcp" / "kcp" / "tcp#2" ...）
-	family    streamTransport // 物理协议族：streamTransportKCP / streamTransportTCP
-	stream    network.Stream
+	id     streamTransport // 唯一 leg ID（"tcp" / "kcp" / "tcp#2" ...）
+	family streamTransport // 物理协议族：streamTransportKCP / streamTransportTCP
+	stream network.Stream
 }
 
 // legFamily 从 leg ID 提取物理协议族（去掉 "#n" 后缀）。
@@ -116,10 +129,14 @@ type DualStream struct {
 
 	frameEndpoint *DualFrameRelayEndpoint
 
-	reconnectMu       sync.Mutex
-	reconnectDialers  map[streamTransport]streamReconnectDialer
-	reconnectActive   map[streamTransport]bool
-	reconnectDisabled map[streamTransport]bool
+	reconnectMu         sync.Mutex
+	reconnectDialers    map[streamTransport]streamReconnectDialer
+	reconnectActive     map[streamTransport]bool
+	reconnectDisabled   map[streamTransport]bool
+	reconnectPersistent map[streamTransport]bool
+	reconnectSurvival   atomic.Bool
+	legSignalMu         sync.Mutex
+	legSignal           chan struct{}
 }
 
 func newDualStream(nodeId, connectionId string) *DualStream {
@@ -129,17 +146,19 @@ func newDualStream(nodeId, connectionId string) *DualStream {
 func newDualStreamWithPump(nodeId, connectionId string, collectInbound bool) *DualStream {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &DualStream{
-		preferred:         streamTransportUnknown,
-		nodeId:            nodeId,
-		connectionId:      connectionId,
-		collectInbound:    collectInbound,
-		ctx:               ctx,
-		cancel:            cancel,
-		inbox:             make(chan *network.Message, inboxBufferSize),
-		legs:              make(map[streamTransport]*legEntry),
-		reconnectDialers:  make(map[streamTransport]streamReconnectDialer),
-		reconnectActive:   make(map[streamTransport]bool),
-		reconnectDisabled: make(map[streamTransport]bool),
+		preferred:           streamTransportUnknown,
+		nodeId:              nodeId,
+		connectionId:        connectionId,
+		collectInbound:      collectInbound,
+		ctx:                 ctx,
+		cancel:              cancel,
+		inbox:               make(chan *network.Message, inboxBufferSize),
+		legs:                make(map[streamTransport]*legEntry),
+		reconnectDialers:    make(map[streamTransport]streamReconnectDialer),
+		reconnectActive:     make(map[streamTransport]bool),
+		reconnectDisabled:   make(map[streamTransport]bool),
+		reconnectPersistent: make(map[streamTransport]bool),
+		legSignal:           make(chan struct{}),
 	}
 }
 
@@ -272,31 +291,39 @@ func (d *DualStream) SendMessageAsync(ctx context.Context, message *network.Mess
 // 调度该协议重连，然后用同一条消息在 backup 上重发，实现实时切换。
 // 若两条 leg 都失败或都不存在，关闭整个逻辑流并返回错误。
 func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) error {
-	primaryKind, primary, backupKind, backup := d.sendOrder()
-	if primary == nil && backup == nil {
-		logx.Errorf("[DualStream] SendMessage 失败: 双 leg 均不可用, nodeId=%.16s connId=%s",
-			d.NodeId(), d.ConnectionId())
-		return errors.New("stream closed")
-	}
-	if primary == nil {
-		primaryKind, primary = backupKind, backup
-		backupKind, backup = streamTransportUnknown, nil
-	}
-
 	messageID := d.newOutgoingMessageID()
-	if err := sendMessageWithIdentity(ctx, primary, cloneMessage(message), messageID); err == nil {
-		return nil
-	} else {
+	for {
+		legSignal := d.currentLegSignal()
+		primaryKind, primary, backupKind, backup := d.sendOrder()
+		for primary == nil && backup == nil && d.hasReconnectChance() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-d.ctx.Done():
+				return errors.New("stream closed")
+			case <-legSignal:
+				legSignal = d.currentLegSignal()
+				primaryKind, primary, backupKind, backup = d.sendOrder()
+			}
+		}
+		if primary == nil && backup == nil {
+			logx.Errorf("[DualStream] SendMessage 失败: 双 leg 均不可用且无重连机会, nodeId=%.16s connId=%s",
+				d.NodeId(), d.ConnectionId())
+			return errors.New("stream closed")
+		}
+		if primary == nil {
+			primaryKind, primary = backupKind, backup
+			backupKind, backup = streamTransportUnknown, nil
+		}
+
+		err := sendMessageWithIdentity(ctx, primary, cloneMessage(message), messageID)
+		if err == nil {
+			return nil
+		}
 		if ctx.Err() != nil {
 			return err
 		}
-		primaryKindStr := "KCP"
-		if primaryKind == streamTransportTCP {
-			primaryKindStr = "TCP"
-		}
-		// 仅当 primary 仍是该 kind 的现役 leg 时才触发失败重连。
-		// 否则说明 leg 已被新连接替换，本次写到的是已被关闭的旧 leg，
-		// 写失败是路由陈旧而非真实故障，避免触发级联重连。
+		primaryKindStr := transportName(legFamily(primaryKind))
 		d.mu.RLock()
 		stillCurrent := d.streamLocked(primaryKind) == primary
 		d.mu.RUnlock()
@@ -305,15 +332,12 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 				primaryKindStr, d.NodeId(), d.ConnectionId(), err)
 			d.handleLegFailure(primaryKind, primary)
 		}
-		if backup == nil {
-			logx.Errorf("[DualStream] SendMessage 无 backup leg, 返回错误: nodeId=%.16s connId=%s",
-				d.NodeId(), d.ConnectionId())
-			return err
-		}
-		if retryErr := sendMessageWithIdentity(ctx, backup, cloneMessage(message), messageID); retryErr != nil {
-			backupKindStr := "KCP"
-			if backupKind == streamTransportTCP {
-				backupKindStr = "TCP"
+
+		if backup != nil {
+			retryErr := sendMessageWithIdentity(ctx, backup, cloneMessage(message), messageID)
+			if retryErr == nil {
+				d.setPreferred(backupKind)
+				return nil
 			}
 			if ctx.Err() == nil {
 				d.mu.RLock()
@@ -321,14 +345,17 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 				d.mu.RUnlock()
 				if stillCurrentBackup {
 					logx.Warnf("[DualStream] SendMessage backup %s 也失败: nodeId=%.16s connId=%s err=%v",
-						backupKindStr, d.NodeId(), d.ConnectionId(), retryErr)
+						transportName(legFamily(backupKind)), d.NodeId(), d.ConnectionId(), retryErr)
 					d.handleLegFailure(backupKind, backup)
 				}
 			}
-			return retryErr
 		}
-		d.setPreferred(backupKind)
-		return nil
+
+		if !d.hasReconnectChance() {
+			return err
+		}
+		logx.Warnf("[DualStream] 当前所有 leg 发送失败，等待 Relay 重连后重发同一 E2E 消息: nodeId=%.16s connId=%s",
+			d.NodeId(), d.ConnectionId())
 	}
 }
 
@@ -404,6 +431,11 @@ func (d *DualStream) SetCryptoSuite(suite network.EncrypSuite) {
 			s.SetCryptoSuite(suite)
 		}
 	}
+	if suite != nil {
+		// 加密套件只能在端到端握手成功后生成；以此作为所有框架调用方统一的
+		// “连接已建立”边界，避免遗漏某个上层包装器的显式启用调用。
+		d.EnableReconnectSurvival()
+	}
 }
 
 func (d *DualStream) SetIdentity(nodeId, connectionId string) {
@@ -418,6 +450,13 @@ func (d *DualStream) SetIdentity(nodeId, connectionId string) {
 	for _, s := range streams {
 		applyIdentity(s, nodeId, connectionId)
 	}
+}
+
+// EnableReconnectSurvival 允许这条已完成应用层握手的逻辑流在所有物理 leg
+// 暂时断开时继续存活，等待 Relay 重连或切换后恢复。默认关闭，确保准入拒绝、
+// TLS 握手失败等建连阶段错误可以立即以 EOF/关闭返回给调用方。
+func (d *DualStream) EnableReconnectSurvival() {
+	d.reconnectSurvival.Store(true)
 }
 
 func (d *DualStream) TCPStream() *TcpStream {
@@ -594,7 +633,21 @@ func (d *DualStream) attachWithID(id, family streamTransport, stream network.Str
 	if d.collectInbound {
 		d.startPump(id, stream)
 	}
+	d.signalLegAvailable()
 	return nil
+}
+
+func (d *DualStream) currentLegSignal() <-chan struct{} {
+	d.legSignalMu.Lock()
+	defer d.legSignalMu.Unlock()
+	return d.legSignal
+}
+
+func (d *DualStream) signalLegAvailable() {
+	d.legSignalMu.Lock()
+	close(d.legSignal)
+	d.legSignal = make(chan struct{})
+	d.legSignalMu.Unlock()
 }
 
 func (d *DualStream) startPump(id streamTransport, stream network.Stream) {
@@ -646,7 +699,7 @@ func (d *DualStream) detach(id streamTransport, stream network.Stream) {
 	if frameEndpoint != nil {
 		frameEndpoint.onLegDetached(id)
 	}
-	if empty {
+	if empty && !(d.reconnectSurvival.Load() && d.hasReconnectChance()) {
 		d.Close()
 	}
 }
@@ -662,14 +715,14 @@ func (d *DualStream) handleLegFailure(id streamTransport, stream network.Stream)
 
 	// 探测是否有注册的重连 dialer（典型为 client 拨号方有，relay 端无）。
 	d.reconnectMu.Lock()
-	hasDialer := d.reconnectDialers[id] != nil && !d.reconnectDisabled[id]
+	hasDialer := d.reconnectSurvival.Load() && d.reconnectDialers[id] != nil && !d.reconnectDisabled[id]
 	d.reconnectMu.Unlock()
 
 	if hasDialer {
 		logx.Warnf("[DualStream] %s leg 失败, 关闭并触发重连: nodeId=%.16s connId=%s",
 			kindStr, d.NodeId(), d.ConnectionId())
 	} else {
-		logx.Warnf("[DualStream] %s leg 失败, 关闭(relay 端不重连): nodeId=%.16s connId=%s",
+		logx.Warnf("[DualStream] %s leg 失败, 关闭(未启用重连或无拨号器): nodeId=%.16s connId=%s",
 			kindStr, d.NodeId(), d.ConnectionId())
 	}
 
@@ -680,6 +733,38 @@ func (d *DualStream) handleLegFailure(id streamTransport, stream network.Stream)
 	}
 }
 
+func (d *DualStream) watchRelayChanges(notifier RelayChangeNotifier) {
+	go func() {
+		for {
+			signal := notifier.RelayChangeSignal()
+			if signal == nil {
+				return
+			}
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-signal:
+			}
+
+			d.mu.RLock()
+			legs := make([]legEntry, 0, len(d.legs))
+			for _, entry := range d.legs {
+				if entry != nil {
+					legs = append(legs, *entry)
+				}
+			}
+			d.mu.RUnlock()
+			if len(legs) > 0 {
+				logx.Warnf("[DualStream] Relay 候选代次变化，主动迁移 %d 条旧 leg: nodeId=%.16s connId=%s",
+					len(legs), d.NodeId(), d.ConnectionId())
+			}
+			for _, entry := range legs {
+				d.handleLegFailure(entry.id, entry.stream)
+			}
+		}
+	}()
+}
+
 func isContextError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
@@ -687,6 +772,14 @@ func isContextError(err error) bool {
 // SetReconnectDialer 为某一种协议设置重连工厂。dialer 必须能从零拉起一条新的同协议底层流，
 // 包括首包发送；DualStream 负责按指数退避调用并把成功结果 attach 到自己。
 func (d *DualStream) SetReconnectDialer(kind streamTransport, dial streamReconnectDialer) {
+	d.setReconnectDialer(kind, dial, false)
+}
+
+func (d *DualStream) setPersistentReconnectDialer(kind streamTransport, dial streamReconnectDialer) {
+	d.setReconnectDialer(kind, dial, true)
+}
+
+func (d *DualStream) setReconnectDialer(kind streamTransport, dial streamReconnectDialer, persistent bool) {
 	if kind == streamTransportUnknown {
 		return
 	}
@@ -694,10 +787,12 @@ func (d *DualStream) SetReconnectDialer(kind streamTransport, dial streamReconne
 	defer d.reconnectMu.Unlock()
 	if dial == nil {
 		delete(d.reconnectDialers, kind)
+		delete(d.reconnectPersistent, kind)
 		return
 	}
 	d.reconnectDialers[kind] = dial
 	d.reconnectDisabled[kind] = false
+	d.reconnectPersistent[kind] = persistent
 }
 
 func (d *DualStream) hasReconnectChance() bool {
@@ -759,7 +854,12 @@ func (d *DualStream) runReconnect(id streamTransport, dial streamReconnectDialer
 	family := legFamily(id)
 	kindStr := transportName(family)
 	backoff := initialReconnectBackoff
-	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
+	d.reconnectMu.Lock()
+	persistent := d.reconnectPersistent[id]
+	d.reconnectMu.Unlock()
+	attempt := 0
+	for persistent || attempt < maxReconnectAttempts {
+		attempt++
 		select {
 		case <-d.ctx.Done():
 			return
@@ -782,8 +882,18 @@ func (d *DualStream) runReconnect(id streamTransport, dial streamReconnectDialer
 			}
 			_ = stream.Close()
 		} else {
-			logx.Warnf("[DualStream] %s 重连拨号失败: nodeId=%.16s connId=%s leg=%s 第%d/%d次尝试 err=%v",
-				kindStr, d.nodeId, d.connectionId, id, attempt, maxReconnectAttempts, err)
+			if errors.Is(err, ErrRelayCandidatesExhausted) {
+				logx.Errorf("[DualStream] %s 重连停止，Relay 候选已耗尽: nodeId=%.16s connId=%s leg=%s",
+					kindStr, d.nodeId, d.connectionId, id)
+				break
+			}
+			if persistent {
+				logx.Warnf("[DualStream] %s 重连拨号失败: nodeId=%.16s connId=%s leg=%s 第%d次尝试 err=%v",
+					kindStr, d.nodeId, d.connectionId, id, attempt, err)
+			} else {
+				logx.Warnf("[DualStream] %s 重连拨号失败: nodeId=%.16s connId=%s leg=%s 第%d/%d次尝试 err=%v",
+					kindStr, d.nodeId, d.connectionId, id, attempt, maxReconnectAttempts, err)
+			}
 		}
 
 		backoff *= 2
@@ -799,8 +909,8 @@ func (d *DualStream) runReconnect(id streamTransport, dial streamReconnectDialer
 	d.mu.RLock()
 	empty := len(d.legs) == 0
 	d.mu.RUnlock()
-	logx.Errorf("[DualStream] %s 重连彻底失败(已达%d次上限, 标记永久禁用): nodeId=%.16s connId=%s leg=%s 是否已无现役leg=%v",
-		kindStr, maxReconnectAttempts, d.nodeId, d.connectionId, id, empty)
+	logx.Errorf("[DualStream] %s 重连彻底失败(标记永久禁用): nodeId=%.16s connId=%s leg=%s 是否已无现役leg=%v",
+		kindStr, d.nodeId, d.connectionId, id, empty)
 	if empty {
 		d.Close()
 	}
@@ -972,6 +1082,17 @@ func applyIdentity(stream network.Stream, nodeId, connectionId string) bool {
 // 在握手阶段把 nodeId / connectionId 注入到任意 network.Stream 实现里。
 func SetStreamIdentity(stream network.Stream, nodeId, connectionId string) bool {
 	return applyIdentity(stream, nodeId, connectionId)
+}
+
+// EnableReconnectSurvival 在已完成注册或端到端 TLS 握手的流上启用透明 Relay
+// 故障转移。非 DualStream 返回 false，调用方无需为单 leg 流做额外处理。
+func EnableReconnectSurvival(stream network.Stream) bool {
+	dual, ok := stream.(*DualStream)
+	if !ok {
+		return false
+	}
+	dual.EnableReconnectSurvival()
+	return true
 }
 
 func (d *DualStream) PreferTCP() {

@@ -116,6 +116,12 @@ func getHashHex(data string) string {
 // nodePrivateKey: 本节点的私钥
 // IsClient: 是否是客户端
 func NewTLSCrypto(targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) (*TLSCrypto, error) {
+	return NewTLSCryptoContext(context.Background(), targetStream, nodePrivateKey)
+}
+
+// NewTLSCryptoContext 与 NewTLSCrypto 执行相同的端到端握手，但所有网络等待均受 ctx
+// 约束，确保 Relay 拒绝或半开连接不会让建连调用永久阻塞。
+func NewTLSCryptoContext(ctx context.Context, targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) (*TLSCrypto, error) {
 	// 1. 发送自己的公钥，验明自身
 	MessageHeader := &network.Header{
 		RouteName:     "",
@@ -131,11 +137,11 @@ func NewTLSCrypto(targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) 
 		Header:  MessageHeader,
 		Payload: []byte(pubKeyStr),
 	}
-	err := targetStream.SendMessage(context.Background(), FirstMessageBody)
+	err := targetStream.SendMessage(ctx, FirstMessageBody)
 	if err != nil {
 		return nil, err
 	}
-	message, err := targetStream.NextMessage(context.Background())
+	message, err := targetStream.NextMessage(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -154,12 +160,14 @@ func NewTLSCrypto(targetStream network.Stream, nodePrivateKey *ecdh.PrivateKey) 
 	}
 	signData := getHashHex(salt + pubKeyStr)
 	// 2.交换Salt值
-	targetStream.SendMessage(context.Background(), &network.Message{
+	if err := targetStream.SendMessage(ctx, &network.Message{
 		Header:  MessageHeader,
 		Payload: []byte(fmt.Sprintf("%s|%s", salt, signData)),
-	})
+	}); err != nil {
+		return nil, err
+	}
 	// 3. 接收对方发来的Salt值
-	message, err = targetStream.NextMessage(context.Background())
+	message, err = targetStream.NextMessage(ctx)
 	if err != nil {
 		return nil, err
 	}

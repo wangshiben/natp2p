@@ -1108,6 +1108,12 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 			if identitySuite, ok := crypto.(network.MessageIdentitySuite); ok {
 				decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
 				if err != nil {
+					previewLen := len(msg.Payload)
+					if previewLen > 32 {
+						previewLen = 32
+					}
+					logx.Warnf("[TcpStream] 解密失败: nodeId=%.16s connId=%s msgId=%d route=%s payloadLen=%d hexPreview=%x err=%v",
+						t.getNodeId(), t.getConnectionId(), f.MessageId, msg.Header.RouteName, len(msg.Payload), msg.Payload[:previewLen], err)
 					return err
 				}
 				msg.Payload = decrypted

@@ -25,6 +25,20 @@ const (
 	kcpPriorityWindow = 200 * time.Millisecond
 )
 
+type RelayDialTarget struct {
+	Address    string
+	Generation uint64
+}
+
+type RelayDialPolicy interface {
+	CurrentRelay() (RelayDialTarget, error)
+	ReportRelayDialResult(RelayDialTarget, error)
+}
+
+type RelayChangeNotifier interface {
+	RelayChangeSignal() <-chan struct{}
+}
+
 // disableKCP 返回是否显式禁用 KCP leg（走纯双 TCP failover）。
 // 场景：家庭 NAT / 运营商限制 UDP，KCP 回程不可靠，relay 优先用 KCP 建桥反而导致
 // 端到端握手在丢包的 KCP leg 上失败。设 BNFS_DISABLE_KCP=1 强制 TCP-only。
@@ -46,6 +60,18 @@ func disableKCP() bool {
 //     Payload 是发起方自己的 hex 公钥，供对端推导 NodeId。
 func TryConnectTCPStream(addr, targetNodeId, originalPubkeyHex string) (network.Stream, string, error) {
 	return TryConnectTCPStreamWithConnID(addr, targetNodeId, originalPubkeyHex, uuid.New().String())
+}
+
+func TryConnectTCPStreamWithRelayPolicy(policy RelayDialPolicy, targetNodeId, originalPubkeyHex string) (network.Stream, string, error) {
+	connectionId := uuid.New().String()
+	header := &network.Header{
+		NodeId:        targetNodeId,
+		NodeIdVersion: 1,
+		ConnectionId:  connectionId,
+	}
+	body := &network.Message{Header: header, Payload: []byte(originalPubkeyHex)}
+	stream, err := clientStreamWithRelayPolicy(body, "", targetNodeId, connectionId, true, policy)
+	return stream, connectionId, err
 }
 
 // TryConnectTCPStreamWithConnID 与 TryConnectTCPStream 相同, 但使用调用方指定的 connectionId
@@ -164,6 +190,18 @@ func TryRegisterRelayStreamWithSign(pubKey, relayAddress string, signJSON []byte
 	return clientStream(body, relayAddress, originalNodeId, "", true)
 }
 
+func TryRegisterRelayStreamWithSignAndRelayPolicy(pubKey string, signJSON []byte, policy RelayDialPolicy) (network.Stream, error) {
+	hash := sha256.Sum256([]byte(pubKey))
+	originalNodeId := hex.EncodeToString(hash[:])
+	header := &network.Header{
+		NodeId:        originalNodeId,
+		NodeIdVersion: 1,
+		ConnectionId:  "",
+	}
+	body := &network.Message{Header: header, Payload: EncodeRegisterPayload(pubKey, signJSON)}
+	return clientStreamWithRelayPolicy(body, "", originalNodeId, "", true, policy)
+}
+
 // TryRegisterRelayStreamTCP 与 TryRegisterRelayStream 相同, 但只用单条 TCP leg 注册（不走 dual KCP+TCP）。
 // 用于跨中继场景下避免 relayStream 的 KCP/TCP 双 leg 在中继转发处的 failover 竞态。
 func TryRegisterRelayStreamTCP(pubKey, relayAddress string) (network.Stream, error) {
@@ -248,14 +286,49 @@ func TryRegisterStream(addr, originalPubkeyHex, targetNodeId, streamMode string)
 //	isDefault=true ：dual 模式，KCP+TCP 同时拨号，任一成功即返回；
 //	                 同时为两种协议分别注入重连 dialer，后续 leg 失效会自动重拨。
 func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string, isDefault bool) (network.Stream, error) {
+	return clientStreamWithRelayPolicy(FirstMessage, tcpAddr, originalNodeId, connectionId, isDefault, nil)
+}
+
+func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string, isDefault bool, relayPolicy RelayDialPolicy) (network.Stream, error) {
 	if !isDefault {
 		return tcpClientStream(FirstMessage, tcpAddr, originalNodeId, connectionId)
 	}
 
 	dual := newDualStream(originalNodeId, connectionId)
+	if notifier, ok := relayPolicy.(RelayChangeNotifier); ok {
+		dual.watchRelayChanges(notifier)
+	}
 	template := cloneMessage(FirstMessage)
 	var kcpErr error
 	var tcpErr error
+	dialTCP := func(ctx context.Context, message *network.Message) (network.Stream, error) {
+		if relayPolicy == nil {
+			return tcpClientStreamContext(ctx, message, tcpAddr, originalNodeId, connectionId, true)
+		}
+		target, err := relayPolicy.CurrentRelay()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrRelayCandidatesExhausted, err)
+		}
+		stream, dialErr := tcpClientStreamContext(ctx, message, target.Address, originalNodeId, connectionId, true)
+		relayPolicy.ReportRelayDialResult(target, dialErr)
+		return stream, dialErr
+	}
+	dialKCP := func(ctx context.Context, message *network.Message) (network.Stream, error) {
+		if relayPolicy == nil {
+			return kcpStreamContext(ctx, message, tcpAddr, originalNodeId, connectionId, true)
+		}
+		target, err := relayPolicy.CurrentRelay()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrRelayCandidatesExhausted, err)
+		}
+		stream, dialErr := kcpStreamContext(ctx, message, target.Address, originalNodeId, connectionId, true)
+		// KCP 失败只能说明 UDP 路径不可用，不能据此把 TCP 正常的 Relay 判死。
+		// Relay 候选推进只由 TCP 失败驱动；KCP 成功仍可清零该地址的失败计数。
+		if dialErr == nil {
+			relayPolicy.ReportRelayDialResult(target, nil)
+		}
+		return stream, dialErr
+	}
 
 	// dual 模式：所有 leg 都不自发心跳(noKeepAlive=true)，改由 DualStream 统一只在
 	// 当前 preferred leg 上发心跳（见 startKeepAlive）。原因：relay 跨中继桥接按「最近发字节的
@@ -264,17 +337,22 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 	// 解析失败 → 重连风暴。让心跳只走 preferred、standby 全程静默，active 就稳定在数据 leg 上；
 	// 主 leg 死后 failover 切换 preferred，心跳与 active 一起迁移，天然 role-swap 安全。
 	tcpDialer := func(ctx context.Context) (network.Stream, error) {
-		return tcpClientStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+		message := cloneMessage(template)
+		markResumeLeg(message)
+		return dialTCP(ctx, message)
 	}
 	kcpDialer := func(ctx context.Context) (network.Stream, error) {
-		return kcpStreamContext(ctx, cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+		message := cloneMessage(template)
+		markResumeLeg(message)
+		return dialKCP(ctx, message)
 	}
 	// extraTCPDialer 用于"双 TCP failover 的第二条 TCP"：首帧打 legExtraMarker 标记，
 	// 让 relay 端把它当作并存 leg（而非顶替已有同协议 leg）。同样不自发心跳。
 	extraTCPDialer := func(ctx context.Context) (network.Stream, error) {
 		fm := cloneMessage(template)
 		markExtraLeg(fm)
-		return tcpClientStreamContext(ctx, fm, tcpAddr, originalNodeId, connectionId, true)
+		markResumeLeg(fm)
+		return dialTCP(ctx, fm)
 	}
 
 	// KCP 优先 + 200ms 窗口：KCP 与 TCP 并发拨号(各自发首帧、等端到端 ACK)。偏向 KCP：
@@ -299,12 +377,12 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 		resCh <- dialResult{streamTransportKCP, nil, fmt.Errorf("KCP disabled by BNFS_DISABLE_KCP")}
 	} else {
 		go func() {
-			s, e := kcpStreamContext(kcpCtx, cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+			s, e := dialKCP(kcpCtx, cloneMessage(template))
 			resCh <- dialResult{streamTransportKCP, s, e}
 		}()
 	}
 	go func() {
-		s, e := tcpClientStreamContext(context.Background(), cloneMessage(template), tcpAddr, originalNodeId, connectionId, true)
+		s, e := dialTCP(context.Background(), cloneMessage(template))
 		resCh <- dialResult{streamTransportTCP, s, e}
 	}()
 
@@ -332,7 +410,11 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 			}
 			return
 		}
-		dual.SetReconnectDialer(legID, dialer)
+		if relayPolicy != nil && r.kind == streamTransportTCP {
+			dual.setPersistentReconnectDialer(legID, dialer)
+		} else {
+			dual.SetReconnectDialer(legID, dialer)
+		}
 		if r.kind == streamTransportKCP {
 			kcpOK = true
 		}
@@ -381,11 +463,15 @@ func clientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, connec
 	if !kcpOK && len(dual.legStreams()) > 0 {
 		extraFirst := cloneMessage(FirstMessage)
 		markExtraLeg(extraFirst)
-		if tcp2, e2 := tcpClientStreamContext(context.Background(), extraFirst, tcpAddr, originalNodeId, connectionId, true); e2 == nil {
+		if tcp2, e2 := dialTCP(context.Background(), extraFirst); e2 == nil {
 			if legID, aerr := dual.attachLeg(streamTransportTCP, tcp2); aerr != nil {
 				_ = tcp2.Close()
 			} else {
-				dual.SetReconnectDialer(legID, extraTCPDialer)
+				if relayPolicy != nil {
+					dual.setPersistentReconnectDialer(legID, extraTCPDialer)
+				} else {
+					dual.SetReconnectDialer(legID, extraTCPDialer)
+				}
 				logx.Infof("[Dialers] KCP 不通, 补第二条 TCP leg(id=%s) 组成双 TCP failover: target=%.16s connId=%s",
 					legID, originalNodeId, connectionId)
 			}

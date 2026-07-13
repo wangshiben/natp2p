@@ -351,6 +351,11 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			}
 			logx.Infof("[relay] StreamOn 成功: targetNodeId=%.16s connId=%s forward=%v",
 				message.Header.NodeId, message.Header.ConnectionId, forwardFirstMessage)
+			if forwardFirstMessage && isResumeLegMarked(message) {
+				forwardFirstMessage = false
+				logx.Infof("[relay] 恢复已有 ConnectionId，抑制重复业务首帧: targetNodeId=%.16s connId=%s",
+					message.Header.NodeId, message.Header.ConnectionId)
+			}
 			// 现在 leg 已被 StreamOn 切成 pure-forwarder 并装好 frameTap，再启动读循环：
 			// 此后 readLoop 收到的每一帧都进 tap 被 frame pump 可靠转发，不会落入死 inbox。
 			stream.StartLoops()
