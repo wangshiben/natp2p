@@ -20,7 +20,10 @@ const (
 	maxReconnectBackoff     = 5 * time.Second
 )
 
-var ErrRelayCandidatesExhausted = errors.New("relay candidates exhausted")
+var (
+	ErrRelayCandidatesExhausted = errors.New("relay candidates exhausted")
+	ErrResumeSlotOccupied       = errors.New("resume leg slot already occupied")
+)
 
 // streamReconnectDialer 在某条协议 leg 失效后被 DualStream 用来重新建立一条同协议的底层流。
 // 实现需要响应 ctx 取消并在失败时清理资源，不需要自己实现退避。
@@ -111,11 +114,15 @@ type messageIDSender interface {
 // 该结构体也被 relay 侧复用，用来把同一逻辑会话的多条 leg 收拢成一个逻辑流。
 type DualStream struct {
 	mu             sync.RWMutex
+	attachMu       sync.Mutex
 	preferred      streamTransport
 	nodeId         string
 	connectionId   string
 	crypto         network.EncrypSuite
 	collectInbound bool
+
+	e2eDeliveredMu sync.Mutex
+	e2eReplay      e2eReplayWindow
 
 	// legs 保存所有现役 leg，键为唯一 leg ID。legOrder 维护稳定的主备优先级顺序
 	// （先 attach 的排前面），preferred 指向当前主 leg 的 ID。
@@ -135,6 +142,7 @@ type DualStream struct {
 	reconnectDisabled   map[streamTransport]bool
 	reconnectPersistent map[streamTransport]bool
 	reconnectSurvival   atomic.Bool
+	initialDialSetup    atomic.Bool
 	legSignalMu         sync.Mutex
 	legSignal           chan struct{}
 }
@@ -210,31 +218,23 @@ func (d *DualStream) NextMessage(ctx context.Context) (*network.Message, error) 
 			if msg == nil {
 				continue
 			}
-			// 兜底解密：startPump 在 crypto 未装时可能把密文消息推入 d.inbox。
-			// 在应用读取时按当下 d.crypto 再尝试解密一次（成功覆盖、失败原样返回）。
-			// 这彻底消除了 TLS 握手 / 元数据交换期间的解密竞态。
 			d.mu.RLock()
 			crypto := d.crypto
 			d.mu.RUnlock()
-			if crypto != nil && len(msg.Payload) > 0 {
-				if identitySuite, ok := crypto.(network.MessageIdentitySuite); ok {
-					decrypted, messageID, hasMessageID, err := identitySuite.DecryptWithMessageID(msg.Payload)
-					if err == nil {
-						previewLen := len(msg.Payload)
-						if previewLen > 16 {
-							previewLen = 16
-						}
-						logx.Debugf("[DualStream] NextMessage 兜底解密成功(E2E): nodeId=%.16s connId=%s 原密文前16字节=%x → 明文长度=%d",
-							d.NodeId(), d.ConnectionId(), msg.Payload[:previewLen], len(decrypted))
-						msg.Payload = decrypted
-						if hasMessageID {
-							_ = messageID
-						}
+			if crypto != nil {
+				messageID, authenticated, err := network.OpenMessagePayload(crypto, msg)
+				if err != nil {
+					_ = d.Close()
+					return nil, fmt.Errorf("DualStream E2E record rejected: %w", err)
+				}
+				if authenticated {
+					duplicate, replayErr := d.seenOrRecordE2EMessage(messageID)
+					if replayErr != nil {
+						_ = d.Close()
+						return nil, fmt.Errorf("DualStream E2E replay state rejected: %w", replayErr)
 					}
-					// 解密失败则保留原样（多半因为消息已经在 TcpStream 解过了/或本来就是明文）
-				} else {
-					if decrypted, err := crypto.Decrypt(msg.Payload); err == nil {
-						msg.Payload = decrypted
+					if duplicate {
+						continue
 					}
 				}
 			}
@@ -291,7 +291,15 @@ func (d *DualStream) SendMessageAsync(ctx context.Context, message *network.Mess
 // 调度该协议重连，然后用同一条消息在 backup 上重发，实现实时切换。
 // 若两条 leg 都失败或都不存在，关闭整个逻辑流并返回错误。
 func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) error {
-	messageID := d.newOutgoingMessageID()
+	sealedMessage := cloneMessage(message)
+	d.mu.RLock()
+	crypto := d.crypto
+	d.mu.RUnlock()
+	if crypto != nil {
+		if _, err := network.SealMessagePayload(crypto, sealedMessage, nil); err != nil {
+			return fmt.Errorf("DualStream E2E seal failed: %w", err)
+		}
+	}
 	for {
 		legSignal := d.currentLegSignal()
 		primaryKind, primary, backupKind, backup := d.sendOrder()
@@ -316,7 +324,7 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 			backupKind, backup = streamTransportUnknown, nil
 		}
 
-		err := sendMessageWithIdentity(ctx, primary, cloneMessage(message), messageID)
+		err := primary.SendMessage(ctx, cloneMessage(sealedMessage))
 		if err == nil {
 			return nil
 		}
@@ -334,7 +342,7 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 		}
 
 		if backup != nil {
-			retryErr := sendMessageWithIdentity(ctx, backup, cloneMessage(message), messageID)
+			retryErr := backup.SendMessage(ctx, cloneMessage(sealedMessage))
 			if retryErr == nil {
 				d.setPreferred(backupKind)
 				return nil
@@ -359,21 +367,38 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 	}
 }
 
-func (d *DualStream) newOutgoingMessageID() []byte {
+func (d *DualStream) SendMessageAwaitAck(ctx context.Context, message *network.Message) error {
+	sealedMessage := cloneMessage(message)
 	d.mu.RLock()
 	crypto := d.crypto
 	d.mu.RUnlock()
-	if suite, ok := crypto.(network.MessageIdentitySuite); ok {
-		return suite.NewMessageID()
+	if crypto != nil {
+		if _, err := network.SealMessagePayload(crypto, sealedMessage, nil); err != nil {
+			return fmt.Errorf("DualStream E2E seal failed: %w", err)
+		}
 	}
+	primaryKind, primary, backupKind, backup := d.sendOrder()
+	if primary == nil {
+		primaryKind = backupKind
+		primary = backup
+	}
+	if primary == nil {
+		return errors.New("stream closed")
+	}
+	sender, ok := primary.(interface {
+		SendMessageAwaitAck(context.Context, *network.Message) error
+	})
+	if !ok {
+		return errors.New("stream does not support acknowledged relay send")
+	}
+	if err := sender.SendMessageAwaitAck(ctx, sealedMessage); err != nil {
+		return err
+	}
+	// ACK 证明该 leg 已完整接收业务首帧。等待期间 preferred 可能被另一条
+	// Server leg 改写；在放行 Client 前恢复到已确认首帧的 leg，保证紧随其后的
+	// Noise hello 不会跨 leg 越过尚未发布到 Server 应用层的公钥首帧。
+	d.setPreferred(primaryKind)
 	return nil
-}
-
-func sendMessageWithIdentity(ctx context.Context, stream network.Stream, message *network.Message, messageID []byte) error {
-	if sender, ok := stream.(messageIDSender); ok {
-		return sender.sendMessageWithMessageID(ctx, message, messageID)
-	}
-	return stream.SendMessage(ctx, message)
 }
 
 func (d *DualStream) NodeId() string {
@@ -420,22 +445,21 @@ func (d *DualStream) ConnectionId() string {
 
 func (d *DualStream) SetCryptoSuite(suite network.EncrypSuite) {
 	d.mu.Lock()
+	if d.crypto != nil {
+		d.mu.Unlock()
+		logx.Errorf("[DualStream] 拒绝替换或移除已建立的 E2E suite: nodeId=%.16s connId=%s", d.NodeId(), d.ConnectionId())
+		_ = d.Close()
+		return
+	}
+	if suite == nil {
+		d.mu.Unlock()
+		return
+	}
 	d.crypto = suite
-	streams := make([]network.Stream, 0, len(d.legs))
-	for _, entry := range d.legs {
-		streams = append(streams, entry.stream)
-	}
 	d.mu.Unlock()
-	for _, s := range streams {
-		if s != nil {
-			s.SetCryptoSuite(suite)
-		}
-	}
-	if suite != nil {
-		// 加密套件只能在端到端握手成功后生成；以此作为所有框架调用方统一的
-		// “连接已建立”边界，避免遗漏某个上层包装器的显式启用调用。
-		d.EnableReconnectSurvival()
-	}
+	// 加密套件只能在端到端握手成功后生成；以此作为所有框架调用方统一的
+	// “连接已建立”边界，避免遗漏某个上层包装器的显式启用调用。
+	d.EnableReconnectSurvival()
 }
 
 func (d *DualStream) SetIdentity(nodeId, connectionId string) {
@@ -454,9 +478,42 @@ func (d *DualStream) SetIdentity(nodeId, connectionId string) {
 
 // EnableReconnectSurvival 允许这条已完成应用层握手的逻辑流在所有物理 leg
 // 暂时断开时继续存活，等待 Relay 重连或切换后恢复。默认关闭，确保准入拒绝、
-// TLS 握手失败等建连阶段错误可以立即以 EOF/关闭返回给调用方。
+// Noise 握手失败等建连阶段错误可以立即以 EOF/关闭返回给调用方。
 func (d *DualStream) EnableReconnectSurvival() {
 	d.reconnectSurvival.Store(true)
+
+	d.reconnectMu.Lock()
+	missingCandidates := make([]streamTransport, 0, len(d.reconnectDialers))
+	for id, dial := range d.reconnectDialers {
+		if dial != nil && !d.reconnectDisabled[id] {
+			missingCandidates = append(missingCandidates, id)
+		}
+	}
+	d.reconnectMu.Unlock()
+	for _, id := range missingCandidates {
+		if !d.HasStream(id) {
+			d.scheduleReconnect(id)
+		}
+	}
+}
+
+// beginInitialDialSetup / finishInitialDialSetup 保护 client dual 拨号的组装窗口：
+// 首条已 ACK 的物理 leg 可能在另一条 leg 或 extra TCP 尚未 attach 时立刻 EOF，
+// 此时不能让 pump 把仍在构造的 DualStream 关闭。该 barrier 不启用重连，且只在
+// clientStreamWithRelayPolicy 完成初始 leg 组装前有效；结束时没有任何 leg 仍会失败关闭。
+func (d *DualStream) beginInitialDialSetup() {
+	d.initialDialSetup.Store(true)
+}
+
+func (d *DualStream) finishInitialDialSetup() bool {
+	d.initialDialSetup.Store(false)
+	d.mu.RLock()
+	hasLeg := len(d.legs) > 0
+	d.mu.RUnlock()
+	if !hasLeg {
+		_ = d.Close()
+	}
+	return hasLeg
 }
 
 func (d *DualStream) TCPStream() *TcpStream {
@@ -488,6 +545,9 @@ func (d *DualStream) preferredTransport() streamTransport {
 }
 
 func (d *DualStream) EnableFrameRelay() *DualFrameRelayEndpoint {
+	d.attachMu.Lock()
+	defer d.attachMu.Unlock()
+
 	d.mu.Lock()
 	if d.frameEndpoint != nil {
 		endpoint := d.frameEndpoint
@@ -521,38 +581,29 @@ func (d *DualStream) EnableFrameRelay() *DualFrameRelayEndpoint {
 }
 
 func (d *DualStream) AttachStream(stream network.Stream) error {
-	return d.attachStreamCoexist(stream, false)
+	return d.attachStreamCoexist(stream, false, false)
 }
 
-// AttachStreamCoexist 接入一条 leg；coexist=true 时强制并存（用于双 TCP 的额外 leg，
-// 即首帧带 legExtraMarker 的那条），不顶替同协议族已有 leg。
+// AttachStreamCoexist 接入 Relay 侧的一条 leg。coexist=false 使用协议族的主 slot，
+// coexist=true 使用稳定的备用 slot（用于首帧带 legExtraMarker 的第二条 TCP）。
+// 同一协议族因此最多保留主备两条；同一 slot 刷新时原子替换旧 leg，而不是继续追加。
 func (d *DualStream) AttachStreamCoexist(stream network.Stream, coexist bool) error {
-	return d.attachStreamCoexist(stream, coexist)
+	return d.attachStreamCoexist(stream, coexist, false)
 }
 
-func (d *DualStream) attachStreamCoexist(stream network.Stream, coexist bool) error {
+func (d *DualStream) attachStreamCoexist(stream network.Stream, coexist, resume bool) error {
 	family := detectStreamTransport(stream)
 	if family == streamTransportUnknown {
 		return errors.New("unknown stream transport")
 	}
-	if coexist {
-		// 并存：分配新唯一 ID，不顶替同族 leg。
-		_, err := d.attachLeg(family, stream)
-		return err
-	}
-	// 顶替：复用同族现有 leg 的 ID，关闭旧流。
-	d.mu.Lock()
 	targetID := family
-	var oldStream network.Stream
-	for _, lid := range d.legOrder {
-		if entry := d.legs[lid]; entry != nil && entry.family == family {
-			targetID = lid
-			oldStream = entry.stream
-			break
-		}
+	promoteWithinFamily := true
+	if coexist {
+		targetID = relayBackupLegID(family)
+		promoteWithinFamily = false
 	}
-	d.mu.Unlock()
-	if err := d.attachWithID(targetID, family, stream); err != nil {
+	oldStream, err := d.attachWithIDPolicy(targetID, family, stream, promoteWithinFamily, resume)
+	if err != nil {
 		return err
 	}
 	if oldStream != nil && oldStream != stream {
@@ -595,46 +646,170 @@ func (d *DualStream) attachLeg(family streamTransport, stream network.Stream) (s
 // attachWithID 用指定的 leg ID 接入一条 leg。用于重连：保持与失败前相同的 leg ID，
 // 使 reconnectDialers / frame adapter 等按 ID 索引的结构保持一致。
 func (d *DualStream) attachWithID(id, family streamTransport, stream network.Stream) error {
+	_, err := d.attachWithIDPolicy(id, family, stream, false, false)
+	return err
+}
+
+// attachWithIDPolicy 在一个 d.mu 临界区内完成 slot 替换与 preferred 更新。
+// promoteWithinFamily 用于 Relay normal slot：若当前 preferred 也是同一物理协议族
+// （典型为主 slot 刚掉线、旧备用 slot 临时接管），新主 slot 必须立即恢复为 preferred。
+func (d *DualStream) attachWithIDPolicy(id, family streamTransport, stream network.Stream, promoteWithinFamily, rejectOccupiedResume bool) (network.Stream, error) {
 	if stream == nil {
-		return errors.New("stream is nil")
+		return nil, errors.New("stream is nil")
 	}
 	if id == streamTransportUnknown || family == streamTransportUnknown {
-		return errors.New("unknown stream transport")
+		return nil, errors.New("unknown stream transport")
 	}
+	d.attachMu.Lock()
+	defer d.attachMu.Unlock()
 
 	d.mu.Lock()
-	d.legs[id] = &legEntry{id: id, family: family, stream: stream}
-	// 避免重复加入 legOrder（重连复用同 ID 时它可能已被移除，正常追加；若仍在则不重复）。
-	present := false
-	for _, v := range d.legOrder {
-		if v == id {
-			present = true
+	select {
+	case <-d.ctx.Done():
+		d.mu.Unlock()
+		return nil, errors.New("dual stream closed")
+	default:
+	}
+	previousEntry := d.legs[id]
+	if rejectOccupiedResume && previousEntry != nil && !streamIsClosed(previousEntry.stream) {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("%w: slot=%s", ErrResumeSlotOccupied, id)
+	}
+	previousPreferred := d.preferred
+	orderContainedID := false
+	for _, value := range d.legOrder {
+		if value == id {
+			orderContainedID = true
 			break
 		}
 	}
+	d.legs[id] = &legEntry{id: id, family: family, stream: stream}
+	// 避免重复加入 legOrder（重连复用同 ID 时它可能已被移除，正常追加；若仍在则不重复）。
+	present := orderContainedID
 	if !present {
 		d.legOrder = append(d.legOrder, id)
-	}
-	if d.crypto != nil {
-		stream.SetCryptoSuite(d.crypto)
 	}
 	nodeId := d.nodeId
 	connectionId := d.connectionId
 	frameEndpoint := d.frameEndpoint
-	if d.preferred == streamTransportUnknown {
+	if d.preferred == streamTransportUnknown ||
+		(promoteWithinFamily && legFamily(d.preferred) == family) {
 		d.preferred = id
 	}
 	d.mu.Unlock()
 
 	applyIdentity(stream, nodeId, connectionId)
 	if frameEndpoint != nil {
-		_ = frameEndpoint.AttachStream(id, stream)
+		if err := frameEndpoint.AttachStream(id, stream); err != nil {
+			restoredPrevious := false
+			d.mu.Lock()
+			if current := d.legs[id]; current != nil && current.stream == stream {
+				if previousEntry != nil {
+					d.legs[id] = previousEntry
+					restoredPrevious = true
+				} else {
+					delete(d.legs, id)
+				}
+				if !orderContainedID {
+					d.removeLegOrderLocked(id)
+				}
+				d.preferred = previousPreferred
+			}
+			d.mu.Unlock()
+			frameEndpoint.onLegDetached(id, stream)
+			if restoredPrevious {
+				if restoreErr := frameEndpoint.AttachStream(id, previousEntry.stream); restoreErr != nil {
+					d.detach(id, previousEntry.stream)
+					_ = previousEntry.stream.Close()
+					_ = stream.Close()
+					return nil, fmt.Errorf("attach frame relay leg: %w; restore previous leg: %v", err, restoreErr)
+				}
+			} else if previousEntry != nil && previousEntry.stream != stream {
+				frameEndpoint.onLegDetached(id, previousEntry.stream)
+			}
+			_ = stream.Close()
+			if previousEntry != nil && previousEntry.stream != stream && !restoredPrevious {
+				_ = previousEntry.stream.Close()
+			}
+			return nil, fmt.Errorf("attach frame relay leg: %w", err)
+		}
 	}
 	if d.collectInbound {
 		d.startPump(id, stream)
 	}
 	d.signalLegAvailable()
-	return nil
+	if previousEntry == nil {
+		return nil, nil
+	}
+	return previousEntry.stream, nil
+}
+
+func streamIsClosed(stream network.Stream) bool {
+	if stream == nil {
+		return true
+	}
+	if state, ok := stream.(interface{ IsClosed() bool }); ok {
+		return state.IsClosed()
+	}
+	if tcpStream := tcpStreamFromStream(stream); tcpStream != nil {
+		return tcpStream.IsClosed()
+	}
+	return false
+}
+
+func (d *DualStream) seenOrRecordE2EMessage(messageID []byte) (bool, error) {
+	d.e2eDeliveredMu.Lock()
+	defer d.e2eDeliveredMu.Unlock()
+	return d.e2eReplay.observe(messageID)
+}
+
+// retireStaleKCPWhenDualTCPReady 仅在 Relay 侧 exact tcp/tcp#2 slot 齐备时
+// 淘汰旧 KCP。两条 TCP 表示新拨号代次已确认 KCP 握手不可用；若仅到达一条，
+// 则它可能只是乱序注册，不能据此关闭仍健康的 KCP。
+func (d *DualStream) retireStaleKCPWhenDualTCPReady() int {
+	d.attachMu.Lock()
+	d.mu.Lock()
+	primary := d.legs[streamTransportTCP]
+	backup := d.legs[relayBackupLegID(streamTransportTCP)]
+	if primary == nil || primary.family != streamTransportTCP ||
+		backup == nil || backup.family != streamTransportTCP {
+		d.mu.Unlock()
+		d.attachMu.Unlock()
+		return 0
+	}
+	type retiredLeg struct {
+		id     streamTransport
+		stream network.Stream
+	}
+	retired := make([]retiredLeg, 0, 1)
+	for id, entry := range d.legs {
+		if entry == nil || entry.family != streamTransportKCP {
+			continue
+		}
+		retired = append(retired, retiredLeg{id: id, stream: entry.stream})
+		delete(d.legs, id)
+		d.removeLegOrderLocked(id)
+	}
+	if len(retired) == 0 {
+		d.mu.Unlock()
+		d.attachMu.Unlock()
+		return 0
+	}
+	d.preferred = streamTransportTCP
+	frameEndpoint := d.frameEndpoint
+	d.mu.Unlock()
+	d.attachMu.Unlock()
+
+	for _, leg := range retired {
+		if frameEndpoint != nil {
+			frameEndpoint.onLegDetached(leg.id, leg.stream)
+		}
+		if leg.stream != nil {
+			_ = leg.stream.Close()
+		}
+	}
+	d.signalLegAvailable()
+	return len(retired)
 }
 
 func (d *DualStream) currentLegSignal() <-chan struct{} {
@@ -697,9 +872,9 @@ func (d *DualStream) detach(id streamTransport, stream network.Stream) {
 	d.mu.Unlock()
 	// 通知 frame relay 摘除该 leg 的 adapter 并把回写路由切到存活 leg。
 	if frameEndpoint != nil {
-		frameEndpoint.onLegDetached(id)
+		frameEndpoint.onLegDetached(id, stream)
 	}
-	if empty && !(d.reconnectSurvival.Load() && d.hasReconnectChance()) {
+	if empty && !d.initialDialSetup.Load() && !(d.reconnectSurvival.Load() && d.hasReconnectChance()) {
 		d.Close()
 	}
 }
@@ -996,6 +1171,13 @@ func (d *DualStream) streamLocked(id streamTransport) network.Stream {
 	return nil
 }
 
+func (d *DualStream) isCurrentLeg(id streamTransport, stream network.Stream) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	entry := d.legs[id]
+	return entry != nil && entry.stream == stream
+}
+
 // hasFamilyLocked 报告是否存在某物理协议族(kcp/tcp)的现役 leg（调用方持锁）。
 func (d *DualStream) hasFamilyLocked(family streamTransport) bool {
 	for _, entry := range d.legs {
@@ -1004,6 +1186,10 @@ func (d *DualStream) hasFamilyLocked(family streamTransport) bool {
 		}
 	}
 	return false
+}
+
+func relayBackupLegID(family streamTransport) streamTransport {
+	return streamTransport(fmt.Sprintf("%s#2", family))
 }
 
 // allocLegIDLocked 为新 leg 分配唯一 ID：优先用协议族名("tcp"/"kcp")，
@@ -1084,7 +1270,7 @@ func SetStreamIdentity(stream network.Stream, nodeId, connectionId string) bool 
 	return applyIdentity(stream, nodeId, connectionId)
 }
 
-// EnableReconnectSurvival 在已完成注册或端到端 TLS 握手的流上启用透明 Relay
+// EnableReconnectSurvival 在已完成注册或端到端 Noise 握手的流上启用透明 Relay
 // 故障转移。非 DualStream 返回 false，调用方无需为单 leg 流做额外处理。
 func EnableReconnectSurvival(stream network.Stream) bool {
 	dual, ok := stream.(*DualStream)

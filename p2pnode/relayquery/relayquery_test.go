@@ -7,9 +7,9 @@ import (
 
 func TestListRespRoundTrip(t *testing.T) {
 	want := &ListResp{Relays: []Info{
-		{NodeID: "aa11", Addr: "38.0.0.1:9000"},
+		{NodeID: "aa11", Addr: "192.0.2.1:9000"},
 		{
-			NodeID: "bb22", Addr: "104.0.0.1:9000",
+			NodeID: "bb22", Addr: "198.51.100.1:9000",
 			ContinuousOnlineSince: 1_700_000_000,
 			LastControlSeen:       1_700_000_123,
 			CapacityClass:         "medium",

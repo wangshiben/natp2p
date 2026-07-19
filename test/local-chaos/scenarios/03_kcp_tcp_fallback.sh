@@ -21,12 +21,17 @@ if ! topology_reset; then
   exit 1
 fi
 
-server_id=$(start_tunnel_server natserver03 relay02:9000 "$scenario" 5) || {
+server_id=$(start_tunnel_server natserver03 relay03:9000 "$scenario" 5) || {
   fail 'Tunnel Server 启动失败'
   capture_topology_logs "$scenario"
   exit 1
 }
-launch_tunnel_client natclient05 relay02:9000 "$server_id" 18085 "$scenario"
+if ! wait_compose_log relay03 "新建 StreamGroup: nodeId=${server_id:0:16}" 20; then
+  fail 'Tunnel Server 尚未在 relay03 完成可路由注册'
+  capture_topology_logs "$scenario"
+  exit 1
+fi
+launch_tunnel_client natclient05 relay01:9000 "$server_id" 18085 "$scenario"
 if ! wait_client_ready natclient05 "$scenario" 40; then
   fail '故障注入前隧道未建立'
   capture_topology_logs "$scenario"

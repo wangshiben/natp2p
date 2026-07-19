@@ -151,6 +151,7 @@ type stripedAccept struct {
 	legs   []*networkFrameWork.MuxStream // 已到达的 leg
 	target string                        // 合成 hello 用的目标 NodeId
 	pubKey string                        // 合成 hello 用的源节点公钥
+	flags  uint8                         // 合成 hello 用的业务 leg 标志位
 }
 
 // NewRelayNode 创建一个中继节点。
@@ -542,7 +543,12 @@ func (n *RelayNode) collectStripedLeg(st *networkFrameWork.MuxStream) {
 	n.mu.Lock()
 	sa := n.stripedLegs[connID]
 	if sa == nil {
-		sa = &stripedAccept{want: want, target: st.TargetNodeID(), pubKey: st.OriginPubKey()}
+		sa = &stripedAccept{
+			want:   want,
+			target: st.TargetNodeID(),
+			pubKey: st.OriginPubKey(),
+			flags:  st.LegFlags(),
+		}
 		n.stripedLegs[connID] = sa
 	}
 	sa.legs = append(sa.legs, st)
@@ -556,7 +562,7 @@ func (n *RelayNode) collectStripedLeg(st *networkFrameWork.MuxStream) {
 	}
 	// 聚齐：组装条带化逻辑连接（接入侧用同 connID + M 条 leg）。
 	lc := networkFrameWork.NewStripedConn(connID, sa.legs)
-	conn, err := networkFrameWork.AcceptBridgeMuxLogicalConn(lc, sa.target, sa.pubKey)
+	conn, err := networkFrameWork.AcceptBridgeMuxLogicalConn(lc, sa.target, sa.pubKey, sa.flags)
 	if err != nil {
 		logx.Warnf("[relaynode] bridge-mux 条带化合成 hello 失败: %v", err)
 		_ = lc.Close()
@@ -788,8 +794,9 @@ func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, e
 	// 连接池版（Phase B+）：桥接不再每会话独占一条物理 TCP, 而是从到 hostAddr 的连接池
 	// 开一条 mux 逻辑会话（多路复用到共享物理连接上）。会话结束 Close 只关该逻辑会话。
 	br := networkFrameWork.NewCrossRelayBridge(n.ctx, hostAddr, target, string(firstMsg.Payload), connID)
+	legFlags := firstMsg.Header.LegFlags
 	br.SetDialFunc(func(addr, targetNodeId, originPubKeyHex, cid string) (net.Conn, error) {
-		return n.openBridgeStream(addr, targetNodeId, originPubKeyHex, cid)
+		return n.openBridgeStream(addr, targetNodeId, originPubKeyHex, cid, legFlags)
 	})
 	if err := br.SpliceLeg(stream); err != nil {
 		cleanup()
@@ -802,9 +809,20 @@ func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, e
 		close(entry.kcpReady) // 通知等待中的 TCP leg: 已建桥
 	}
 	n.mu.Unlock()
+	go n.releaseLocalBridgeWhenDone(connID, entry, br)
 	logx.Infof("[relaynode] 跨中继桥接建立: target=%.16s via relay=%s connId=%s leg=%s",
 		target, hostAddr, connID, networkFrameWork.LegTransport(stream))
 	return nil
+}
+
+func (n *RelayNode) releaseLocalBridgeWhenDone(connID string, expected *localBridgeEntry, bridge *networkFrameWork.CrossRelayBridge) {
+	<-bridge.Done()
+	bridge.Close()
+	n.mu.Lock()
+	if n.localLegs[connID] == expected && expected.bridge == bridge {
+		delete(n.localLegs, connID)
+	}
+	n.mu.Unlock()
 }
 
 // spliceFailoverLeg 把一条同 connID 的多余 leg 作为 failover leg 接入已建好的桥接。

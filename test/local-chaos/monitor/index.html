@@ -1,0 +1,960 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BNFS 长稳监控</title>
+  <style>
+    :root { color-scheme: dark; --bg:#081018; --panel:#101c27; --panel2:#142331; --line:#24394a; --text:#eaf4fa; --muted:#8fa7b7; --green:#49d49d; --yellow:#f5c45e; --red:#ff6b79; --blue:#65b9ff; --purple:#b391ff; --orange:#ff996c; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:320px; background:radial-gradient(circle at 15% -10%,#163b50 0,transparent 34%),var(--bg); color:var(--text); font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { max-width:1500px; margin:auto; padding:24px; }
+    header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:20px; }
+    h1 { margin:0 0 5px; font-size:25px; letter-spacing:.02em; }
+    h2 { margin:0 0 14px; font-size:16px; }
+    .muted { color:var(--muted); }
+    .right { text-align:right; }
+    .badge { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line); border-radius:999px; padding:7px 12px; background:#0d1822; font-weight:700; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); box-shadow:0 0 12px currentColor; }
+    .ok .dot,.dot.ok { background:var(--green); color:var(--green); } .warn .dot,.dot.warn { background:var(--yellow); color:var(--yellow); } .bad .dot,.dot.bad { background:var(--red); color:var(--red); }
+    .grid { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:14px; margin-bottom:14px; }
+    .panel { grid-column:span 12; min-width:0; border:1px solid var(--line); border-radius:14px; background:linear-gradient(160deg,var(--panel2),var(--panel)); padding:16px; box-shadow:0 12px 35px #0005; }
+    .summary { grid-column:span 3; }
+    .resource { grid-column:span 4; }
+    .chart-panel { grid-column:span 8; }
+    .probe-panel { grid-column:span 4; }
+    .value { font-size:25px; font-weight:760; letter-spacing:.01em; margin-top:5px; }
+    .small { font-size:12px; }
+    .meter { height:8px; overflow:hidden; border-radius:8px; background:#071019; margin:12px 0 7px; }
+    .meter > i { display:block; width:0; height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--green),var(--blue)); transition:width .35s; }
+    canvas { width:100%; height:265px; display:block; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:9px 8px; border-bottom:1px solid #203341; text-align:left; white-space:nowrap; }
+    th { color:var(--muted); font-size:12px; font-weight:650; }
+    tbody tr:last-child td { border-bottom:0; }
+    .scroll { overflow:auto; }
+    .node-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:9px; }
+    .node { border:1px solid var(--line); border-radius:10px; background:#0b1721; padding:11px; }
+    .node-head { display:flex; justify-content:space-between; align-items:center; gap:8px; font-weight:720; }
+    .node-meta { color:var(--muted); font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; margin-top:7px; overflow:hidden; text-overflow:ellipsis; }
+    .status { border-radius:999px; padding:2px 7px; font-size:10px; text-transform:uppercase; border:1px solid currentColor; }
+    .status.ok { color:var(--green); } .status.warn { color:var(--yellow); } .status.bad { color:var(--red); }
+    .alert { display:none; margin-bottom:14px; border:1px solid #7f313c; background:#36171d; color:#ffd9dd; padding:12px 14px; border-radius:10px; white-space:pre-wrap; }
+    .split-title { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    .legend { display:flex; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
+    .legend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
+    .legend i.line-key { width:18px; height:3px; border-radius:2px; vertical-align:middle; }
+    .topology-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 12px; }
+    .partition-summary { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+    .partition-chip { border:1px solid #31536b; border-radius:8px; padding:4px 8px; color:var(--muted); background:#0a1721; font:11px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .partition-chip strong { color:var(--text); margin-right:5px; }
+    .active-path { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-height:29px; color:var(--muted); }
+    .path-node { border:1px solid #31536b; border-radius:999px; padding:3px 8px; color:var(--text); background:#0a1721; font:11px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .path-arrow { color:var(--orange); font-weight:800; }
+    .topology-scroll { overflow:auto; border:1px solid #203744; border-radius:12px; background:radial-gradient(circle at 50% 25%,#153041 0,transparent 47%),#07121a; }
+    #topologyGraph { display:block; min-width:1050px; width:100%; height:auto; aspect-ratio:1200/625; }
+    .topology-edge { fill:none; stroke:#406177; stroke-width:1.4; opacity:.52; vector-effect:non-scaling-stroke; }
+    .topology-edge.control { stroke:var(--purple); stroke-dasharray:6 5; opacity:.7; }
+    .topology-edge.dual { stroke:var(--blue); }
+    .topology-edge.tcp-only { stroke:var(--yellow); stroke-dasharray:5 4; opacity:.9; }
+    .topology-edge.kcp-only { stroke:var(--green); stroke-dasharray:3 4; opacity:.9; }
+    .topology-edge.blocked { stroke:var(--red); stroke-dasharray:2 6; opacity:.55; }
+    .topology-edge.active { stroke:var(--orange); stroke-width:4; stroke-dasharray:none; opacity:1; filter:drop-shadow(0 0 4px #ff996caa); }
+    .topology-node rect { fill:#0d1d29; stroke:#476277; stroke-width:1.5; vector-effect:non-scaling-stroke; }
+    .topology-node text { fill:var(--text); text-anchor:middle; dominant-baseline:middle; font:600 11px ui-monospace,SFMono-Regular,Consolas,monospace; pointer-events:none; }
+    .topology-node.relay rect { fill:#10283b; stroke:var(--blue); }
+    .topology-node.index rect { fill:#271f3b; stroke:var(--purple); }
+    .topology-node.ca rect { fill:#173227; stroke:var(--green); }
+    .topology-node.natserver rect { fill:#1b2b29; stroke:#70bba0; }
+    .topology-node.natclient rect { fill:#252435; stroke:#a99bd1; }
+    .topology-node.offline rect { opacity:.5; stroke:var(--red); }
+    .topology-node.active rect { stroke:var(--orange); stroke-width:3; filter:drop-shadow(0 0 5px #ff996c88); }
+    .group-label { fill:var(--muted); font:600 12px ui-sans-serif,system-ui,sans-serif; letter-spacing:.08em; }
+    .reachability-summary { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    #reachabilityMatrix { max-height:590px; }
+    .reach-count { border:1px solid var(--line); border-radius:999px; padding:4px 9px; color:var(--muted); font-size:11px; }
+    .reachability-table { min-width:780px; font-size:12px; }
+    .reachability-table th,.reachability-table td { padding:6px; text-align:center; }
+    .reachability-table th:first-child,.reachability-table td:first-child { position:sticky; left:0; z-index:1; text-align:left; background:#10202c; }
+    .reachability-table thead th { position:sticky; top:0; z-index:2; background:#10202c; }
+    .reachability-table thead th:first-child { z-index:3; }
+    .reach-cell { min-width:54px; border-radius:6px; padding:4px 5px; display:inline-block; border:1px solid transparent; font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace; cursor:help; }
+    .reach-cell.dual { color:#d9f2ff; background:#17466a; border-color:#3278a6; }
+    .reach-cell.tcp-only { color:#ffe8ae; background:#55451c; border-color:#91732a; }
+    .reach-cell.kcp-only { color:#d7ffef; background:#19483a; border-color:#33846b; }
+    .reach-cell.blocked { color:#ffd2d6; background:#54212a; border-color:#8e3542; }
+    .reach-cell.none { color:#637887; background:#0a151d; border-color:#1d303d; }
+    .reach-cell.unknown { color:var(--muted); background:#17242e; border-color:#314452; }
+    .reach-cell.active { box-shadow:0 0 0 2px var(--orange),0 0 9px #ff996c88; }
+    .transfer-summary { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+    .transfer-stat { border:1px solid var(--line); border-radius:999px; padding:5px 10px; color:var(--muted); font-size:12px; }
+    .transfer-stat strong { color:var(--text); margin-left:4px; }
+    .client-transfer-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(520px,1fr)); gap:11px; }
+    .client-transfer { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:11px; background:#0b1721; }
+    .client-transfer-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 12px; border-bottom:1px solid #203341; }
+    .client-transfer-head strong { font:700 13px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .client-transfer-scroll { overflow:auto; }
+    .client-transfer-table { min-width:690px; font-size:12px; }
+    .client-transfer-table th,.client-transfer-table td { padding:7px 8px; }
+    .client-transfer-table td:first-child { color:var(--muted); }
+    .client-transfer-table .empty-row { height:72px; text-align:center; color:var(--muted); }
+    .failure-summary { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .failure-stat { border:1px solid var(--line); border-radius:999px; padding:5px 10px; color:var(--muted); font-size:12px; }
+    .failure-stat strong { color:var(--text); margin-left:4px; }
+    .failure-watcher { display:flex; align-items:center; gap:8px 14px; flex-wrap:wrap; margin-bottom:12px; padding:9px 11px; border:1px solid var(--line); border-left:3px solid var(--muted); border-radius:9px; background:#101c25; color:var(--muted); font-size:12px; }
+    .failure-watcher.ok { border-left-color:var(--green); background:#10241f; }
+    .failure-watcher.warn { border-left-color:var(--yellow); background:#211d17; }
+    .failure-watcher.bad { border-left-color:var(--red); background:#29191d; }
+    .failure-watcher strong { color:var(--text); }
+    .failure-patterns { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:8px; margin-bottom:12px; }
+    .failure-pattern { border:1px solid #49353a; border-left:3px solid var(--red); border-radius:8px; padding:9px 10px; background:#1b1720; }
+    .failure-pattern.observe { border-left-color:var(--blue); background:#111c27; }
+    .failure-pattern.warning { border-left-color:var(--yellow); background:#211d17; }
+    .failure-pattern strong { display:block; margin-bottom:4px; color:#ffd9dc; }
+    .failure-pattern span { color:var(--muted); font-size:12px; line-height:1.45; }
+    .failure-list { display:grid; gap:9px; }
+    .failure-card { border:1px solid var(--line); border-radius:10px; padding:11px 12px; background:#0b1721; }
+    .failure-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+    .failure-card-head strong { font:700 13px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .failure-cause { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:4px 8px; font-size:11px; font-weight:700; }
+    .failure-cause.bad { color:#ffd2d6; background:#54212a; border:1px solid #8e3542; }
+    .failure-cause.warn { color:#ffe8ae; background:#55451c; border:1px solid #91732a; }
+    .failure-route { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:10px 0 8px; }
+    .failure-hop { border:1px solid #315064; border-radius:7px; padding:5px 8px; background:#122535; font:600 11px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .failure-hop small { display:block; margin-bottom:2px; color:var(--muted); font:9px ui-sans-serif,system-ui,sans-serif; letter-spacing:.05em; }
+    .failure-hop.bridge { border-color:#9a684e; background:#30241f; color:#ffd7bd; }
+    .failure-hop.partition-a { border-color:#477d9c; }
+    .failure-hop.partition-b { border-color:#7a62a4; }
+    .failure-arrow { color:var(--muted); font-size:16px; }
+    .failure-meta { display:flex; gap:8px 14px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
+    .failure-diagnosis { margin-top:8px; color:#e7eef3; line-height:1.45; font-size:13px; }
+    .failure-evidence { margin-top:6px; color:var(--muted); font-size:12px; line-height:1.45; }
+    .failure-progress { height:5px; margin-top:8px; overflow:hidden; border-radius:999px; background:#1b2b36; }
+    .failure-progress i { display:block; height:100%; background:var(--red); }
+    .failure-empty { min-height:90px; display:flex; justify-content:center; align-items:center; color:var(--muted); }
+    .worker-summary { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin:10px 0 12px; padding:10px 12px; border:1px solid #203744; border-radius:10px; background:#091721; }
+    .worker-summary.ok { border-color:#21644d; }
+    .worker-summary.bad { border-color:#713442; }
+    .worker-chip { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border-radius:999px; background:#122531; color:var(--muted); font-size:12px; }
+    .worker-chip::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--red); }
+    .worker-chip.alive::before { background:var(--green); }
+    .empty-state { display:flex; justify-content:center; align-items:center; min-height:170px; color:var(--muted); text-align:center; padding:24px; }
+    @media (max-width:1000px) { .summary,.resource { grid-column:span 6; } .chart-panel,.probe-panel { grid-column:span 12; } }
+    @media (max-width:620px) { main{padding:14px} header{display:block}.right{text-align:left;margin-top:12px}.summary,.resource{grid-column:span 12}.client-transfer-grid{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>BNFS 12h Stability Control</h1><div class="muted" id="identity">正在连接监控服务…</div></div>
+    <div class="right"><div class="badge" id="phaseBadge"><i class="dot"></i><span id="phase">UNKNOWN</span></div><div class="muted small" id="updated" style="margin-top:7px"></div></div>
+  </header>
+  <div class="alert" id="alert"></div>
+
+  <section class="grid">
+    <article class="panel summary"><div class="muted">剩余时间</div><div class="value" id="remaining">--:--:--</div><div class="small muted" id="deadline">等待进入 RUNNING</div></article>
+    <article class="panel summary"><div class="muted">核心节点健康</div><div class="value" id="core">0 / 9</div><div class="small muted">CA + Index + 7 Relay</div></article>
+    <article class="panel summary"><div class="muted">NAT 容器运行</div><div class="value" id="nat">0 / 19</div><div class="small muted">13 Server + 6 Client</div></article>
+    <article class="panel summary"><div class="muted">容器重启总数</div><div class="value" id="restarts">0</div><div class="small muted" id="caStatus">CA Web 探测中</div></article>
+
+    <article class="panel resource"><div class="split-title"><h2>项目 CPU</h2><strong id="cpuText">0%</strong></div><div class="meter"><i id="cpuMeter"></i></div><div class="small muted" id="cpuHost">阈值 55%</div></article>
+    <article class="panel resource"><div class="split-title"><h2>项目内存</h2><strong id="memText">0%</strong></div><div class="meter"><i id="memMeter"></i></div><div class="small muted" id="memHost">阈值 40%</div></article>
+    <article class="panel resource"><div class="split-title"><h2>磁盘占用</h2><strong id="diskText">0%</strong></div><div class="meter"><i id="diskMeter"></i></div><div class="small muted" id="diskHost">阈值 40%</div></article>
+
+    <article class="panel chart-panel"><div class="split-title"><h2>资源历史</h2><div class="legend"><span><i style="background:#65b9ff"></i>CPU</span><span><i style="background:#49d49d"></i>内存</span><span><i style="background:#f5c45e"></i>磁盘</span></div></div><canvas id="chart"></canvas></article>
+    <article class="panel probe-panel"><h2>最新端到端探测</h2><div id="probe" class="muted">尚无探测记录</div></article>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="split-title">
+      <h2>NAT Client 随机传输（各节点最新 10 条）</h2>
+      <span class="muted small">任意 Client 可向其可访问的随机 NAT Server 发起传输</span>
+    </div>
+    <div class="worker-summary" id="workerSummary"><strong>随机传输 Worker 0 / 6</strong><span class="muted small">等待 worker 身份数据</span></div>
+    <div class="transfer-summary" id="transferSummary"></div>
+    <div class="client-transfer-grid" id="clientTransfers"></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="split-title">
+      <h2>失败诊断与拓扑路径</h2>
+      <span class="muted small" id="failureFreshness">等待失败分析数据</span>
+    </div>
+    <div class="failure-watcher" id="failureWatcher"><strong>实时失败监视</strong><span>等待监视器状态</span></div>
+    <div class="failure-summary" id="failureSummary"></div>
+    <div class="failure-patterns" id="failurePatterns"></div>
+    <div class="failure-list" id="failureList"><div class="failure-empty">当前没有失败传输记录</div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="split-title">
+      <h2>实时连通拓扑</h2>
+      <div class="legend">
+        <span><i class="line-key" style="background:#65b9ff"></i>KCP + TCP</span>
+        <span><i class="line-key" style="background:#f5c45e"></i>仅 TCP</span>
+        <span><i class="line-key" style="background:#49d49d"></i>仅 KCP</span>
+        <span><i class="line-key" style="background:#ff6b79"></i>已阻断</span>
+        <span><i class="line-key" style="background:#b391ff"></i>控制 / CA 接入链路</span>
+        <span><i class="line-key" style="background:#ff996c"></i>故障基线路径</span>
+      </div>
+    </div>
+    <div class="topology-meta">
+      <div class="active-path" id="activePath"><span>尚未识别故障场景基线路径</span></div>
+      <div class="partition-summary" id="partitionSummary"><span class="muted small">等待网络分区数据</span></div>
+      <span class="muted small" id="topologyFreshness">等待拓扑数据</span>
+    </div>
+    <div class="topology-scroll" id="topologyViewport">
+      <svg id="topologyGraph" viewBox="0 0 1200 625" role="img" aria-label="Relay 与 NAT 节点实时连通拓扑"></svg>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="split-title">
+      <h2>NAT ↔ Relay 直接可达性</h2>
+      <span class="muted small">全量 Compose 网络 + 当前业务 NAT 运行时规则；非逐对主动探测，悬停可看依据</span>
+    </div>
+    <div class="reachability-summary" id="reachabilitySummary"></div>
+    <div class="scroll" id="reachabilityMatrix"><div class="empty-state">等待可达性数据</div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px"><div class="split-title"><h2>持续运行的核心节点</h2><span class="muted small">StartedAt 与 restart 次数可识别重建</span></div><div class="node-grid" id="coreNodes"></div></section>
+  <section class="panel"><div class="split-title"><h2>NAT 节点</h2><span class="muted small">场景可调整 NAT 进程；容器状态仍持续可见</span></div><div class="node-grid" id="natNodes"></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const defaultClientCount = 6;
+let lastData = null;
+async function refresh() {
+  try {
+    const response = await fetch('/api/status', {cache:'no-store'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    lastData = await response.json();
+    render(lastData);
+  } catch (error) {
+    showAlert(`监控数据读取失败：${error.message}`);
+    $('phaseBadge').className = 'badge bad';
+  }
+}
+function render(data) {
+  const phase = data.phase || 'UNKNOWN';
+  $('phase').textContent = phase;
+  $('phaseBadge').className = `badge ${phaseClass(phase)}`;
+  $('identity').textContent = `${data.metadata.run_id || 'unknown run'} · 场景 ${data.metadata.scenario || '?'} ${data.metadata.scenario_name || ''}`;
+  $('updated').textContent = `刷新于 ${new Date(data.generatedAt).toLocaleString()} · 每 2 秒`;
+  $('remaining').textContent = duration(data.timing.remainingSeconds);
+  $('deadline').textContent = data.timing.deadlineEpoch ? `预计结束 ${new Date(data.timing.deadlineEpoch*1000).toLocaleString()}` : '集群初始化中';
+  $('core').textContent = `${data.summary.coreHealthy} / ${data.summary.coreExpected}`;
+  $('nat').textContent = `${data.summary.natRunning} / ${data.summary.natExpected}`;
+  $('restarts').textContent = data.summary.totalRestarts;
+  $('caStatus').textContent = data.ca.reachable ? `CA Web ${round(data.ca.latencyMs,1)} ms` : `CA Web 不可达${data.ca.error ? ' · '+data.ca.error : ''}`;
+  const latest = data.resources.latest || {};
+  resource('cpu', num(latest.project_cpu_host_pct), data.thresholds.cpu, `宿主机 CPU ${round(num(latest.host_cpu_pct),1)}%`);
+  resource('mem', num(latest.project_memory_host_pct), data.thresholds.memory, `宿主机内存 ${round(num(latest.host_memory_pct),1)}%`);
+  resource('disk', num(latest.guard_disk_pct), data.thresholds.disk, `Docker ${latest.docker_disk_pct || 0}% · 证据盘 ${latest.artifact_disk_pct || 0}%`);
+  renderProbe(data.largeProbes?.latest || data.probes.latest);
+  renderWorkers(data.workers);
+  renderClientTransfers(data.clientTransfers, data.metadata);
+  renderFailureWatcher(data.failureWatcher);
+  renderFailureAnalysis(data.failureAnalysis);
+  renderTopology(data);
+  renderNodes('coreNodes', data.nodes.filter(n => ['ca','index','relay'].includes(n.role)));
+  renderNodes('natNodes', data.nodes.filter(n => ['natserver','natclient'].includes(n.role)));
+  drawChart(data.resources.history || [], data.thresholds);
+  const badCore = data.summary.coreHealthy !== data.summary.coreExpected;
+  const terminalBad = ['FAILED','RESOURCE_LIMIT'].includes(phase);
+  const watcherNewFailures = num(data.failureWatcher?.observed?.newFailureRecords);
+  const watcherUnhealthy = phase === 'RUNNING' && (!data.failureWatcher?.available || !data.failureWatcher?.healthy);
+  const workersUnhealthy = phase === 'RUNNING' && num(data.workers?.running) !== num(data.workers?.expected);
+  if (watcherNewFailures > 0) showAlert('实时失败监视器发现 ' + watcherNewFailures + ' 条新失败，请查看失败诊断与拓扑路径');
+  else if (watcherUnhealthy) showAlert('实时失败监视器状态异常：' + (data.failureWatcher?.status || 'UNKNOWN'));
+  else if (workersUnhealthy) showAlert('随机传输 Worker 异常：' + num(data.workers?.running) + ' / ' + num(data.workers?.expected));
+  else if (terminalBad || (phase === 'RUNNING' && badCore)) showAlert(data.status.detail || data.resourceGuard || '存在核心节点异常');
+  else hideAlert();
+}
+function resource(prefix, value, limit, suffix) {
+  $(`${prefix}Text`).textContent = `${round(value,2)}% / ${limit}%`;
+  const meter = $(`${prefix}Meter`); meter.style.width = `${Math.min(100, limit ? value/limit*100 : 100)}%`;
+  meter.style.background = value > limit ? '#ff6b79' : value > limit*.8 ? '#f5c45e' : '';
+  $(`${prefix}Host`).textContent = `强制终止阈值 ${limit}% · ${suffix}`;
+}
+function renderProbe(probe) {
+  if (!probe) { $('probe').textContent = '尚无探测记录'; return; }
+  const ok = probe.rc === '0' && probe.sha256_ok === 'yes';
+  const bytes = num(probe.bytes);
+  const seconds = num(probe.seconds);
+  const throughput = num(probe.mib_per_second) || (seconds > 0 ? bytes / 1048576 / seconds : 0);
+  const requested = num(probe.requested_mib);
+  $('probe').innerHTML = '<div class="value" style="color:' + (ok ? 'var(--green)' : 'var(--red)') + '">' + (ok ? 'PASS' : 'FAIL') + '</div>' +
+    '<table><tbody>' +
+    '<tr><th>时间</th><td>' + escapeHtml(probe.timestamp || '') + '</td></tr>' +
+    '<tr><th>标签</th><td>' + escapeHtml(probe.label || '') + '</td></tr>' +
+    (requested ? '<tr><th>随机大小</th><td>' + requested + ' MiB</td></tr>' : '') +
+    '<tr><th>实际字节</th><td>' + formatBytes(bytes) + ' · ' + Math.floor(bytes) + ' B</td></tr>' +
+    '<tr><th>耗时</th><td>' + round(seconds, 3) + ' s</td></tr>' +
+    '<tr><th>吞吐</th><td>' + round(throughput, 3) + ' MiB/s</td></tr>' +
+    '<tr><th>SHA256</th><td>' + escapeHtml(probe.sha256_ok || '') + '</td></tr>' +
+    '</tbody></table>';
+}
+function renderWorkers(workers = {}) {
+  const expected = Math.max(defaultClientCount, num(workers.expected));
+  const running = Math.max(0, num(workers.running));
+  const clients = Array.isArray(workers.clients) ? workers.clients : [];
+  const healthy = running === expected && expected > 0;
+  $('workerSummary').className = 'worker-summary ' + (healthy ? 'ok' : 'bad');
+  $('workerSummary').innerHTML =
+    '<strong>随机传输 Worker ' + running + ' / ' + expected + '</strong>' +
+    clients.map(worker => '<span class="worker-chip ' + (worker.alive ? 'alive' : '') + '">' +
+      escapeHtml(worker.client || 'unknown') + ' · ' + (worker.alive ? 'alive' : 'stopped') + '</span>').join('');
+}
+function renderClientTransfers(transfers = {}, metadata = {}) {
+  const summary = transfers.summary || {};
+  const available = Boolean(transfers.available);
+  const latest = summary.latestTimestamp ? transferTimestamp(summary.latestTimestamp) : '尚无完成记录';
+  const workloadLimit = Math.max(0, num(metadata.workload_limit_mibps));
+  const transferLimit = Math.max(0, num(metadata.per_transfer_limit_mibps));
+  $('transferSummary').innerHTML =
+    '<span class="transfer-stat">传输总数<strong>' + num(summary.totalTransfers) + '</strong></span>' +
+    '<span class="transfer-stat">成功<strong style="color:var(--green)">' + num(summary.succeeded) + '</strong></span>' +
+    '<span class="transfer-stat">失败<strong style="color:var(--red)">' + num(summary.failed) + '</strong></span>' +
+    '<span class="transfer-stat">实际数据<strong>' + escapeHtml(formatBytes(num(summary.totalBytes))) + '</strong></span>' +
+    '<span class="transfer-stat">单次平均带宽<strong>' + round(num(summary.averageMiBPerSecond), 3) + ' MiB/s</strong></span>' +
+    '<span class="transfer-stat">负载总上限<strong>' + (workloadLimit > 0 ? workloadLimit + ' MiB/s' : '不限速') + '</strong></span>' +
+    '<span class="transfer-stat">单流预算<strong>' + (transferLimit > 0 ? transferLimit + ' MiB/s' : '不限速') + '</strong></span>' +
+    '<span class="transfer-stat">活跃 Client<strong>' + num(summary.activeClients) + ' / ' + (num(summary.clientCount) || defaultClientCount) + '</strong></span>' +
+    '<span class="transfer-stat">最新记录<strong>' + escapeHtml(latest) + '</strong></span>' +
+    (!available ? '<span class="transfer-stat" style="color:var(--yellow)">等待 transfers.tsv</span>' : '');
+
+  const clientNames = Array.from({length:defaultClientCount}, (_, index) => 'natclient' + String(index + 1).padStart(2, '0'));
+  $('clientTransfers').innerHTML = clientNames.map(client => {
+    const state = transfers.byClient?.[client] || {};
+    const clientSummary = state.summary || {};
+    const recent = Array.isArray(state.recent) ? state.recent.slice(0, 10) : [];
+    const rows = recent.length ? recent.map(transfer => {
+      const bytes = Math.max(0, num(transfer.bytes));
+      const seconds = Math.max(0, num(transfer.seconds));
+      const recordedSpeed = String(transfer.mib_per_second ?? '').trim();
+      const speed = recordedSpeed !== ''
+        ? Math.max(0, num(recordedSpeed))
+        : seconds > 0
+          ? bytes / 1048576 / seconds
+          : null;
+      const shaState = transferShaState(transfer.sha256_ok);
+      const verificationClass = shaState === true ? 'ok' : shaState === false ? 'bad' : 'warn';
+      const verificationLabel = shaState === true ? '正确' : shaState === false ? '错误' : '未校验';
+      const requested = num(transfer.requested_mib);
+      return '<tr>' +
+        '<td>' + escapeHtml(transferTimestamp(transfer.timestamp)) + '</td>' +
+        '<td><strong>' + escapeHtml(transfer.ingress_relay || '—') + '</strong></td>' +
+        '<td><strong>' + escapeHtml(transfer.server || '—') + '</strong></td>' +
+        '<td title="请求 ' + requested + ' MiB · ' + Math.floor(bytes) + ' B">' + escapeHtml(formatBytes(bytes)) + '</td>' +
+        '<td>' + (speed === null ? '—' : round(speed, 3) + ' MiB/s') + '</td>' +
+        '<td><span class="status ' + verificationClass + '" title="rc=' + escapeHtml(transfer.rc || '') + ' · sha256_ok=' + escapeHtml(transfer.sha256_ok || '') + '">' + verificationLabel + '</span></td>' +
+        '</tr>';
+    }).join('') : '<tr><td class="empty-row" colspan="6">暂无传输记录</td></tr>';
+    return '<article class="client-transfer">' +
+      '<div class="client-transfer-head"><strong>' + client + '</strong><span class="muted small">累计 ' + num(clientSummary.totalTransfers) + ' · 成功 ' + num(clientSummary.succeeded) + ' · 失败 ' + num(clientSummary.failed) + '</span></div>' +
+      '<div class="client-transfer-scroll"><table class="client-transfer-table"><thead><tr><th>时间</th><th>接入 Relay</th><th>目标 NAT Server</th><th>传输量</th><th>平均带宽</th><th>SHA-256</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '</article>';
+  }).join('');
+}
+function renderFailureWatcher(watcher = {}) {
+  const available = Boolean(watcher.available);
+  const status = String(watcher.status || 'NOT_STARTED');
+  const newFailures = Math.max(0, num(watcher.observed?.newFailureRecords));
+  const totalAlerts = Math.max(0, num(watcher.alerts?.total));
+  const baselineFailures = Math.max(0, num(watcher.baseline?.failureRecords));
+  const latest = Array.isArray(watcher.alerts?.recent) ? watcher.alerts.recent[0] : null;
+  const stateClass = newFailures > 0 || ['FAILED','DEGRADED'].includes(status)
+    ? 'bad'
+    : watcher.healthy
+      ? 'ok'
+      : 'warn';
+  const stateLabel = watcher.healthy ? 'RUNNING · 心跳正常' : status;
+  const heartbeat = watcher.heartbeatAt ? transferTimestamp(watcher.heartbeatAt) : '—';
+  const latestRoute = Array.isArray(latest?.route) ? latest.route.filter(Boolean).join(' → ') : '';
+  $('failureWatcher').className = 'failure-watcher ' + stateClass;
+  $('failureWatcher').innerHTML =
+    '<strong>实时失败监视：' + escapeHtml(stateLabel) + '</strong>' +
+    '<span>本轮基线失败 <strong>' + baselineFailures + '</strong></span>' +
+    '<span>启动后新增 <strong>' + newFailures + '</strong></span>' +
+    '<span>累计告警 <strong>' + totalAlerts + '</strong></span>' +
+    '<span>最近心跳 ' + escapeHtml(heartbeat) + '</span>' +
+    (latest ? '<span title="' + escapeHtml(latest.message || '') + '">最近告警：' + escapeHtml(latest.timestamp || '') + (latestRoute ? ' · ' + escapeHtml(latestRoute) : '') + '</span>' : '') +
+    (!available ? '<span>监视器将在新稳定性轮次启动时自动接管</span>' : '');
+}
+function renderFailureAnalysis(analysis = {}) {
+  const summary = analysis.summary || {};
+  const failures = Array.isArray(analysis.failures) ? analysis.failures : (Array.isArray(analysis.recent) ? analysis.recent : []);
+  const patterns = Array.isArray(analysis.patterns) ? analysis.patterns : [];
+  const available = analysis.available !== false;
+  $('failureFreshness').textContent = available
+    ? ((analysis.generatedAt || analysis.updatedAt) ? '更新于 ' + transferTimestamp(analysis.generatedAt || analysis.updatedAt) + ' · 脱敏日志分析' : '脱敏日志分析')
+    : '等待 transfers.tsv';
+  if (!available) {
+    $('failureSummary').innerHTML = '';
+    $('failurePatterns').innerHTML = '';
+    $('failureList').innerHTML = '<div class="failure-empty">等待失败记录</div>';
+    return;
+  }
+  const causeCounts = Array.isArray(summary.causeCounts)
+    ? summary.causeCounts
+    : Object.entries(summary.causeCounts || {}).map(([code, count]) => ({code, count}));
+  const causeChips = causeCounts.map(item => {
+    const cause = failureCause(item.code || item.cause || item.label);
+    return '<span class="failure-stat">' + escapeHtml(item.label || cause.label) + '<strong>' + num(item.count) + '</strong></span>';
+  }).join('');
+  const affectedClients = Array.isArray(summary.affectedClients) ? summary.affectedClients.length : num(summary.affectedClients);
+  const affectedServers = Array.isArray(summary.affectedServers) ? summary.affectedServers.length : num(summary.affectedServers);
+  const crossRelay = num(summary.crossRelay ?? summary.crossRelayFailures);
+  const commonIngress = typeof summary.commonIngressRelay === 'string'
+    ? {relay:summary.commonIngressRelay}
+    : (summary.commonIngressRelay || null);
+  const partitionCounts = summary.partitionCounts || {};
+  const partitionChips = ['A','B'].filter(partition => num(partitionCounts[partition]) > 0).map(partition =>
+    '<span class="failure-stat">目标分区 ' + partition + '<strong>' + num(partitionCounts[partition]) + '</strong></span>'
+  ).join('');
+  const commonIngressTitle = commonIngress && num(commonIngress.successfulTransfers) > 0
+    ? '该入口同时承载 ' + num(commonIngress.successfulTransfers) + ' 条成功传输，属于共同路径而非已确认单点根因'
+    : '失败记录的共同入口 Relay';
+  $('failureSummary').innerHTML =
+    '<span class="failure-stat">失败总数<strong>' + num(summary.totalFailures) + '</strong></span>' +
+    '<span class="failure-stat">受影响 Client<strong>' + affectedClients + '</strong></span>' +
+    '<span class="failure-stat">受影响 Server<strong>' + affectedServers + '</strong></span>' +
+    '<span class="failure-stat">跨 Relay<strong>' + crossRelay + '</strong></span>' +
+    (commonIngress ? '<span class="failure-stat" title="' + escapeHtml(commonIngressTitle) + '">共同入口<strong>' + escapeHtml(commonIngress.relay || '—') + (num(commonIngress.failures) ? ' · ' + num(commonIngress.failures) + ' 条' : '') + '</strong></span>' : '') +
+    partitionChips +
+    causeChips;
+  $('failurePatterns').innerHTML = patterns.length ? patterns.map(pattern =>
+    '<div class="failure-pattern ' + escapeHtml(pattern.severity || 'observe') + '"><strong>' + escapeHtml(pattern.title || pattern.code || '拓扑观察') + '</strong><span>' + escapeHtml(pattern.description || pattern.detail || '') + '</span></div>'
+  ).join('') : '';
+  if (!failures.length) {
+    $('failureList').innerHTML = '<div class="failure-empty">当前没有失败传输记录</div>';
+    return;
+  }
+  $('failureList').innerHTML = failures.map(failure => {
+    const cause = failureCause(failure.cause, failure.diagnosis);
+    const severity = ['warn','warning','observe'].includes(cause.severity) ? 'warn' : 'bad';
+    const route = Array.isArray(failure.route) ? failure.route : [];
+    const routeHtml = route.map((hop, index) => {
+      const item = typeof hop === 'string' ? {id:hop, label:hop} : (hop || {});
+      const id = item.label || item.id || '—';
+      const role = String(item.role || topologyRole(id)).toLowerCase();
+      const isIngressRelay = role === 'relay' && index === 1;
+      const isTargetRelay = role === 'relay' && index === 2;
+      const partition = item.partition || (isTargetRelay ? failure.partition : '');
+      const classes = ['failure-hop'];
+      if (role === 'relay' && (item.bridge || isIngressRelay)) classes.push('bridge');
+      if (partition === 'A') classes.push('partition-a');
+      if (partition === 'B') classes.push('partition-b');
+      const baseRoleLabel = index === 0 ? 'CLIENT' : isIngressRelay ? '入口 / 桥接 RELAY' : isTargetRelay ? '目标 RELAY' + (partition ? ' · 分区 ' + partition : '') : index === route.length - 1 ? 'SERVER' : role.toUpperCase();
+      const roleLabel = baseRoleLabel + (item.network ? ' · ' + item.network : '');
+      return (index ? '<span class="failure-arrow">→</span>' : '') + '<span class="' + classes.join(' ') + '"><small>' + escapeHtml(roleLabel) + '</small>' + escapeHtml(id) + '</span>';
+    }).join('');
+    const requested = num(failure.requestedMiB);
+    const bytes = Math.max(0, num(failure.bytes));
+    const progress = Math.max(0, Math.min(100, num(failure.progressPct)));
+    const progressText = bytes > 0 ? formatBytes(bytes) + ' / ' + requested + ' MiB · ' + round(progress, 1) + '%' : '未开始传输';
+    const evidence = Array.isArray(failure.evidence) ? failure.evidence : [];
+    return '<article class="failure-card">' +
+      '<div class="failure-card-head"><strong>' + escapeHtml(transferTimestamp(failure.timestamp)) + ' · ' + escapeHtml(failure.client || '—') + ' → ' + escapeHtml(failure.server || '—') + '</strong><span class="failure-cause ' + severity + '">' + escapeHtml(cause.label) + ' · rc=' + escapeHtml(String(failure.rc ?? '')) + '</span></div>' +
+      '<div class="failure-route">' + routeHtml + '</div>' +
+      '<div class="failure-meta"><span>目标分区：' + escapeHtml(failure.partitionLabel || failure.partition || '未知') + '</span><span>入口：' + escapeHtml(failure.ingressRelay || '—') + '</span><span>目标 Relay：' + escapeHtml(failure.serverRelay || '—') + '</span><span>请求：' + requested + ' MiB</span><span>耗时：' + (num(failure.seconds) > 0 ? round(num(failure.seconds), 3) + ' s' : '—') + '</span></div>' +
+      '<div class="failure-progress" title="' + escapeHtml(progressText) + '"><i style="width:' + progress + '%"></i></div>' +
+      '<div class="failure-meta"><span>进度：' + escapeHtml(progressText) + '</span><span>层级：' + escapeHtml(cause.layer || '未分类') + '</span></div>' +
+      '<div class="failure-diagnosis">' + escapeHtml(failure.diagnosis || cause.detail || '暂无诊断') + '</div>' +
+      (evidence.length ? '<div class="failure-evidence">证据：' + escapeHtml(evidence.join(' · ')) + '</div>' : '') +
+      '</article>';
+  }).join('');
+}
+function failureCause(value, diagnosis = '') {
+  const source = value && typeof value === 'object' ? value : {};
+  const code = String(source.code || source.cause || value || 'transfer_failed');
+  const catalog = {
+    handshake_first_frame_contamination:{label:'握手首帧乱序',layer:'Relay 握手顺序 / 首帧边界',severity:'bad'},
+    data_path_stall:{label:'在途数据路径停滞',layer:'Relay KCP 接入 / DualStream 重连',severity:'warn'},
+    client_tunnel_not_ready:{label:'客户端隧道未就绪',layer:'隧道建立前',severity:'bad'},
+    server_registration_failed:{label:'服务端注册失败',layer:'注册控制面',severity:'bad'},
+    client_entry_relay_unresolved:{label:'入口 Relay 未识别',layer:'入口检测',severity:'warn'},
+    integrity_mismatch:{label:'完整性校验不一致',layer:'数据完整性',severity:'bad'},
+    partial_transfer_failure:{label:'部分传输失败',layer:'数据面',severity:'bad'},
+    transfer_failed:{label:'传输失败',layer:'未分类',severity:'bad'},
+  };
+  const fallback = catalog[code] || {label:code,layer:'未分类',severity:'bad'};
+  return {
+    code,
+    label:source.label || fallback.label,
+    layer:source.layer || fallback.layer,
+    severity:source.severity || fallback.severity,
+    detail:source.detail || diagnosis || '',
+  };
+}
+function transferShaState(value) {
+  const state = String(value ?? '').trim().toLowerCase();
+  if (['1','yes','true','ok','pass','passed','correct'].includes(state)) return true;
+  if (['0','no','false','fail','failed','incorrect','mismatch'].includes(state)) return false;
+  return null;
+}
+function transferTimestamp(value) {
+  if (!value) return '—';
+  const epoch = Date.parse(value);
+  return Number.isFinite(epoch) ? new Date(epoch).toLocaleString() : String(value);
+}
+function renderTopology(data) {
+  try {
+    const topology = normalizeTopology(data.topology || {}, data.nodes || []);
+    renderActivePath(topology.activePath);
+    renderPartitionSummary(topology.partitions);
+    renderTopologyGraph(topology);
+    renderReachability(topology);
+    const observed = data.topology?.observedAt || data.topology?.generatedAt || data.generatedAt;
+    const basis = data.topology?.basis || data.topology?.source || 'Compose 网络 + 运行时规则';
+    $('topologyFreshness').textContent = topology.hasReachability
+      ? basis + (observed ? ' · ' + new Date(observed).toLocaleTimeString() : '')
+      : '后端尚未提供链路可达性数据';
+  } catch (error) {
+    $('topologyGraph').innerHTML = '<text x="600" y="310" text-anchor="middle" fill="#8fa7b7">拓扑数据无法渲染：' + escapeHtml(error.message || error) + '</text>';
+    $('reachabilityMatrix').innerHTML = '<div class="empty-state">拓扑数据无法渲染</div>';
+    $('reachabilitySummary').innerHTML = '';
+    $('partitionSummary').innerHTML = '<span class="muted small">网络分区数据无法渲染</span>';
+    $('topologyFreshness').textContent = '拓扑渲染异常';
+  }
+}
+function normalizeTopology(raw, runtimeNodes) {
+  const nodeMap = new Map();
+  const runtimeMap = new Map((runtimeNodes || []).map(node => [node.service || node.id || node.name, node]));
+  const addNode = value => {
+    const source = typeof value === 'string' ? {id:value} : (value || {});
+    const id = String(source.service || source.id || source.name || '');
+    if (!id || nodeMap.has(id)) return;
+    const runtime = runtimeMap.get(id) || {};
+    nodeMap.set(id, {
+      id,
+      role: source.role || runtime.role || topologyRole(id),
+      running: source.running === undefined ? Boolean(runtime.running) : Boolean(source.running),
+      health: source.health || runtime.health || (source.running ? 'running' : 'unknown'),
+      networks: arrayValue(source.networks || source.sharedNetworks || source.network),
+    });
+  };
+  (raw.nodes || []).forEach(addNode);
+  runtimeNodes.forEach(addNode);
+
+  const rawLinks = [
+    ...arrayValue(raw.links),
+    ...arrayValue(raw.edges),
+    ...arrayValue(raw.directLinks),
+    ...arrayValue(raw.controlLinks),
+    ...arrayValue(raw.relayLinks),
+  ];
+  const links = [];
+  const linkKeys = new Set();
+  const addLink = value => {
+    const link = normalizeLink(value);
+    if (!link.source || !link.target) return;
+    addNode(link.source);
+    addNode(link.target);
+    const key = [link.source, link.target].sort().join('|') + '|' + link.kind + '|' + link.state;
+    if (linkKeys.has(key)) return;
+    linkKeys.add(key);
+    links.push(link);
+  };
+  rawLinks.forEach(addLink);
+
+  const reachabilityRaw = raw.reachability ?? raw.reachabilityMatrix ?? raw.matrix;
+  const reachability = normalizeReachability(reachabilityRaw);
+  for (const cell of reachability.cells) {
+    addNode({id:cell.nat, role:topologyRole(cell.nat)});
+    addNode({id:cell.relay, role:'relay'});
+    if (cell.state !== 'none' && !links.some(link => samePair(link.source, link.target, cell.nat, cell.relay))) {
+      addLink({source:cell.nat, target:cell.relay, kind:'direct', state:cell.state, reason:cell.reason, networks:cell.networks});
+    }
+  }
+  const activePath = normalizeActivePath(raw.activePath || raw.active_path || raw.currentPath || raw.businessPath);
+  const partitions = normalizePartitions(raw.networks);
+  activePath.nodes.forEach(addNode);
+  const nodes = [...nodeMap.values()].filter(node => ['ca','index','relay','natserver','natclient'].includes(node.role));
+  const relayIds = unique([
+    ...reachability.relays,
+    ...nodes.filter(node => node.role === 'relay').map(node => node.id),
+  ]).sort(naturalCompare);
+  const natIds = unique([
+    ...reachability.nats,
+    ...nodes.filter(node => node.role === 'natserver' || node.role === 'natclient').map(node => node.id),
+  ]).sort(naturalCompare);
+  const hasDirectLinks = links.some(link => isNatRelayPair(link.source, link.target));
+  return {
+    nodes: nodes.sort((left, right) => naturalCompare(left.id, right.id)),
+    links,
+    activePath,
+    partitions,
+    reachability: {relays:relayIds, nats:natIds, cells:reachability.cells},
+    hasReachability: reachability.present || hasDirectLinks,
+  };
+}
+function normalizePartitions(rawNetworks) {
+  const networks = Array.isArray(rawNetworks) ? rawNetworks : [];
+  const groups = networks.filter(network => String(network?.id || '').startsWith('control_partition_')).map(network => ({
+    id:String(network.id),
+    relays:arrayValue(network.members).map(nodeId).filter(member => topologyRole(member) === 'relay').sort(naturalCompare),
+  })).filter(group => group.relays.length);
+  const membershipCount = new Map();
+  groups.forEach(group => group.relays.forEach(relay => membershipCount.set(relay, (membershipCount.get(relay) || 0) + 1)));
+  return {
+    groups,
+    bridges:[...membershipCount].filter(([, count]) => count > 1).map(([relay]) => relay).sort(naturalCompare),
+  };
+}
+function renderPartitionSummary(partitions) {
+  const groups = partitions?.groups || [];
+  if (!groups.length) {
+    $('partitionSummary').innerHTML = '<span class="muted small">无网络分区数据</span>';
+    return;
+  }
+  const bridgeSet = new Set(partitions.bridges || []);
+  const chips = groups.map(group => {
+    const suffix = group.id.replace(/^control_partition_/, '').toUpperCase();
+    const partitionRelays = group.relays.filter(relay => !bridgeSet.has(relay));
+    return '<span class="partition-chip"><strong>分区 ' + escapeHtml(suffix) + '</strong>' + escapeHtml(partitionRelays.join(' · ')) + '</span>';
+  });
+  if (partitions.bridges?.length) chips.push('<span class="partition-chip"><strong>桥接</strong>' + escapeHtml(partitions.bridges.join(' · ')) + '</span>');
+  $('partitionSummary').innerHTML = chips.join('');
+}
+function normalizeLink(value) {
+  const source = Array.isArray(value) ? value[0] : value?.source ?? value?.from ?? value?.a;
+  const target = Array.isArray(value) ? value[1] : value?.target ?? value?.to ?? value?.b;
+  const kindText = String(value?.kind || value?.type || value?.relation || '').toLowerCase();
+  const kind = kindText.includes('control') || kindText.includes('admission') ? 'control' : 'direct';
+  return {
+    source: nodeId(source),
+    target: nodeId(target),
+    kind,
+    state: normalizeReachabilityState(value?.state || value?.mode || value?.protocol || value?.status || 'dual'),
+    active: Boolean(value?.active),
+    reason: value?.reason || value?.detail || '',
+    networks: arrayValue(value?.networks || value?.sharedNetworks || value?.network),
+    evidence: value?.evidence || value?.basis || value?.sourceType || '',
+    protocol: String(value?.protocol || value?.transport || ''),
+  };
+}
+function normalizeReachability(raw) {
+  if (raw === undefined || raw === null) return {present:false, relays:[], nats:[], cells:[]};
+  const relays = arrayValue(raw?.relays || raw?.relayNodes).map(nodeId).filter(Boolean);
+  const nats = arrayValue(raw?.nats || raw?.natNodes).map(nodeId).filter(Boolean);
+  let sourceCells = Array.isArray(raw) ? raw : raw?.cells || raw?.entries || raw?.matrix || raw?.rows || [];
+  const cells = [];
+  const addCell = value => {
+    if (!value) return;
+    let nat = nodeId(value.nat || value.natNode || value.node || value.source || value.from);
+    let relay = nodeId(value.relay || value.relayNode || value.target || value.to);
+    if (topologyRole(nat) === 'relay' && topologyRole(relay).startsWith('nat')) [nat, relay] = [relay, nat];
+    if (!nat || !relay) return;
+    cells.push({
+      nat,
+      relay,
+      state: normalizeReachabilityState(value.state || value.mode || value.status || value.protocol),
+      reason: value.reason || value.detail || '',
+      networks: arrayValue(value.networks || value.sharedNetworks || value.network),
+      evidence: value.evidence || value.basis || value.sourceType || '',
+    });
+  };
+  if (Array.isArray(sourceCells) && sourceCells.length > 0 && Array.isArray(sourceCells[0])) {
+    sourceCells.forEach((row, rowIndex) => row.forEach((state, columnIndex) => addCell({
+      nat:nats[rowIndex],
+      relay:relays[columnIndex],
+      state,
+    })));
+  } else if (Array.isArray(sourceCells)) {
+    sourceCells.forEach(row => {
+      if (row && typeof row === 'object' && !row.relay && !row.relayNode && (row.nat || row.node)) {
+        const nat = nodeId(row.nat || row.node);
+        const values = row.relays || row.cells || row.reachability;
+        if (values && !Array.isArray(values) && typeof values === 'object') {
+          Object.entries(values).forEach(([relay, state]) => addCell({
+            nat,
+            relay,
+            ...(typeof state === 'object' ? state : {state}),
+          }));
+          return;
+        }
+      }
+      addCell(row);
+    });
+  } else if (sourceCells && typeof sourceCells === 'object') {
+    Object.entries(sourceCells).forEach(([nat, relayValues]) => {
+      if (!relayValues || typeof relayValues !== 'object') return;
+      Object.entries(relayValues).forEach(([relay, state]) => addCell({
+        nat,
+        relay,
+        ...(typeof state === 'object' ? state : {state}),
+      }));
+    });
+  }
+  return {present:true, relays, nats, cells};
+}
+function normalizeActivePath(raw) {
+  if (!raw) return {nodes:[], transport:'', label:'', state:'pending'};
+  const value = typeof raw === 'string' || Array.isArray(raw) ? {nodes:raw} : raw;
+  let nodes = value.nodes || value.path || value.hops || [];
+  if (typeof nodes === 'string') nodes = nodes.split(/\s*(?:→|->|,)\s*/);
+  nodes = arrayValue(nodes).map(nodeId).filter(Boolean);
+  return {
+    nodes,
+    transport: String(value.transport || value.protocol || value.mode || ''),
+    label: String(value.label || value.description || ''),
+    state: String(value.state || 'active').toLowerCase(),
+  };
+}
+function renderActivePath(path) {
+  if (!path.nodes.length) {
+    $('activePath').innerHTML = '<span>当前没有已识别的故障场景基线路径</span>';
+    return;
+  }
+  const parts = [];
+  path.nodes.forEach((node, index) => {
+    if (index > 0) parts.push('<span class="path-arrow">→</span>');
+    parts.push('<span class="path-node">' + escapeHtml(node) + '</span>');
+  });
+  if (path.transport) parts.push('<span class="status warn">' + escapeHtml(path.transport.toUpperCase()) + '</span>');
+  if (path.state && path.state !== 'active') parts.push('<span class="status bad">' + escapeHtml(path.state.toUpperCase()) + '</span>');
+  if (path.label) parts.push('<span class="muted small">' + escapeHtml(path.label) + '</span>');
+  $('activePath').innerHTML = parts.join('');
+}
+function renderTopologyGraph(topology) {
+  const svg = $('topologyGraph');
+  if (!topology.nodes.length) {
+    svg.innerHTML = '<text x="600" y="310" text-anchor="middle" fill="#8fa7b7">等待节点拓扑数据</text>';
+    return;
+  }
+  const positions = topologyLayout(topology.nodes);
+  const pathIsActive = topology.activePath.state === 'active';
+  const activeNodes = new Set(pathIsActive ? topology.activePath.nodes : []);
+  const edgeParts = [];
+  const sortedLinks = [...topology.links].sort((left, right) => Number(left.active) - Number(right.active));
+  for (const link of sortedLinks) {
+    const start = positions.get(link.source);
+    const end = positions.get(link.target);
+    if (!start || !end || link.state === 'none' || link.state === 'unknown') continue;
+    const active = pathIsActive && (link.active || activePathHasEdge(topology.activePath.nodes, link.source, link.target));
+    const cls = 'topology-edge ' + (link.kind === 'control' && !['blocked','none'].includes(link.state) ? 'control' : link.state) + (active ? ' active' : '');
+    const title = edgeTitle(link);
+    edgeParts.push(topologyEdgeMarkup(cls, start, end, title, false, topologyRole(link.source) === 'relay' && topologyRole(link.target) === 'relay'));
+  }
+  for (let index = 1; pathIsActive && index < topology.activePath.nodes.length; index += 1) {
+    const source = topology.activePath.nodes[index - 1];
+    const target = topology.activePath.nodes[index];
+    const start = positions.get(source);
+    const end = positions.get(target);
+    if (!start || !end) continue;
+    edgeParts.push(topologyEdgeMarkup('topology-edge active', start, end, '故障场景基线路径：' + source + ' → ' + target, true, topologyRole(source) === 'relay' && topologyRole(target) === 'relay'));
+  }
+  const labels = [];
+  if (topology.nodes.some(node => node.role === 'ca' || node.role === 'index')) labels.push('<text class="group-label" x="42" y="54">TRUSTED CONTROL</text>');
+  if (topology.nodes.some(node => node.role === 'relay')) labels.push('<text class="group-label" x="42" y="143">RELAYS</text>');
+  if (topology.nodes.some(node => node.role === 'natclient')) labels.push('<text class="group-label" x="42" y="294">NAT CLIENTS</text>');
+  if (topology.nodes.some(node => node.role === 'natserver')) labels.push('<text class="group-label" x="650" y="294">NAT SERVERS</text>');
+  const nodeParts = topology.nodes.map(node => {
+    const position = positions.get(node.id);
+    if (!position) return '';
+    const width = node.role === 'natserver' || node.role === 'natclient' ? 88 : 94;
+    const height = node.role === 'natserver' || node.role === 'natclient' ? 30 : 36;
+    const classes = ['topology-node', node.role, node.running ? '' : 'offline', activeNodes.has(node.id) ? 'active' : ''].filter(Boolean).join(' ');
+    const details = node.id + ' · ' + (node.running ? node.health : 'offline') + (node.networks.length ? ' · ' + node.networks.join(', ') : '');
+    return '<g class="' + classes + '" transform="translate(' + position.x + ' ' + position.y + ')"><title>' + escapeHtml(details) + '</title><rect x="' + (-width / 2) + '" y="' + (-height / 2) + '" width="' + width + '" height="' + height + '" rx="8"></rect><text x="0" y="1">' + escapeHtml(node.id) + '</text></g>';
+  });
+  svg.innerHTML = '<defs><marker id="activeArrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ff996c"></path></marker></defs>' +
+    labels.join('') + edgeParts.join('') + nodeParts.join('');
+}
+function topologyEdgeMarkup(cls, start, end, title, arrow, curved) {
+  const marker = arrow ? ' marker-end="url(#activeArrow)"' : '';
+  const safeTitle = '<title>' + escapeHtml(title) + '</title>';
+  if (curved && Math.abs(start.x - end.x) > 100) {
+    const middleX = (start.x + end.x) / 2;
+    const curveY = Math.min(start.y, end.y) - 55;
+    return '<path class="' + cls + '"' + marker + ' d="M ' + start.x + ' ' + start.y + ' Q ' + middleX + ' ' + curveY + ' ' + end.x + ' ' + end.y + '">' + safeTitle + '</path>';
+  }
+  return '<line class="' + cls + '"' + marker + ' x1="' + start.x + '" y1="' + start.y + '" x2="' + end.x + '" y2="' + end.y + '">' + safeTitle + '</line>';
+}
+function topologyLayout(nodes) {
+  const positions = new Map();
+  const core = nodes.filter(node => node.role === 'ca' || node.role === 'index');
+  const relays = nodes.filter(node => node.role === 'relay');
+  const clients = nodes.filter(node => node.role === 'natclient');
+  const servers = nodes.filter(node => node.role === 'natserver');
+  distribute(core, 470, 730, 75).forEach((position, index) => positions.set(core[index].id, position));
+  distribute(relays, 90, 1110, 195).forEach((position, index) => positions.set(relays[index].id, position));
+  placeGrid(clients, 65, 570, 335, 5, 72).forEach((position, index) => positions.set(clients[index].id, position));
+  placeGrid(servers, 655, 1135, 335, 6, 72).forEach((position, index) => positions.set(servers[index].id, position));
+  return positions;
+}
+function distribute(nodes, start, end, y) {
+  if (nodes.length === 1) return [{x:(start + end) / 2, y}];
+  return nodes.map((_, index) => ({x:start + index * (end - start) / Math.max(1, nodes.length - 1), y}));
+}
+function placeGrid(nodes, start, end, y, columns, rowGap) {
+  return nodes.map((_, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    return {x:start + column * (end - start) / Math.max(1, columns - 1), y:y + row * rowGap};
+  });
+}
+function renderReachability(topology) {
+  const matrix = $('reachabilityMatrix');
+  const summary = $('reachabilitySummary');
+  if (!topology.hasReachability || !topology.reachability.relays.length || !topology.reachability.nats.length) {
+    matrix.innerHTML = '<div class="empty-state">等待 NAT ↔ Relay 可达性数据</div>';
+    summary.innerHTML = '';
+    return;
+  }
+  const nodeMap = new Map(topology.nodes.map(node => [node.id, node]));
+  const cellMap = new Map();
+  topology.reachability.cells.forEach(cell => cellMap.set(cell.nat + '|' + cell.relay, cell));
+  topology.links.forEach(link => {
+    if (!isNatRelayPair(link.source, link.target)) return;
+    const nat = topologyRole(link.source).startsWith('nat') ? link.source : link.target;
+    const relay = nat === link.source ? link.target : link.source;
+    if (!cellMap.has(nat + '|' + relay)) cellMap.set(nat + '|' + relay, {
+      nat,
+      relay,
+      state:link.state,
+      reason:link.reason,
+      networks:link.networks,
+      evidence:link.evidence,
+    });
+  });
+  const activeEdges = new Set();
+  for (let index = 1; index < topology.activePath.nodes.length; index += 1) {
+    const source = topology.activePath.nodes[index - 1];
+    const target = topology.activePath.nodes[index];
+    activeEdges.add([source, target].sort().join('|'));
+  }
+  const counts = {dual:0, 'tcp-only':0, 'kcp-only':0, blocked:0, none:0, unknown:0};
+  const body = topology.reachability.nats.map(nat => {
+    const natNode = nodeMap.get(nat);
+    const cells = topology.reachability.relays.map(relay => {
+      const relayNode = nodeMap.get(relay);
+      const configured = cellMap.get(nat + '|' + relay) || {state:'none', reason:'未共享直接网络', networks:[]};
+      let state = normalizeReachabilityState(configured.state);
+      let reason = configured.reason || '';
+      if (state !== 'none' && ((natNode && !natNode.running) || (relayNode && !relayNode.running))) {
+        state = 'blocked';
+        reason = [reason, !natNode?.running ? nat + ' 未运行' : '', !relayNode?.running ? relay + ' 未运行' : ''].filter(Boolean).join('；');
+      }
+      counts[state] = (counts[state] || 0) + 1;
+      const active = activeEdges.has([nat, relay].sort().join('|'));
+      const detail = reachabilityLabel(state) + ' · ' + reachabilityEvidenceLabel(configured.evidence) + (configured.networks?.length ? ' · ' + configured.networks.join(', ') : '') + (reason ? ' · ' + reachabilityReasonLabel(reason) : '');
+      return '<td><span class="reach-cell ' + state + (active ? ' active' : '') + '" title="' + escapeHtml(detail) + '">' + reachabilityShortLabel(state) + '</span></td>';
+    }).join('');
+    const role = topologyRole(nat) === 'natclient' ? 'Client' : 'Server';
+    return '<tr><td><strong>' + escapeHtml(nat) + '</strong><br><span class="muted small">' + role + '</span></td>' + cells + '</tr>';
+  }).join('');
+  matrix.innerHTML = '<table class="reachability-table"><thead><tr><th>NAT 节点</th>' +
+    topology.reachability.relays.map(relay => '<th>' + escapeHtml(relay) + '</th>').join('') +
+    '</tr></thead><tbody>' + body + '</tbody></table>';
+  summary.innerHTML =
+    '<span class="reach-count">KCP + TCP <strong style="color:var(--blue)">' + counts.dual + '</strong></span>' +
+    '<span class="reach-count">仅 TCP <strong style="color:var(--yellow)">' + counts['tcp-only'] + '</strong></span>' +
+    '<span class="reach-count">仅 KCP <strong style="color:var(--green)">' + counts['kcp-only'] + '</strong></span>' +
+    '<span class="reach-count">运行时阻断 <strong style="color:var(--red)">' + counts.blocked + '</strong></span>' +
+    '<span class="reach-count">无直连路由 <strong>' + counts.none + '</strong></span>' +
+    '<span class="reach-count">状态未知 <strong>' + counts.unknown + '</strong></span>';
+}
+function normalizeReachabilityState(value) {
+  const state = String(value || '').toLowerCase().replace(/[_\s]+/g, '-');
+  if (['dual','both','kcp+tcp','tcp+kcp','tcp+udp','udp+tcp','reachable','direct','shared'].includes(state)) return 'dual';
+  if (['tcp','tcp-only','tcp_fallback','fallback'].includes(state)) return 'tcp-only';
+  if (['kcp','udp','kcp-only','udp-only'].includes(state)) return 'kcp-only';
+  if (['blocked','deny','denied','unreachable','offline','down'].includes(state)) return 'blocked';
+  if (['none','no-route','isolated','partitioned'].includes(state)) return 'none';
+  if (['up','running','healthy'].includes(state)) return 'dual';
+  return 'unknown';
+}
+function reachabilityShortLabel(state) {
+  return state === 'dual' ? 'K+T' : state === 'tcp-only' ? 'TCP' : state === 'kcp-only' ? 'KCP' : state === 'blocked' ? '阻断' : state === 'none' ? '—' : '?';
+}
+function reachabilityLabel(state) {
+  return state === 'dual' ? 'KCP 与 TCP 均可达' : state === 'tcp-only' ? '仅 TCP 可达，KCP/UDP 已阻断' : state === 'kcp-only' ? '仅 KCP/UDP 可达，TCP 已阻断' : state === 'blocked' ? 'TCP 与 KCP 均不可达' : state === 'none' ? '不存在直接网络路由' : '状态未知';
+}
+function reachabilityEvidenceLabel(evidence) {
+  return evidence === 'runtime_firewall' ? '依据：运行时防火墙规则' : evidence === 'container_runtime' ? '依据：容器运行状态' : '依据：Compose 网络配置';
+}
+function reachabilityReasonLabel(reason) {
+  const labels = {
+    no_shared_network:'无共享网络',
+    nat_not_running:'NAT 未运行',
+    relay_not_running:'Relay 未运行',
+    firewall:'防火墙阻断',
+    shared_network:'共享网络可达',
+    firewall_inspection_unavailable:'运行时防火墙规则读取失败',
+  };
+  return labels[reason] || reason;
+}
+function edgeTitle(link) {
+  if (link.source === 'ca' || link.target === 'ca') {
+    return link.source + ' → ' + link.target + ' · CA HTTP/TCP 接入验证链路 · ' + (link.state === 'blocked' ? '不可达' : '可达');
+  }
+  const controlKind = 'Relay 控制链路';
+  const mode = link.kind === 'control' ? controlKind + ' · ' + reachabilityLabel(link.state) : reachabilityLabel(link.state);
+  return link.source + ' ↔ ' + link.target + ' · ' + mode + (link.networks.length ? ' · ' + link.networks.join(', ') : '') + (link.reason ? ' · ' + link.reason : '');
+}
+function activePathHasEdge(path, source, target) {
+  for (let index = 1; index < path.length; index += 1) {
+    if (samePair(path[index - 1], path[index], source, target)) return true;
+  }
+  return false;
+}
+function isNatRelayPair(source, target) {
+  const roles = [topologyRole(source), topologyRole(target)];
+  return roles.includes('relay') && roles.some(role => role === 'natserver' || role === 'natclient');
+}
+function samePair(a, b, c, d) {
+  return (a === c && b === d) || (a === d && b === c);
+}
+function topologyRole(id) {
+  const value = String(id || '').toLowerCase();
+  if (value === 'ca' || value === 'index') return value;
+  if (value.startsWith('relay')) return 'relay';
+  if (value.startsWith('natserver')) return 'natserver';
+  if (value.startsWith('natclient')) return 'natclient';
+  return 'diagnostic';
+}
+function nodeId(value) {
+  if (value && typeof value === 'object') return String(value.id || value.service || value.name || '');
+  return String(value || '');
+}
+function arrayValue(value) {
+  if (value === undefined || value === null || value === '') return [];
+  return Array.isArray(value) ? value : [value];
+}
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+function naturalCompare(left, right) {
+  return String(left).localeCompare(String(right), 'en', {numeric:true});
+}
+function renderNodes(id, nodes) {
+  $(id).innerHTML = nodes.map(node => {
+    const cls = node.running && ['healthy','running'].includes(node.health) ? 'ok' : node.running ? 'warn' : 'bad';
+    const started = node.startedAt ? new Date(node.startedAt).toLocaleString() : '—';
+    return `<div class="node"><div class="node-head"><span>${escapeHtml(node.service)}</span><span class="status ${cls}">${escapeHtml(node.health)}</span></div><div class="node-meta">ID ${escapeHtml(node.id||'—')}<br>Started ${escapeHtml(started)}<br>Restart ${node.restartCount||0}</div></div>`;
+  }).join('');
+}
+function drawChart(rows, thresholds) {
+  const canvas=$('chart'), dpr=window.devicePixelRatio||1, rect=canvas.getBoundingClientRect();
+  canvas.width=Math.max(1,rect.width*dpr); canvas.height=Math.max(1,rect.height*dpr);
+  const c=canvas.getContext('2d'); c.scale(dpr,dpr); const w=rect.width,h=rect.height,p={l:38,r:12,t:12,b:24};
+  c.clearRect(0,0,w,h); c.strokeStyle='#284052'; c.fillStyle='#8098a8'; c.font='11px system-ui'; c.lineWidth=1;
+  for(let y=0;y<=100;y+=25){const py=p.t+(100-y)/100*(h-p.t-p.b);c.beginPath();c.moveTo(p.l,py);c.lineTo(w-p.r,py);c.stroke();c.fillText(`${y}%`,3,py+4)}
+  const series=[['project_cpu_host_pct','#65b9ff'],['project_memory_host_pct','#49d49d'],['guard_disk_pct','#f5c45e']];
+  for(const [key,color] of series){c.strokeStyle=color;c.lineWidth=2;c.beginPath();rows.forEach((r,i)=>{const x=p.l+(rows.length<=1?0:i/(rows.length-1))*(w-p.l-p.r);const y=p.t+(100-Math.min(100,num(r[key])))/100*(h-p.t-p.b);i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke()}
+  for(const [limit,color] of [[thresholds.cpu,'#65b9ff'],[thresholds.memory,'#49d49d'],[thresholds.disk,'#f5c45e']]){const y=p.t+(100-limit)/100*(h-p.t-p.b);c.strokeStyle=color+'88';c.setLineDash([4,5]);c.beginPath();c.moveTo(p.l,y);c.lineTo(w-p.r,y);c.stroke();c.setLineDash([])}
+}
+function phaseClass(p){return ['RUNNING','COMPLETED'].includes(p)?'ok':['FAILED','RESOURCE_LIMIT'].includes(p)?'bad':'warn'}
+function duration(s){s=Math.max(0,Math.floor(num(s)));return [Math.floor(s/3600),Math.floor(s%3600/60),s%60].map(v=>String(v).padStart(2,'0')).join(':')}
+function formatBytes(n){if(!n)return '0 B';const u=['B','KiB','MiB','GiB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${round(n,2)} ${u[i]}`}
+function round(v,n=2){return Number(num(v).toFixed(n))} function num(v){const n=Number(v);return Number.isFinite(n)?n:0}
+function escapeHtml(v){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function showAlert(text){$('alert').style.display='block';$('alert').textContent=text} function hideAlert(){$('alert').style.display='none'}
+window.addEventListener('resize',()=>lastData&&drawChart(lastData.resources.history||[],lastData.thresholds));
+refresh(); setInterval(refresh,2000);
+</script>
+</body>
+</html>

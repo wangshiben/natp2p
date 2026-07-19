@@ -5,9 +5,25 @@ import (
 	"bnfs_p2p/network"
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
+
+const (
+	defaultFrameRelayMaxCachedBytes      int64 = 64 << 20
+	defaultFrameRelayMaxRouteCachedBytes int64 = 16 << 20
+	defaultFrameRelayMaxRoutes                 = 8192
+	defaultRelayBatchMaxFrames                 = 32
+	defaultRelayBatchMaxBytes                  = 32 << 10
+	frameRelayRouteTTL                         = 2 * time.Minute
+	frameRelayCompletedRouteTTL                = 90 * time.Second
+	frameRelaySweepInterval                    = 15 * time.Second
+)
+
+var errFrameRelayReplayCacheUnavailable = errors.New("frame relay replay cache unavailable")
+var errFrameRelayLegDetached = errors.New("frame relay leg detached during attach")
 
 // FrameRelayEndpoint 是 relay 数据面专用的"逐帧桥接"接口。
 //
@@ -20,10 +36,10 @@ import (
 //   - 所以 relay 需要一种"只看 Frame、不看 Message"的接口，把 Data/Retransmit 帧从源 leg
 //     拿出来，改写 MessageId 后写到目标 leg 即可，ACK 仍由各 leg 内部独立维护。
 //
-// 该接口只在 relay 内部使用，应用层 / TLS 握手 / 客户端 ClientStream 仍走 network.Stream。
+// 该接口只在 relay 内部使用，应用层 / Noise 握手 / 客户端 ClientStream 仍走 network.Stream。
 type FrameRelayEndpoint interface {
-	// NextFrame 从底层流的"帧旁路通道"取下一帧 Data/Retransmit 原始帧。
-	// 不会返回 ACK 帧（ACK 仍由 TcpStream 自己处理），不会做重组。
+	// NextFrame 从底层流的"帧旁路通道"取下一帧原始帧。
+	// pure-forwarder 模式会同时返回 Data/Retransmit 与 ACK，且不会做重组。
 	// ctx 用于在 relay 关闭 / 整组取消时及时退出阻塞读取。
 	NextFrame(ctx context.Context) (*network.Frame, error)
 
@@ -48,6 +64,16 @@ type FrameRelayEndpoint interface {
 	Close() error
 }
 
+// frameBatchSource/frameBatchSink 是 relay 数据面的可选快速路径。实现方仍须保持
+// FrameRelayEndpoint 的同步完成语义；不支持批处理的 endpoint 由 pump 自动退化为单帧。
+type frameBatchSource interface {
+	NextFrameBatch(ctx context.Context, maxFrames, maxBytes int) ([]*network.Frame, error)
+}
+
+type frameBatchSink interface {
+	HandleFrameBatch(ctx context.Context, frames []*network.Frame) error
+}
+
 // TcpFrameAdapter 是 FrameRelayEndpoint 在 *TcpStream 之上的默认实现。
 //
 // 职责：
@@ -58,11 +84,13 @@ type FrameRelayEndpoint interface {
 // 字段说明：
 //
 //	stream  底层被包装的 TcpStream；所有读写最终都落到它身上。
-//	frames  本适配器持有的旁路通道，缓冲 64 帧，供 relay pump 通过 NextFrame 消费。
+//	frames  本适配器持有的旁路通道，缓冲 4096 帧，供 relay pump 通过 NextFrame 消费。
 //	        通道所有权在构造期通过 stream.SetFrameTap 转交给 TcpStream，由它写入。
 type TcpFrameAdapter struct {
-	stream *TcpStream
-	frames chan *network.Frame
+	stream  *TcpStream
+	frames  chan *network.Frame
+	readMu  sync.Mutex
+	pending *network.Frame
 }
 
 // NewTcpFrameAdapter 创建并安装一个帧旁路适配器。
@@ -74,9 +102,9 @@ type TcpFrameAdapter struct {
 //	       时（比如未来扩展的 KCP / UDP 流）可以安全地走老的 message 转发路径。
 //
 // 行为：
-//   - 创建一个带缓冲（64）的 *network.Frame 通道。
-//   - 调用 stream.SetFrameTap 把通道写入端交给 TcpStream，从此 readLoop 收到的
-//     Data/Retransmit 帧会非阻塞地投一份到此通道；通道满则丢弃（relay 不影响主重组路径）。
+//   - 创建一个带缓冲（4096）的 *network.Frame 通道。
+//   - 调用 stream.SetFrameTap 把通道写入端交给 TcpStream；relay 模式可靠投递业务帧，
+//     缓冲满时向底层读取施加背压，避免静默丢帧。
 //   - 必须在该流开始接收正式数据帧前调用，否则 relay 会错过先到的帧。
 func NewTcpFrameAdapter(stream *TcpStream) *TcpFrameAdapter {
 	if stream == nil {
@@ -97,20 +125,138 @@ func NewTcpFrameAdapter(stream *TcpStream) *TcpFrameAdapter {
 // NextFrame 从底层 TcpStream 的 frameTap 通道取下一帧。
 // 阻塞直到：取到一帧 / ctx 被取消 / 底层流关闭。
 func (a *TcpFrameAdapter) NextFrame(ctx context.Context) (*network.Frame, error) {
+	a.readMu.Lock()
+	defer a.readMu.Unlock()
+	if a.pending != nil {
+		frame := a.pending
+		a.pending = nil
+		return frame, nil
+	}
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-a.stream.streamCtx.Done():
 		return nil, a.stream.streamErr()
-	case f := <-a.frames:
-		return f, nil
+	case frame := <-a.frames:
+		if frame == nil {
+			return nil, errors.New("frame relay: nil input frame")
+		}
+		return frame, nil
 	}
+}
+
+// NextFrameBatch 阻塞取得首帧后，仅排空已经到达的帧，不等待凑批。
+func (a *TcpFrameAdapter) NextFrameBatch(ctx context.Context, maxFrames, maxBytes int) ([]*network.Frame, error) {
+	a.readMu.Lock()
+	defer a.readMu.Unlock()
+	return pullFrameBatch(ctx, a.stream.streamCtx.Done(), a.stream.streamErr, a.frames, &a.pending, maxFrames, maxBytes)
 }
 
 // HandleFrame 把一帧原始数据写到底层 TCP 连接。
 // 调用方（relay frame pump）通常已经把 frame.MessageId 改写为目标 leg 的新 ID。
 func (a *TcpFrameAdapter) HandleFrame(ctx context.Context, frame *network.Frame) error {
 	return a.stream.HandleFrame(ctx, frame)
+}
+
+func (a *TcpFrameAdapter) HandleFrameBatch(ctx context.Context, frames []*network.Frame) error {
+	return a.stream.HandleFrameBatch(ctx, frames)
+}
+
+func pullFrameBatch(
+	ctx context.Context,
+	streamDone <-chan struct{},
+	streamErr func() error,
+	input <-chan *network.Frame,
+	pending **network.Frame,
+	maxFrames, maxBytes int,
+) ([]*network.Frame, error) {
+	if maxFrames <= 0 {
+		maxFrames = defaultRelayBatchMaxFrames
+	}
+	if maxBytes <= 0 {
+		maxBytes = int(^uint(0) >> 1)
+	}
+
+	var first *network.Frame
+	if *pending != nil {
+		first = *pending
+		*pending = nil
+	} else {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-streamDone:
+			return nil, streamErr()
+		case first = <-input:
+		}
+	}
+	if first == nil {
+		return nil, errors.New("frame relay: nil input frame")
+	}
+	firstSize, err := first.WireSize()
+	if err != nil {
+		return nil, err
+	}
+	batchCapacity := len(input) + 1
+	if batchCapacity > maxFrames {
+		batchCapacity = maxFrames
+	}
+	frames := make([]*network.Frame, 1, batchCapacity)
+	frames[0] = first
+	totalBytes := firstSize
+	if maxFrames == 1 || totalBytes >= maxBytes {
+		return frames, nil
+	}
+
+	for len(frames) < maxFrames {
+		select {
+		case frame := <-input:
+			if frame == nil {
+				return nil, errors.New("frame relay: nil input frame")
+			}
+			size, sizeErr := frame.WireSize()
+			if sizeErr != nil {
+				return nil, sizeErr
+			}
+			if totalBytes > maxBytes-size {
+				*pending = frame
+				return frames, nil
+			}
+			frames = append(frames, frame)
+			totalBytes += size
+		default:
+			return frames, nil
+		}
+	}
+	return frames, nil
+}
+
+func nextEndpointFrameBatch(ctx context.Context, endpoint FrameRelayEndpoint) ([]*network.Frame, error) {
+	if source, ok := endpoint.(frameBatchSource); ok {
+		return source.NextFrameBatch(ctx, defaultRelayBatchMaxFrames, defaultRelayBatchMaxBytes)
+	}
+	frame, err := endpoint.NextFrame(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return []*network.Frame{frame}, nil
+}
+
+func writeEndpointFrameBatch(ctx context.Context, endpoint FrameRelayEndpoint, frames []*network.Frame) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	if len(frames) > 1 {
+		if sink, ok := endpoint.(frameBatchSink); ok {
+			return sink.HandleFrameBatch(ctx, frames)
+		}
+	}
+	for _, frame := range frames {
+		if err := endpoint.HandleFrame(ctx, frame); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // AllocMessageId 透传到底层流的 frameIdGen，分配目标 leg 上唯一的 MessageId。
@@ -170,12 +316,21 @@ type dualRelayFrame struct {
 	frame *network.Frame
 }
 
+type adapterReplayJob struct {
+	logicalID  uint64
+	generation uint64
+	adapter    *TcpFrameAdapter
+	dstID      uint64
+	frames     []*network.Frame
+}
+
 // frameEndpointKey 是 incomingIDs / ackIDs 的 key：某条具体 leg（kind）上、某条业务连接（connId）的一个 transport MessageId。
 // 用 kind 区分 TCP/KCP 两条 leg 的独立命名空间；用 connId 区分**同一条物理连接上多路复用的多条逻辑连接**——
 // callee 把 N 条 per-conn 流复用到一条 server↔relay 连接时，各 per-conn 流的 frameIdGen 都从 1 开始、
 // MessageId 会撞车，必须带 connId 才能把它们区分开（否则两条流的 msgId=1 会被并成同一条 logicalID 而互相串台）。
 type frameEndpointKey struct {
 	kind      streamTransport
+	adapter   *TcpFrameAdapter
 	connId    string
 	messageID uint64
 }
@@ -195,6 +350,14 @@ type dualFrameRoute struct {
 	dstID       uint64
 	totalFrames uint32
 	framesBySeq map[uint32]*network.Frame
+	sourceKey   *frameEndpointKey
+	ackKeys     map[frameEndpointKey]struct{}
+	cachedBytes int64
+	createdAt   time.Time
+	lastActive  time.Time
+	completedAt time.Time
+	generation  uint64
+	replayOff   bool
 }
 
 // DualFrameRelayEndpoint 把 DualStream 内部的 TCP/KCP 两条 leg 聚合成一个 FrameRelayEndpoint。
@@ -214,27 +377,39 @@ type dualFrameRoute struct {
 type DualFrameRelayEndpoint struct {
 	stream *DualStream
 
-	mu          sync.Mutex
-	adapters    map[streamTransport]*TcpFrameAdapter
-	incoming    chan *network.Frame
-	incomingIDs map[frameEndpointKey]uint64
-	ackIDs      map[frameEndpointKey]uint64
-	logicalGen  network.FrameIdGenerator
-	routes      map[uint64]*dualFrameRoute
+	mu            sync.Mutex
+	readMu        sync.Mutex
+	adapters      map[streamTransport]*TcpFrameAdapter
+	incoming      chan *network.Frame
+	pending       *network.Frame
+	incomingIDs   map[frameEndpointKey]uint64
+	ackIDs        map[frameEndpointKey]uint64
+	logicalGen    network.FrameIdGenerator
+	routes        map[uint64]*dualFrameRoute
+	cachedBytes   int64
+	maxBytes      int64
+	maxRouteBytes int64
+	maxRoutes     int
+	closed        bool
 }
 
 func NewDualFrameRelayEndpoint(stream *DualStream) *DualFrameRelayEndpoint {
 	if stream == nil {
 		return nil
 	}
-	return &DualFrameRelayEndpoint{
-		stream:      stream,
-		adapters:    make(map[streamTransport]*TcpFrameAdapter),
-		incoming:    make(chan *network.Frame, 1024),
-		incomingIDs: make(map[frameEndpointKey]uint64),
-		ackIDs:      make(map[frameEndpointKey]uint64),
-		routes:      make(map[uint64]*dualFrameRoute),
+	endpoint := &DualFrameRelayEndpoint{
+		stream:        stream,
+		adapters:      make(map[streamTransport]*TcpFrameAdapter),
+		incoming:      make(chan *network.Frame, 1024),
+		incomingIDs:   make(map[frameEndpointKey]uint64),
+		ackIDs:        make(map[frameEndpointKey]uint64),
+		routes:        make(map[uint64]*dualFrameRoute),
+		maxBytes:      defaultFrameRelayMaxCachedBytes,
+		maxRouteBytes: defaultFrameRelayMaxRouteCachedBytes,
+		maxRoutes:     defaultFrameRelayMaxRoutes,
 	}
+	go endpoint.reapRoutes()
+	return endpoint
 }
 
 // AttachStream 把 DualStream 的一条底层 leg 接入 frame relay 数据面。
@@ -252,13 +427,157 @@ func (e *DualFrameRelayEndpoint) AttachStream(kind streamTransport, stream netwo
 	if tcp == nil {
 		return errors.New("frame relay requires tcp stream carrier")
 	}
+	if !e.stream.isCurrentLeg(kind, stream) {
+		return errFrameRelayLegDetached
+	}
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return errors.New("frame relay endpoint closed")
+	}
+	if current := e.adapters[kind]; current != nil && current.stream == tcp {
+		e.mu.Unlock()
+		if !e.stream.isCurrentLeg(kind, stream) {
+			e.onLegDetached(kind, stream)
+			return errFrameRelayLegDetached
+		}
+		return nil
+	}
+	e.mu.Unlock()
+
 	adapter := NewTcpFrameAdapter(tcp)
 	tcp.SetPureForwarder(true)
 	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return errors.New("frame relay endpoint closed")
+	}
+	if current := e.adapters[kind]; current != nil && current.stream == tcp {
+		e.mu.Unlock()
+		if !e.stream.isCurrentLeg(kind, stream) {
+			e.onLegDetached(kind, stream)
+			return errFrameRelayLegDetached
+		}
+		return nil
+	}
+	previous := e.adapters[kind]
 	e.adapters[kind] = adapter
+	previousAdapters := make([]*TcpFrameAdapter, 0, 1)
+	if previous != nil {
+		previousAdapters = append(previousAdapters, previous)
+	} else {
+		seen := make(map[*TcpFrameAdapter]struct{})
+		for _, route := range e.routes {
+			if route == nil || route.kind != kind || route.endpoint == nil || route.endpoint == adapter {
+				continue
+			}
+			if _, ok := seen[route.endpoint]; ok {
+				continue
+			}
+			seen[route.endpoint] = struct{}{}
+			previousAdapters = append(previousAdapters, route.endpoint)
+		}
+	}
+	jobs := make([]adapterReplayJob, 0)
+	for _, previousAdapter := range previousAdapters {
+		jobs = append(jobs, e.replaceAdapterLocked(kind, previousAdapter, adapter, time.Now())...)
+	}
 	e.mu.Unlock()
 	go e.collect(kind, adapter)
+	for _, job := range jobs {
+		for _, frame := range job.frames {
+			e.mu.Lock()
+			current := e.routes[job.logicalID]
+			valid := !e.closed && e.adapters[kind] == job.adapter && current != nil &&
+				current.endpoint == job.adapter && current.generation == job.generation && current.completedAt.IsZero()
+			e.mu.Unlock()
+			if !valid {
+				break
+			}
+			out := cloneFrame(frame)
+			out.MessageId = job.dstID
+			if err := job.adapter.HandleFrame(e.stream.ctx, out); err != nil {
+				if e.isCurrent(kind, job.adapter) {
+					e.stream.handleLegFailure(kind, job.adapter.stream)
+				}
+				return err
+			}
+		}
+	}
+	if !e.stream.isCurrentLeg(kind, stream) {
+		e.onLegDetached(kind, stream)
+		return errFrameRelayLegDetached
+	}
 	return nil
+}
+
+func (e *DualFrameRelayEndpoint) replaceAdapterLocked(kind streamTransport, previous, replacement *TcpFrameAdapter, now time.Time) []adapterReplayJob {
+	if previous == nil || previous == replacement {
+		return nil
+	}
+	jobs := make([]adapterReplayJob, 0)
+	for logicalID, route := range e.routes {
+		if route == nil {
+			delete(e.routes, logicalID)
+			continue
+		}
+		e.dropAdapterAckKeysLocked(route, previous)
+		fromPrevious := route.sourceKey != nil && route.sourceKey.adapter == previous
+		toPrevious := route.endpoint == previous
+		if fromPrevious || (toPrevious && !route.completedAt.IsZero()) {
+			e.removeRouteLocked(logicalID)
+			continue
+		}
+		if !toPrevious {
+			continue
+		}
+		route.kind = kind
+		route.endpoint = replacement
+		route.dstID = replacement.AllocMessageId()
+		route.generation++
+		route.lastActive = now
+		e.bindAckKeyLocked(logicalID, route, kind, replacement, route.dstID)
+		if !route.replayOff {
+			jobs = append(jobs, adapterReplayJob{
+				logicalID:  logicalID,
+				generation: route.generation,
+				adapter:    replacement,
+				dstID:      route.dstID,
+				frames:     orderedFrames(route.framesBySeq),
+			})
+		}
+	}
+	e.dropAdapterIndexesLocked(previous)
+	return jobs
+}
+
+func (e *DualFrameRelayEndpoint) dropAdapterAckKeysLocked(route *dualFrameRoute, adapter *TcpFrameAdapter) {
+	if route == nil || adapter == nil {
+		return
+	}
+	for key := range route.ackKeys {
+		if key.adapter != adapter {
+			continue
+		}
+		delete(route.ackKeys, key)
+		delete(e.ackIDs, key)
+	}
+}
+
+func (e *DualFrameRelayEndpoint) dropAdapterIndexesLocked(adapter *TcpFrameAdapter) {
+	if adapter == nil {
+		return
+	}
+	for key := range e.incomingIDs {
+		if key.adapter == adapter {
+			delete(e.incomingIDs, key)
+		}
+	}
+	for key := range e.ackIDs {
+		if key.adapter == adapter {
+			delete(e.ackIDs, key)
+		}
+	}
 }
 
 // collect 是入站方向的汇聚循环：不断从某条 leg 的适配器读原始帧，
@@ -290,30 +609,27 @@ func (e *DualFrameRelayEndpoint) collect(kind streamTransport, adapter *TcpFrame
 			}
 			return
 		}
-		out := cloneFrame(f)
-		// transport MessageId -> logicalID：
-		//   - 入站数据帧按 incomingIDs/incomingMessageID 绑定；
-		//   - ACK 帧按 ackIDs 反查，避免和对端主动发来的数据帧编号撞车；
-		//   - 未绑定 ACK 没有对应的 relay route，直接丢弃，不能落到 incomingIDs 污染后续数据帧。
-		logicalID, ok := e.resolveIncomingMessageID(kind, f)
-		if !ok {
-			continue
-		}
-		out.MessageId = logicalID
 		e.mu.Lock()
-		// 为这条来源 logicalID 建立「回写路由」：日后要把帧写回此来源 leg 时，
-		// dstID 就用它原本的 transport MessageId，原样还回去。
-		if e.routes[logicalID] == nil {
-			e.routes[logicalID] = &dualFrameRoute{
-				kind:        kind,
-				connId:      f.ConnectionId,
-				endpoint:    adapter,
-				dstID:       f.MessageId,
-				totalFrames: f.TotalFrames,
-				framesBySeq: make(map[uint32]*network.Frame),
-			}
+		if e.closed || e.adapters[kind] != adapter {
+			e.mu.Unlock()
+			return
+		}
+		logicalID, route, resolveErr := e.resolveIncomingFrameLocked(kind, adapter, f, time.Now())
+		if resolveErr == nil && route != nil && isFullFrameAck(f, route.totalFrames) {
+			e.completeRouteLocked(route, time.Now())
 		}
 		e.mu.Unlock()
+		if resolveErr != nil {
+			logx.Errorf("[FrameRelay] %s 入站帧状态无效, 关闭逻辑流: nodeId=%.16s connId=%s err=%v",
+				kindStr, e.stream.NodeId(), e.stream.ConnectionId(), resolveErr)
+			_ = e.stream.Close()
+			return
+		}
+		if route == nil {
+			continue
+		}
+		out := cloneFrame(f)
+		out.MessageId = logicalID
 		select {
 		case <-e.stream.ctx.Done():
 			return
@@ -322,67 +638,110 @@ func (e *DualFrameRelayEndpoint) collect(kind streamTransport, adapter *TcpFrame
 	}
 }
 
+func (e *DualFrameRelayEndpoint) resolveIncomingFrameLocked(kind streamTransport, adapter *TcpFrameAdapter, frame *network.Frame, now time.Time) (uint64, *dualFrameRoute, error) {
+	if frame == nil {
+		return 0, nil, errors.New("nil frame")
+	}
+	if frame.FrameType == network.FrameTypeAck {
+		key := frameEndpointKey{kind: kind, adapter: adapter, messageID: frame.MessageId}
+		logicalID, ok := e.ackIDs[key]
+		if !ok {
+			return 0, nil, nil
+		}
+		route := e.routes[logicalID]
+		if route == nil {
+			delete(e.ackIDs, key)
+			return 0, nil, nil
+		}
+		route.lastActive = now
+		return logicalID, route, nil
+	}
+	if frame.FrameType != network.FrameTypeData && frame.FrameType != network.FrameTypeRetransmit {
+		return 0, nil, nil
+	}
+	if frame.TotalFrames == 0 || frame.SeqId >= frame.TotalFrames {
+		return 0, nil, errors.New("invalid data frame sequence")
+	}
+
+	key := frameEndpointKey{kind: kind, adapter: adapter, connId: frame.ConnectionId, messageID: frame.MessageId}
+	if logicalID, ok := e.incomingIDs[key]; ok {
+		route := e.routes[logicalID]
+		if route != nil {
+			if route.totalFrames != frame.TotalFrames {
+				return 0, nil, errors.New("frames disagree on TotalFrames for relay route")
+			}
+			route.lastActive = now
+			return logicalID, route, nil
+		}
+		delete(e.incomingIDs, key)
+	}
+	if !e.ensureRouteSlotLocked(now) {
+		return 0, nil, fmt.Errorf("frame relay route limit exceeded: %d", e.maxRoutes)
+	}
+	logicalID := e.logicalGen.Next()
+	sourceKey := key
+	route := &dualFrameRoute{
+		kind:        kind,
+		connId:      frame.ConnectionId,
+		endpoint:    adapter,
+		dstID:       frame.MessageId,
+		totalFrames: frame.TotalFrames,
+		framesBySeq: make(map[uint32]*network.Frame),
+		sourceKey:   &sourceKey,
+		createdAt:   now,
+		lastActive:  now,
+	}
+	e.incomingIDs[key] = logicalID
+	e.routes[logicalID] = route
+	return logicalID, route, nil
+}
+
 func (e *DualFrameRelayEndpoint) isCurrent(kind streamTransport, adapter *TcpFrameAdapter) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.adapters[kind] == adapter
-}
-
-// incomingMessageID 把「某条 leg 上 remote 主动发来的数据帧 MessageId」翻译成稳定的 logicalID。
-// 第一次见到就分配一个新的 logicalID 并记下来；之后同一来源消息的所有数据帧
-// 都会拿到同一个 logicalID。
-func (e *DualFrameRelayEndpoint) incomingMessageID(kind streamTransport, connId string, messageID uint64) uint64 {
-	key := frameEndpointKey{kind: kind, connId: connId, messageID: messageID}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if id, ok := e.incomingIDs[key]; ok {
-		return id
-	}
-	id := e.logicalGen.Next()
-	e.incomingIDs[key] = id
-	return id
-}
-
-// ackMessageID 把「某条 leg 上对端回给 relay 的 ACK(dstID)」翻译回原 logicalID。
-// **不按 connId 区分**：dstID 由目标 leg 的 AllocMessageId 分配、全 leg 唯一，本就不撞车；
-// 而 ACK 帧携带的是「回 ACK 那一方的 t.connectionId」，与原数据帧的业务 connId 不一定相同
-// （例如注册流 connId 为空），按 connId 查会查不到 → ACK 丢失 → 发送端永远等不到确认。
-func (e *DualFrameRelayEndpoint) ackMessageID(kind streamTransport, messageID uint64) (uint64, bool) {
-	key := frameEndpointKey{kind: kind, messageID: messageID}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	id, ok := e.ackIDs[key]
-	return id, ok
-}
-
-func (e *DualFrameRelayEndpoint) resolveIncomingMessageID(kind streamTransport, frame *network.Frame) (uint64, bool) {
-	if frame != nil && frame.FrameType == network.FrameTypeAck {
-		// ACK 回程按 dstID（唯一）查，不带 connId（见 ackMessageID 说明）。
-		id, ok := e.ackMessageID(kind, frame.MessageId)
-		return id, ok
-	}
-	// 入站数据按 {kind, connId, msgId} 区分：多路复用时各流 msgId 从 1 起会撞车，靠 connId 区分。
-	return e.incomingMessageID(kind, frame.ConnectionId, frame.MessageId), true
-}
-
-// bindAckMessageID 显式登记 {leg kind, dstID} -> logicalID（dstID 唯一, 不带 connId）。
-func (e *DualFrameRelayEndpoint) bindAckMessageID(kind streamTransport, transportMessageID uint64, logicalID uint64) {
-	key := frameEndpointKey{kind: kind, messageID: transportMessageID}
-	e.mu.Lock()
-	e.ackIDs[key] = logicalID
-	e.mu.Unlock()
+	return !e.closed && e.adapters[kind] == adapter
 }
 
 // NextFrame 供 relay pump 消费入站汇聚帧（已是 logicalID 视角）。
 func (e *DualFrameRelayEndpoint) NextFrame(ctx context.Context) (*network.Frame, error) {
+	e.readMu.Lock()
+	defer e.readMu.Unlock()
+	e.mu.Lock()
+	closed := e.closed
+	e.mu.Unlock()
+	if closed {
+		return nil, errors.New("frame relay endpoint closed")
+	}
+	if e.pending != nil {
+		frame := e.pending
+		e.pending = nil
+		return frame, nil
+	}
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-e.stream.ctx.Done():
 		return nil, errors.New("stream closed")
-	case f := <-e.incoming:
-		return f, nil
+	case frame := <-e.incoming:
+		if frame == nil {
+			return nil, errors.New("frame relay: nil input frame")
+		}
+		return frame, nil
 	}
+}
+
+func (e *DualFrameRelayEndpoint) NextFrameBatch(ctx context.Context, maxFrames, maxBytes int) ([]*network.Frame, error) {
+	e.readMu.Lock()
+	defer e.readMu.Unlock()
+	e.mu.Lock()
+	closed := e.closed
+	e.mu.Unlock()
+	if closed {
+		return nil, errors.New("frame relay endpoint closed")
+	}
+	return pullFrameBatch(ctx, e.stream.ctx.Done(), func() error {
+		return errors.New("stream closed")
+	}, e.incoming, &e.pending, maxFrames, maxBytes)
 }
 
 // HandleFrame 是出站方向：relay pump 把一帧（MessageId 已是 logicalID）交给本端点写出。
@@ -392,17 +751,95 @@ func (e *DualFrameRelayEndpoint) NextFrame(ctx context.Context) (*network.Frame,
 //     - 命中（常见）：说明这条消息的目标 leg / dstID 已确定，直接复用。
 //     collect 在入站时已为「来源 logicalID」建好回写 route；反方向的数据/ACK 都走这里。
 //     - 未命中：这是一条新发起的出站消息，选一条可用 leg、分配新的 dstID 建 route，
-//     并把 {目标 leg kind, dstID} -> logicalID 也写进 incomingIDs，
+//     并把 {目标 adapter, leg kind, dstID} -> logicalID 写进 ackIDs，
 //     这样对端基于 dstID 回来的 ACK 能在 collect 里翻译回同一个 logicalID（闭环）。
 //  2. 缓存该帧（按 SeqId），供 leg failover 时重放。
 //  3. 把帧 MessageId 改写成 dstID，写到目标 leg。
 //  4. 写失败则走 replayRoute：换 backup leg 并把已缓存帧整条重放。
 func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network.Frame) error {
+	return e.handleFrameRun(ctx, []*network.Frame{frame})
+}
+
+// HandleFrameBatch 保持输入 FIFO，仅合并连续且属于同一 logical message 的数据帧。
+// ACK/控制帧始终单独写出，避免被大数据批次拖延。
+func (e *DualFrameRelayEndpoint) HandleFrameBatch(ctx context.Context, frames []*network.Frame) error {
+	for start := 0; start < len(frames); {
+		first := frames[start]
+		if first == nil {
+			return errors.New("frame relay: nil frame")
+		}
+		end := start + 1
+		if isRelayBatchDataFrame(first) {
+			for end < len(frames) && sameRelayFrameRun(first, frames[end]) {
+				end++
+			}
+		}
+		if err := e.handleFrameRun(ctx, frames[start:end]); err != nil {
+			return err
+		}
+		start = end
+	}
+	return nil
+}
+
+func isRelayBatchDataFrame(frame *network.Frame) bool {
+	return frame != nil && (frame.FrameType == network.FrameTypeData || frame.FrameType == network.FrameTypeRetransmit)
+}
+
+func sameRelayFrameRun(first, next *network.Frame) bool {
+	return isRelayBatchDataFrame(next) && first.MessageId == next.MessageId &&
+		first.ConnectionId == next.ConnectionId && first.TotalFrames == next.TotalFrames
+}
+
+func (e *DualFrameRelayEndpoint) handleFrameRun(ctx context.Context, frames []*network.Frame) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	frame := frames[0]
+	if frame == nil {
+		return errors.New("frame relay: nil frame")
+	}
 	logicalID := frame.MessageId
-	cached := cloneFrame(frame)
+	for _, candidate := range frames {
+		if candidate == nil {
+			return errors.New("frame relay: nil frame")
+		}
+		if candidate.MessageId != logicalID || candidate.ConnectionId != frame.ConnectionId || candidate.TotalFrames != frame.TotalFrames {
+			return errors.New("frame relay: mixed message batch")
+		}
+		if len(frames) > 1 && !isRelayBatchDataFrame(candidate) {
+			return errors.New("frame relay: control frame in data batch")
+		}
+		if isRelayBatchDataFrame(candidate) && (candidate.TotalFrames == 0 || candidate.SeqId >= candidate.TotalFrames) {
+			return errors.New("frame relay: invalid data frame sequence")
+		}
+	}
+
+	now := time.Now()
+	replayDisabledNow := false
 	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return errors.New("frame relay endpoint closed")
+	}
 	route := e.routes[logicalID]
 	if route == nil {
+		if frame.FrameType == network.FrameTypeAck {
+			e.mu.Unlock()
+			return nil
+		}
+		if frame.FrameType != network.FrameTypeData && frame.FrameType != network.FrameTypeRetransmit {
+			e.mu.Unlock()
+			return errors.New("frame relay: unsupported frame type")
+		}
+		if frame.TotalFrames == 0 || frame.SeqId >= frame.TotalFrames {
+			e.mu.Unlock()
+			return errors.New("frame relay: invalid data frame sequence")
+		}
+		if !e.ensureRouteSlotLocked(now) {
+			e.mu.Unlock()
+			return fmt.Errorf("frame relay route limit exceeded: %d", e.maxRoutes)
+		}
 		kind, adapter := e.chooseAdapterLocked(streamTransportUnknown)
 		if adapter == nil {
 			e.mu.Unlock()
@@ -415,25 +852,99 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 			dstID:       adapter.AllocMessageId(),
 			totalFrames: frame.TotalFrames,
 			framesBySeq: make(map[uint32]*network.Frame),
+			ackKeys:     make(map[frameEndpointKey]struct{}),
+			createdAt:   now,
+			lastActive:  now,
+			generation:  1,
 		}
 		e.routes[logicalID] = route
-		// 闭环：目标 leg 用 dstID(唯一) 回来的 ACK，要能翻译回这个 logicalID。不带 connId（见 ackMessageID）。
-		e.ackIDs[frameEndpointKey{kind: kind, messageID: route.dstID}] = logicalID
+		e.bindAckKeyLocked(logicalID, route, kind, adapter, route.dstID)
+	} else if route.totalFrames != frame.TotalFrames && frame.TotalFrames != 0 {
+		e.mu.Unlock()
+		return errors.New("frame relay: TotalFrames changed for existing route")
 	}
-	route.framesBySeq[frame.SeqId] = cached
+	route.lastActive = now
+	if route.completedAt.IsZero() {
+		for _, candidate := range frames {
+			if e.cacheFrameLocked(route, candidate) {
+				replayDisabledNow = true
+			}
+		}
+	}
+	kind := route.kind
 	endpoint := route.endpoint
 	dstID := route.dstID
+	generation := route.generation
 	e.mu.Unlock()
+	if replayDisabledNow {
+		logx.Warnf("[FrameRelay] 重放缓存达到上限, 健康链路继续直通但本消息不再支持 leg 重放: nodeId=%.16s connId=%s logicalID=%d",
+			e.stream.NodeId(), e.stream.ConnectionId(), logicalID)
+	}
 
-	out := cloneFrame(frame)
-	out.MessageId = dstID
-	if err := endpoint.HandleFrame(ctx, out); err != nil {
-		kindStr := transportName(legFamily(route.kind))
+	outputs := make([]*network.Frame, len(frames))
+	for index, candidate := range frames {
+		out := *candidate
+		out.MessageId = dstID
+		outputs[index] = &out
+	}
+	if err := writeEndpointFrameBatch(ctx, endpoint, outputs); err != nil {
+		kindStr := transportName(legFamily(kind))
 		logx.Warnf("[FrameRelay] %s HandleFrame 写入失败, 触发 replayRoute: nodeId=%.16s connId=%s err=%v",
 			kindStr, e.stream.NodeId(), e.stream.ConnectionId(), err)
-		return e.replayRoute(ctx, logicalID, route.kind, endpoint)
+		return e.replayRoute(ctx, logicalID, kind, endpoint, generation)
+	}
+	if isFullFrameAck(frame, route.totalFrames) {
+		e.mu.Lock()
+		if current := e.routes[logicalID]; current == route && current.generation == generation {
+			e.completeRouteLocked(current, time.Now())
+		}
+		e.mu.Unlock()
 	}
 	return nil
+}
+
+func (e *DualFrameRelayEndpoint) bindAckKeyLocked(logicalID uint64, route *dualFrameRoute, kind streamTransport, adapter *TcpFrameAdapter, dstID uint64) {
+	key := frameEndpointKey{kind: kind, adapter: adapter, messageID: dstID}
+	e.ackIDs[key] = logicalID
+	if route.ackKeys == nil {
+		route.ackKeys = make(map[frameEndpointKey]struct{})
+	}
+	route.ackKeys[key] = struct{}{}
+}
+
+func (e *DualFrameRelayEndpoint) cacheFrameLocked(route *dualFrameRoute, frame *network.Frame) bool {
+	if route == nil || frame == nil || route.replayOff {
+		return false
+	}
+	if existing := route.framesBySeq[frame.SeqId]; existing != nil {
+		if frame.FrameType != network.FrameTypeAck {
+			return false
+		}
+		size := cachedFrameBytes(existing)
+		route.cachedBytes -= size
+		e.cachedBytes -= size
+		delete(route.framesBySeq, frame.SeqId)
+	}
+	size := cachedFrameBytes(frame)
+	if route.cachedBytes+size > e.maxRouteBytes || e.cachedBytes+size > e.maxBytes {
+		e.releaseRouteFramesLocked(route)
+		route.replayOff = true
+		return true
+	}
+	if route.framesBySeq == nil {
+		route.framesBySeq = make(map[uint32]*network.Frame)
+	}
+	route.framesBySeq[frame.SeqId] = cloneFrame(frame)
+	route.cachedBytes += size
+	e.cachedBytes += size
+	return false
+}
+
+func cachedFrameBytes(frame *network.Frame) int64 {
+	if frame == nil {
+		return 0
+	}
+	return int64(network.FrameHeaderLength + len(frame.ConnectionId) + len(frame.Payload) + 128)
 }
 
 // replayRoute 在当前目标 leg 写失败时调用：
@@ -441,15 +952,48 @@ func (e *DualFrameRelayEndpoint) HandleFrame(ctx context.Context, frame *network
 //   - 选一条 backup leg，给这条 logicalID 重新分配 dstID（并刷新 dstID->logicalID 闭环）；
 //   - 把已缓存的所有帧按 SeqId 顺序重放到 backup leg，保证目标侧拿到的是完整消息，
 //     而不是「前半段在旧 leg、后半段在新 leg」的拼不起来的半条消息。
+//
 // onLegDetached 在 DualStream 摘除一条 leg 时调用：删除该 leg 的 adapter，
 // 并把所有绑定到它的回写路由主动切到一条存活 leg（无存活 leg 则保留，待新 leg attach）。
 // 这样即便没有写失败触发 replayRoute，回程也能主动避开已摘除的死 leg。
-func (e *DualFrameRelayEndpoint) onLegDetached(id streamTransport) {
+func (e *DualFrameRelayEndpoint) onLegDetached(id streamTransport, stream network.Stream) {
+	detachedStream := tcpStreamFromStream(stream)
+	if detachedStream == nil {
+		return
+	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
+	failedAdapter := e.adapters[id]
+	if failedAdapter == nil || failedAdapter.stream != detachedStream {
+		e.mu.Unlock()
+		return
+	}
 	delete(e.adapters, id)
+	type replayJob struct {
+		kind    streamTransport
+		adapter *TcpFrameAdapter
+		frames  []*network.Frame
+		dstID   uint64
+	}
+	jobs := make([]replayJob, 0)
 	for logicalID, route := range e.routes {
-		if route == nil || route.kind != id {
+		if route == nil {
+			delete(e.routes, logicalID)
+			continue
+		}
+		e.dropAdapterAckKeysLocked(route, failedAdapter)
+		if route.kind != id || route.endpoint != failedAdapter {
+			continue
+		}
+		if route.sourceKey != nil || !route.completedAt.IsZero() {
+			e.removeRouteLocked(logicalID)
+			continue
+		}
+		if route.replayOff {
+			e.removeRouteLocked(logicalID)
 			continue
 		}
 		kind, adapter := e.chooseAdapterLocked(id)
@@ -459,11 +1003,32 @@ func (e *DualFrameRelayEndpoint) onLegDetached(id streamTransport) {
 		route.kind = kind
 		route.endpoint = adapter
 		route.dstID = adapter.AllocMessageId()
-		e.ackIDs[frameEndpointKey{kind: kind, messageID: route.dstID}] = logicalID
+		route.generation++
+		route.lastActive = time.Now()
+		e.bindAckKeyLocked(logicalID, route, kind, adapter, route.dstID)
+		jobs = append(jobs, replayJob{
+			kind:    kind,
+			adapter: adapter,
+			frames:  orderedFrames(route.framesBySeq),
+			dstID:   route.dstID,
+		})
+	}
+	e.dropAdapterIndexesLocked(failedAdapter)
+	e.mu.Unlock()
+
+	for _, job := range jobs {
+		for _, frame := range job.frames {
+			out := cloneFrame(frame)
+			out.MessageId = job.dstID
+			if err := job.adapter.HandleFrame(e.stream.ctx, out); err != nil {
+				e.stream.handleLegFailure(job.kind, job.adapter.stream)
+				break
+			}
+		}
 	}
 }
 
-func (e *DualFrameRelayEndpoint) replayRoute(ctx context.Context, logicalID uint64, failedKind streamTransport, failedEndpoint *TcpFrameAdapter) error {
+func (e *DualFrameRelayEndpoint) replayRoute(ctx context.Context, logicalID uint64, failedKind streamTransport, failedEndpoint *TcpFrameAdapter, failedGeneration uint64) error {
 	// 仅当 failedEndpoint 仍是该 kind 的现役 adapter 时才触发 leg 失败，
 	// 否则说明 leg 已被新 adapter 替换，写到旧 endpoint 失败属于"路由陈旧"，
 	// 不应再次 handleLegFailure（避免与正常重连流程产生级联）。
@@ -480,7 +1045,25 @@ func (e *DualFrameRelayEndpoint) replayRoute(ctx context.Context, logicalID uint
 		e.mu.Unlock()
 		return errors.New("stream closed")
 	}
-	kind, adapter := e.chooseAdapterLocked(failedKind)
+	if route.generation != failedGeneration || route.endpoint != failedEndpoint {
+		e.mu.Unlock()
+		return nil
+	}
+	if route.replayOff {
+		e.mu.Unlock()
+		return errFrameRelayReplayCacheUnavailable
+	}
+	if !route.completedAt.IsZero() {
+		e.mu.Unlock()
+		return nil
+	}
+	kind := streamTransportUnknown
+	adapter := e.adapters[failedKind]
+	if adapter != nil && adapter != failedEndpoint {
+		kind = failedKind
+	} else {
+		kind, adapter = e.chooseAdapterLocked(failedKind)
+	}
 	if adapter == nil {
 		e.mu.Unlock()
 		return errors.New("stream closed")
@@ -488,7 +1071,9 @@ func (e *DualFrameRelayEndpoint) replayRoute(ctx context.Context, logicalID uint
 	route.kind = kind
 	route.endpoint = adapter
 	route.dstID = adapter.AllocMessageId()
-	e.ackIDs[frameEndpointKey{kind: kind, messageID: route.dstID}] = logicalID
+	route.generation++
+	route.lastActive = time.Now()
+	e.bindAckKeyLocked(logicalID, route, kind, adapter, route.dstID)
 	frames := orderedFrames(route.framesBySeq)
 	dstID := route.dstID
 	e.mu.Unlock()
@@ -501,7 +1086,6 @@ func (e *DualFrameRelayEndpoint) replayRoute(ctx context.Context, logicalID uint
 			return err
 		}
 	}
-	e.finishRouteIfComplete(logicalID)
 	return nil
 }
 
@@ -528,13 +1112,146 @@ func (e *DualFrameRelayEndpoint) chooseAdapterLocked(exclude streamTransport) (s
 	return streamTransportUnknown, nil
 }
 
-func (e *DualFrameRelayEndpoint) finishRouteIfComplete(logicalID uint64) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	route := e.routes[logicalID]
-	if route != nil && route.totalFrames > 0 && len(route.framesBySeq) >= int(route.totalFrames) {
-		delete(e.routes, logicalID)
+func (e *DualFrameRelayEndpoint) ensureRouteSlotLocked(now time.Time) bool {
+	if e.maxRoutes <= 0 {
+		return false
 	}
+	if len(e.routes) < e.maxRoutes {
+		return true
+	}
+	e.sweepExpiredLocked(now)
+	for len(e.routes) >= e.maxRoutes {
+		var oldestID uint64
+		var oldest time.Time
+		for logicalID, route := range e.routes {
+			if route == nil || route.completedAt.IsZero() {
+				continue
+			}
+			if oldestID == 0 || route.completedAt.Before(oldest) {
+				oldestID = logicalID
+				oldest = route.completedAt
+			}
+		}
+		if oldestID == 0 {
+			return false
+		}
+		e.removeRouteLocked(oldestID)
+	}
+	return true
+}
+
+func (e *DualFrameRelayEndpoint) completeRouteLocked(route *dualFrameRoute, now time.Time) {
+	if route == nil {
+		return
+	}
+	e.releaseRouteFramesLocked(route)
+	if route.completedAt.IsZero() {
+		route.completedAt = now
+	}
+	route.lastActive = now
+}
+
+func (e *DualFrameRelayEndpoint) releaseRouteFramesLocked(route *dualFrameRoute) {
+	if route == nil {
+		return
+	}
+	e.cachedBytes -= route.cachedBytes
+	if e.cachedBytes < 0 {
+		e.cachedBytes = 0
+	}
+	route.cachedBytes = 0
+	route.framesBySeq = nil
+}
+
+func (e *DualFrameRelayEndpoint) removeRouteLocked(logicalID uint64) {
+	route := e.routes[logicalID]
+	if route == nil {
+		return
+	}
+	e.releaseRouteFramesLocked(route)
+	if route.sourceKey != nil && e.incomingIDs[*route.sourceKey] == logicalID {
+		delete(e.incomingIDs, *route.sourceKey)
+	}
+	for key := range route.ackKeys {
+		if e.ackIDs[key] == logicalID {
+			delete(e.ackIDs, key)
+		}
+	}
+	delete(e.routes, logicalID)
+}
+
+func (e *DualFrameRelayEndpoint) sweepExpiredLocked(now time.Time) {
+	for logicalID, route := range e.routes {
+		if route == nil {
+			delete(e.routes, logicalID)
+			continue
+		}
+		if !route.completedAt.IsZero() {
+			if now.Sub(route.lastActive) >= frameRelayCompletedRouteTTL {
+				e.removeRouteLocked(logicalID)
+			}
+			continue
+		}
+		lastActive := route.lastActive
+		if lastActive.IsZero() {
+			lastActive = route.createdAt
+		}
+		if !lastActive.IsZero() && now.Sub(lastActive) >= frameRelayRouteTTL {
+			e.removeRouteLocked(logicalID)
+		}
+	}
+}
+
+func (e *DualFrameRelayEndpoint) reapRoutes() {
+	ticker := time.NewTicker(frameRelaySweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-e.stream.ctx.Done():
+			e.mu.Lock()
+			e.closed = true
+			e.adapters = make(map[streamTransport]*TcpFrameAdapter)
+			e.clearRoutesLocked()
+			e.mu.Unlock()
+			return
+		case now := <-ticker.C:
+			e.mu.Lock()
+			e.sweepExpiredLocked(now)
+			e.mu.Unlock()
+		}
+	}
+}
+
+func (e *DualFrameRelayEndpoint) clearRoutesLocked() {
+	for logicalID := range e.routes {
+		e.removeRouteLocked(logicalID)
+	}
+	e.incomingIDs = make(map[frameEndpointKey]uint64)
+	e.ackIDs = make(map[frameEndpointKey]uint64)
+	e.cachedBytes = 0
+}
+
+func isFullFrameAck(frame *network.Frame, expectedTotal uint32) bool {
+	if frame == nil || frame.FrameType != network.FrameTypeAck || expectedTotal == 0 || frame.TotalFrames != expectedTotal {
+		return false
+	}
+	ranges, err := network.DecodeAckRanges(frame.Payload)
+	if err != nil || len(ranges) == 0 {
+		return false
+	}
+	cursor := uint64(0)
+	total := uint64(expectedTotal)
+	for _, ackRange := range ranges {
+		start := uint64(ackRange.Start)
+		end := uint64(ackRange.End)
+		if start > end || end >= total || start > cursor {
+			return false
+		}
+		if end >= cursor {
+			cursor = end + 1
+		}
+	}
+	return cursor == total
 }
 
 func (e *DualFrameRelayEndpoint) AllocMessageId() uint64 {
@@ -550,6 +1267,11 @@ func (e *DualFrameRelayEndpoint) ConnectionId() string {
 }
 
 func (e *DualFrameRelayEndpoint) Close() error {
+	e.mu.Lock()
+	e.closed = true
+	e.adapters = make(map[streamTransport]*TcpFrameAdapter)
+	e.clearRoutesLocked()
+	e.mu.Unlock()
 	return e.stream.Close()
 }
 

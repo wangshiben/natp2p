@@ -1,6 +1,0 @@
-生成 5 MB 测试文件...
-测试文件 SHA256: 816dc999ba0de64466ba41624455c4403fb2344ec06e5b028205a68c7f679554
-测试文件大小: 5242880 字节
-HTTP 文件服务器监听: http://127.0.0.1:19375
-  下载测试文件: http://127.0.0.1:19375/file
-服务器退出: listen tcp 127.0.0.1:19375: socket: operation not permitted

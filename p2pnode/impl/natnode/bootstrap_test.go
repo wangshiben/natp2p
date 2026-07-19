@@ -19,11 +19,11 @@ func hexID(prefix string) string {
 
 func TestSelectEntryRelay(t *testing.T) {
 	self := p2pnode.NodeID(strings.Repeat("0", 64))
-	const indexAddr = "38.0.0.1:9000"
+	const indexAddr = "192.0.2.1:9000"
 
-	near := relayquery.Info{NodeID: hexID("1"), Addr: "104.0.0.1:9000"} // 距离小
-	far := relayquery.Info{NodeID: hexID("f"), Addr: "203.0.113.9:9000"}     // 距离大
-	indexSelf := relayquery.Info{NodeID: hexID("a"), Addr: indexAddr}         // index 自身条目
+	near := relayquery.Info{NodeID: hexID("1"), Addr: "198.51.100.1:9000"} // 距离小
+	far := relayquery.Info{NodeID: hexID("f"), Addr: "203.0.113.9:9000"}   // 距离大
+	indexSelf := relayquery.Info{NodeID: hexID("a"), Addr: indexAddr}      // index 自身条目
 
 	allReachable := func(string) bool { return true }
 	noneReachable := func(string) bool { return false }

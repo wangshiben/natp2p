@@ -11,7 +11,7 @@ const (
 	routeMessage       = "/p2p/message"
 )
 
-// handshakePayload 在 TLS 握手后交换，携带节点身份与 relay 地址列表。
+// handshakePayload 在 Noise E2E 握手后交换，携带节点身份与 relay 地址列表。
 type handshakePayload struct {
 	PeerID string   `json:"peer_id"`
 	Relays []string `json:"relays"`

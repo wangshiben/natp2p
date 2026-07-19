@@ -47,27 +47,44 @@ var (
 )
 
 // muxOpenInfo 是 OPEN 帧 Payload 的解码结果。
-// 线格式（'\n' 分隔，向后兼容）：targetNodeId \n originPubKey [\n legIndex \n legCount]
-// 老格式只有前两段，解码时 legCount 缺省=1（单 leg，非条带化）。
+// 线格式（'\n' 分隔，向后兼容）：targetNodeId \n originPubKey [\n legIndex \n legCount [\n legFlags]]
+// 老格式只有前两段或前四段，解码时 legCount 缺省=1、legFlags 缺省=0。
 type muxOpenInfo struct {
 	targetNodeID string
 	originPubKey string
 	legIndex     int // 条带化时本 leg 在逻辑连接内的序号（0-based）
 	legCount     int // 条带化时逻辑连接的总 leg 数；1 表示非条带化
+	legFlags     uint8
 }
 
-func encodeMuxOpen(targetNodeID, originPubKey string) []byte {
-	return encodeMuxOpenLeg(targetNodeID, originPubKey, 0, 1)
+func encodeMuxOpen(targetNodeID, originPubKey string, legFlags ...uint8) []byte {
+	return encodeMuxOpenLeg(targetNodeID, originPubKey, 0, 1, legFlags...)
 }
 
 // encodeMuxOpenLeg 编码带条带化元信息的 OPEN payload。
-func encodeMuxOpenLeg(targetNodeID, originPubKey string, legIndex, legCount int) []byte {
-	if legCount <= 1 {
+func encodeMuxOpenLeg(targetNodeID, originPubKey string, legIndex, legCount int, legFlags ...uint8) []byte {
+	flags := optionalLegFlags(legFlags)
+	if legCount <= 1 && flags == 0 {
 		// 单 leg：保持老格式（两段），与老对端完全兼容。
 		return []byte(targetNodeID + "\n" + originPubKey)
 	}
-	return []byte(targetNodeID + "\n" + originPubKey + "\n" +
-		itoa(legIndex) + "\n" + itoa(legCount))
+	if legCount <= 1 {
+		legIndex = 0
+		legCount = 1
+	}
+	payload := targetNodeID + "\n" + originPubKey + "\n" +
+		itoa(legIndex) + "\n" + itoa(legCount)
+	if flags != 0 {
+		payload += "\n" + itoa(int(flags))
+	}
+	return []byte(payload)
+}
+
+func optionalLegFlags(flags []uint8) uint8 {
+	if len(flags) == 0 {
+		return 0
+	}
+	return flags[0]
 }
 
 func itoa(n int) string {
@@ -105,7 +122,7 @@ func atoi(s string) int {
 
 func decodeMuxOpen(payload []byte) muxOpenInfo {
 	s := string(payload)
-	parts := splitN(s, '\n', 4)
+	parts := splitN(s, '\n', 5)
 	info := muxOpenInfo{legIndex: 0, legCount: 1}
 	if len(parts) > 0 {
 		info.targetNodeID = parts[0]
@@ -117,6 +134,11 @@ func decodeMuxOpen(payload []byte) muxOpenInfo {
 		info.legIndex = atoi(parts[2])
 		if c := atoi(parts[3]); c > 0 {
 			info.legCount = c
+		}
+	}
+	if len(parts) > 4 {
+		if flags := atoi(parts[4]); flags >= 0 && flags <= int(^uint8(0)) {
+			info.legFlags = uint8(flags)
 		}
 	}
 	return info
@@ -203,13 +225,13 @@ func (s *MuxSession) IsClosed() bool {
 
 // OpenStream 开一条新逻辑会话（入口侧）。streamID 用业务 connID，
 // open 元信息（targetNodeID + 公钥）随 OPEN 帧发往对端，供对端合成 hello 接入下游。
-func (s *MuxSession) OpenStream(streamID, targetNodeID, originPubKey string) (*MuxStream, error) {
-	return s.OpenStreamLeg(streamID, targetNodeID, originPubKey, 0, 1)
+func (s *MuxSession) OpenStream(streamID, targetNodeID, originPubKey string, legFlags ...uint8) (*MuxStream, error) {
+	return s.OpenStreamLeg(streamID, targetNodeID, originPubKey, 0, 1, legFlags...)
 }
 
 // OpenStreamLeg 开一条带条带化元信息的逻辑会话 leg。
 // legCount>1 时，对端据 (streamID, legIndex, legCount) 把多条 mux 会话归并为一条条带化逻辑连接。
-func (s *MuxSession) OpenStreamLeg(streamID, targetNodeID, originPubKey string, legIndex, legCount int) (*MuxStream, error) {
+func (s *MuxSession) OpenStreamLeg(streamID, targetNodeID, originPubKey string, legIndex, legCount int, legFlags ...uint8) (*MuxStream, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -224,7 +246,7 @@ func (s *MuxSession) OpenStreamLeg(streamID, targetNodeID, originPubKey string, 
 	s.mu.Unlock()
 	atomic.AddInt64(&s.activeStreams, 1)
 
-	if err := s.writeFrame(muxFrameOpen, streamID, encodeMuxOpenLeg(targetNodeID, originPubKey, legIndex, legCount)); err != nil {
+	if err := s.writeFrame(muxFrameOpen, streamID, encodeMuxOpenLeg(targetNodeID, originPubKey, legIndex, legCount, legFlags...)); err != nil {
 		s.dropStream(streamID)
 		return nil, err
 	}
@@ -429,6 +451,9 @@ func (st *MuxStream) LegCount() int {
 	}
 	return st.openInfo.legCount
 }
+
+// LegFlags 返回入口业务首帧携带的 leg 标志位。
+func (st *MuxStream) LegFlags() uint8 { return st.openInfo.legFlags }
 
 // StreamID 返回该逻辑会话 ID（= 业务 connID）。
 func (st *MuxStream) StreamID() string { return st.id }
@@ -684,8 +709,12 @@ func AcceptBridgeMuxStream(st *MuxStream) (net.Conn, error) {
 // AcceptBridgeMuxLogicalConn 同 AcceptBridgeMuxStream，但接入侧承载体是一条条带化
 // LogicalConn（M 条 leg 已归并）。targetNodeID/originPubKey 取自归并时任一 leg 的 OpenInfo
 // （见 MuxStream.TargetNodeID/OriginPubKey）。
-func AcceptBridgeMuxLogicalConn(lc *LogicalConn, targetNodeID, originPubKey string) (net.Conn, error) {
-	prefix, err := buildHelloPrefix(muxOpenInfo{targetNodeID: targetNodeID, originPubKey: originPubKey}, lc.LogicalID())
+func AcceptBridgeMuxLogicalConn(lc *LogicalConn, targetNodeID, originPubKey string, legFlags ...uint8) (net.Conn, error) {
+	prefix, err := buildHelloPrefix(muxOpenInfo{
+		targetNodeID: targetNodeID,
+		originPubKey: originPubKey,
+		legFlags:     optionalLegFlags(legFlags),
+	}, lc.LogicalID())
 	if err != nil {
 		return nil, err
 	}
@@ -699,6 +728,7 @@ func buildHelloPrefix(info muxOpenInfo, connID string) ([]byte, error) {
 		NodeId:        info.targetNodeID,
 		NodeIdVersion: 1,
 		ConnectionId:  connID,
+		LegFlags:      info.legFlags,
 	}
 	msg := &network.Message{Header: header, Payload: []byte(info.originPubKey)}
 	frames, err := msg.ToFrames(1)

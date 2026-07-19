@@ -29,7 +29,12 @@ BUG_*.md
 /cmd/tunnel/*_IMPLEMENTATION.md
 /cmd/tunnel/*_PLAN.md
 /cmd/tunnel/localsim/results_*/
+/pacakgeTest/
 /test/local-chaos/.runtime/
+/test/local-chaos/.soak/
+
+# 传输性能审计与测试环境原始证据只保留在本机，不进入提交。
+/speed_test/
 
 # 本地生成的测试程序和脱敏辅助脚本；不得提交。
 /billingpoc

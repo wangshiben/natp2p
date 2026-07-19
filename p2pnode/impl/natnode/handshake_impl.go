@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// NATHandshakeHandler 实现 p2pnode.HandshakeHandler，基于 crypoto.NewTLSCrypto。
+// NATHandshakeHandler 实现 p2pnode.HandshakeHandler，使用 Noise XX 建立端到端会话。
 type NATHandshakeHandler struct {
 	privKey *ecdh.PrivateKey
 }
@@ -22,16 +22,16 @@ func NewNATHandshakeHandler(privKey *ecdh.PrivateKey) *NATHandshakeHandler {
 	return &NATHandshakeHandler{privKey: privKey}
 }
 
-// HandshakeIncoming 在入站流上执行服务端 TLS 握手。
+// HandshakeIncoming 在入站流上执行 Noise responder 握手。
 // 调用前需已对原始流调用 SetStreamIdentity 绑定身份。
 // firstMsg.Payload 是对端的公钥 hex，用于推导其 NodeID。
 func (h *NATHandshakeHandler) HandshakeIncoming(ctx context.Context, stream network.Stream, firstMsg *network.Message) (p2pnode.PeerInfo, error) {
 	hash := sha256.Sum256(firstMsg.Payload)
 	peerID := hex.EncodeToString(hash[:])
 
-	crypto, err := crypoto.NewTLSCryptoContext(ctx, stream, h.privKey)
+	crypto, err := crypoto.NewNoiseCryptoContext(ctx, stream, h.privKey, false)
 	if err != nil {
-		return p2pnode.PeerInfo{}, fmt.Errorf("natnode: TLS 握手失败: %w", err)
+		return p2pnode.PeerInfo{}, fmt.Errorf("natnode: Noise E2E 握手失败: %w", err)
 	}
 	stream.SetCryptoSuite(crypto)
 
@@ -41,12 +41,12 @@ func (h *NATHandshakeHandler) HandshakeIncoming(ctx context.Context, stream netw
 	}, nil
 }
 
-// HandshakeOutgoing 在出站流上执行客户端 TLS 握手。
+// HandshakeOutgoing 在出站流上执行 Noise initiator 握手。
 // 验证连接到的对端与 expectedID 一致。
 func (h *NATHandshakeHandler) HandshakeOutgoing(ctx context.Context, stream network.Stream, expectedID p2pnode.NodeID) (p2pnode.PeerInfo, error) {
-	crypto, err := crypoto.NewTLSCryptoContext(ctx, stream, h.privKey)
+	crypto, err := crypoto.NewNoiseCryptoContext(ctx, stream, h.privKey, true)
 	if err != nil {
-		return p2pnode.PeerInfo{}, fmt.Errorf("natnode: TLS 握手失败: %w", err)
+		return p2pnode.PeerInfo{}, fmt.Errorf("natnode: Noise E2E 握手失败: %w", err)
 	}
 	stream.SetCryptoSuite(crypto)
 

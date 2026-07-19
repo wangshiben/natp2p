@@ -58,7 +58,7 @@ func TestRelaySelectorPhysicalRTTOverridesCloserXORDistance(t *testing.T) {
 	selfID := p2pnode.NodeID(fmt.Sprintf("%064x", 0))
 	serverN := selectorInfo(1, "192.0.2.10:9000", now.Add(-240*time.Hour), now)
 	serverX := relayquery.Info{
-		NodeID:                "8000000000000000000000000000000000000000000000000000000000000000",
+		NodeID:                hexID("8"),
 		Addr:                  "192.0.2.11:9000",
 		ContinuousOnlineSince: now.Add(-time.Hour).Unix(),
 		LastControlSeen:       now.Unix(),

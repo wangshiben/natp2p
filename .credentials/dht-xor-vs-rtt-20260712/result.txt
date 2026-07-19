@@ -1,5 +1,0 @@
-本节点 ID: 5e7386dce6b1d286e07aca6c50f5a3afeda0a2baf652164100485cb19140041e
-2026/07/12 12:20:44 [INFO] [natnode] index 129.28.42.247:9010 返回 2 个 relay
-2026/07/12 12:20:44 [INFO] [relay-select] candidates=2 selected=dfc1e88de3185335 addr=193.112.62.9:9000 role=sub-relay rtt=43.237202ms band=0 stable=15m22.39618347s reason=best-band,longest-stable
-2026/07/12 12:20:44 [INFO] [natnode] 选定就近可达的子 relay 作为入口: 193.112.62.9:9000
-注册到 relay: 193.112.62.9:9000

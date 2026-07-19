@@ -3,9 +3,9 @@
 set -uo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-RUNTIME_DIR=$ROOT_DIR/test/local-chaos/.runtime
+RUNTIME_DIR=${BNFS_CHAOS_RUNTIME_DIR:-$ROOT_DIR/test/local-chaos/.runtime}
 COMPOSE_FILE=$RUNTIME_DIR/compose.json
-COMPOSE_PROJECT=bnfs-local-chaos
+COMPOSE_PROJECT=${BNFS_CHAOS_COMPOSE_PROJECT:-bnfs-local-chaos}
 BNFS_CHAOS_IMAGE=${BNFS_CHAOS_IMAGE:-bnfs-local-chaos:latest}
 export ROOT_DIR RUNTIME_DIR COMPOSE_FILE COMPOSE_PROJECT BNFS_CHAOS_IMAGE
 
@@ -13,6 +13,7 @@ scenario=all
 keep=0
 build=1
 allow_failures=0
+build_only=0
 
 while (($#)); do
   case "$1" in
@@ -32,8 +33,12 @@ while (($#)); do
       allow_failures=1
       shift
       ;;
+    --build-only)
+      build_only=1
+      shift
+      ;;
     -h|--help)
-      printf 'usage: %s [--scenario all|1|2|3] [--no-build] [--keep] [--allow-failures]\n' "$0"
+      printf 'usage: %s [--scenario all|1|2|3] [--no-build] [--keep] [--allow-failures] [--build-only]\n' "$0"
       exit 0
       ;;
     *)
@@ -69,6 +74,7 @@ if (( build == 1 )); then
   mkdir -p "$build_dir"
   printf '[local-chaos] 在宿主机构建静态测试二进制\n'
   if ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/nodeserver" "$ROOT_DIR/cmd/tunnel/nodeserver" \
+    || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/caserver" "$ROOT_DIR/cmd/caserver" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunserver" "$ROOT_DIR/cmd/tunnel/server" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunclient" "$ROOT_DIR/cmd/tunnel/client" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/httpfileserver" "$ROOT_DIR/cmd/tunnel/httpfileserver"; then
@@ -86,6 +92,11 @@ if (( build == 1 )); then
     printf '[local-chaos] 镜像构建失败\n' >&2
     exit 1
   fi
+fi
+
+if (( build_only == 1 )); then
+  printf '[local-chaos] 构建完成，按 --build-only 不启动场景\n'
+  exit 0
 fi
 
 scripts=()

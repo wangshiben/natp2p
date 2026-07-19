@@ -146,3 +146,41 @@ func (s *forwardHookState) onFrame(ctx context.Context, f *network.Frame, direct
 
 	return true
 }
+
+// wouldInvokeHook 保守判断下一帧是否可能跨过 hook 阈值。Relay 批处理在该边界前
+// 先写完已积累批次，使外部计费/熔断回调仍只领先当前单帧，而不会领先整个写批次。
+// 重传指纹去重可能让实际回调不发生；这种情况只会少合并一帧，不改变计量结果。
+func (s *forwardHookState) wouldInvokeHook(f *network.Frame) bool {
+	if s == nil || s.config == nil || f == nil {
+		return false
+	}
+	if f.FrameType != network.FrameTypeData && f.FrameType != network.FrameTypeRetransmit {
+		return false
+	}
+	return s.accumulatedBytes+int64(len(f.Payload)) >= s.config.ThresholdBytes
+}
+
+func (s *forwardHookState) pendingAccounting() (int64, int64) {
+	if s == nil {
+		return 0, 0
+	}
+	return s.accumulatedBytes, s.accumulatedFrames
+}
+
+func (s *forwardHookState) rollbackUncommitted(bytes, frames int64) {
+	if s == nil {
+		return
+	}
+	if bytes > 0 {
+		s.accumulatedBytes -= bytes
+	}
+	if frames > 0 {
+		s.accumulatedFrames -= frames
+	}
+	if s.accumulatedBytes < 0 {
+		s.accumulatedBytes = 0
+	}
+	if s.accumulatedFrames < 0 {
+		s.accumulatedFrames = 0
+	}
+}

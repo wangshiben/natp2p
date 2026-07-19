@@ -1,8 +1,9 @@
 // hooktest 是 relayNode 转发 hook 功能的最小化验证程序。
 //
 // 验证目标（对应需求 2）：
-//   relayNode 每转发帧累计到指定大小，就自动调用一次 hook；
-//   hook 返回 nil 才继续转发；返回 error 则执行 errorHook（结构体参数传递）并停止该方向转发。
+//
+//	relayNode 每转发帧累计到指定大小，就自动调用一次 hook；
+//	hook 返回 nil 才继续转发；返回 error 则执行 errorHook（结构体参数传递）并停止该方向转发。
 //
 // 三种模式（脚本化三服务器部署，与 relaychat 一致）：
 //
@@ -19,14 +20,11 @@
 //	    NAT 节点（client 端），跨 relay 连接 target 并发送 -rounds 轮、每轮 -size 字节的数据，
 //	    驱动 relay 转发足够字节以触发 hook。
 //
-// ── 三服务器拓扑（与需求一致）──
+// ── 多节点拓扑示例（使用文档保留主机名）──
 //
-//	server1 (10.146.83.21) : relayServer
-//	    hooktest -mode relay -listen 0.0.0.0:9000 -public 10.146.83.21:9000 -threshold 1048576
-//	serverX (server 端) :
-//	    hooktest -mode listen -relay 10.146.83.21:9000     # 记下打印的 NodeID
-//	serverY (client 端) :
-//	    hooktest -mode connect -relay 10.146.83.21:9000 -target <NodeID> -rounds 50 -size 14336
+//	hooktest -mode relay -listen :9000 -public <relay-public-host>:9000 -threshold 1048576
+//	hooktest -mode listen -relay <relay-public-host>:9000     # 记下打印的 NodeID
+//	hooktest -mode connect -relay <relay-public-host>:9000 -target <NodeID> -rounds 50 -size 14336
 package main
 
 import (

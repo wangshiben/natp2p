@@ -7,6 +7,27 @@ import (
 	"net"
 )
 
+const relayHandshakeConcurrency = 128
+
+func dispatchRelayConnection(protocol string, connection net.Conn, slots chan struct{}, handler func(net.Conn) error) bool {
+	select {
+	case slots <- struct{}{}:
+	default:
+		logx.Warnf("[relay] %s 握手并发已满，拒绝新连接: remote=%s limit=%d",
+			protocol, connection.RemoteAddr(), cap(slots))
+		_ = connection.Close()
+		return false
+	}
+
+	go func() {
+		defer func() { <-slots }()
+		if err := handler(connection); err != nil {
+			logx.Errorf("[relay] Listen%sConnection error: %v", protocol, err)
+		}
+	}()
+	return true
+}
+
 // RelayStarter 中转服务启动器(公网服务器特有)
 type RelayStarter struct {
 	addr     string // 监听地址
@@ -28,8 +49,11 @@ func (r *RelayStarter) StartListen() {
 	//}
 	kcplistener, err := kcp.ListenWithOptions(r.addr, nil, 1, 1)
 	if err != nil {
+		_ = tcpListener.Close()
 		return
 	}
+	tcpHandshakeSlots := make(chan struct{}, relayHandshakeConcurrency)
+	kcpHandshakeSlots := make(chan struct{}, relayHandshakeConcurrency)
 	go func() {
 		for {
 			tcpConn, err := tcpListener.Accept()
@@ -39,11 +63,7 @@ func (r *RelayStarter) StartListen() {
 			if tcpConn == nil {
 				continue
 			}
-			err = r.netGroup.ListenTCPConnection(tcpConn)
-			if err != nil {
-				logx.Errorf("[relay] ListenTCPConnection error: %v", err)
-				continue
-			}
+			dispatchRelayConnection("TCP", tcpConn, tcpHandshakeSlots, r.netGroup.ListenTCPConnection)
 		}
 	}()
 	go func() {
@@ -57,17 +77,14 @@ func (r *RelayStarter) StartListen() {
 			}
 			session, ok := kcpConn.(*kcp.UDPSession)
 			if !ok || session == nil {
+				_ = kcpConn.Close()
 				continue
 			}
 			session.SetNoDelay(1, 10, 2, 1)
 			session.SetMtu(1400)
 			session.SetWriteBuffer(4 * 1024 * 1024)
 			session.SetWindowSize(256, 1024)
-			err = r.netGroup.ListenTCPConnection(kcpConn)
-			if err != nil {
-				logx.Errorf("[relay] ListenKCPConnection error: %v", err)
-				continue
-			}
+			dispatchRelayConnection("KCP", kcpConn, kcpHandshakeSlots, r.netGroup.ListenTCPConnection)
 		}
 	}()
 	fmt.Println("RelayStarter Start AT " + r.addr)

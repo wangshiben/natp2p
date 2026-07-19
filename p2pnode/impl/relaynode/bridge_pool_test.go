@@ -212,6 +212,69 @@ func TestBridgePool_EndToEnd(t *testing.T) {
 	t.Logf("✔ 端到端 64KB echo SHA 一致: %x", wantHash[:8])
 }
 
+func TestBridgePool_LegFlagsEndToEnd(t *testing.T) {
+	t.Setenv("BNFS_BRIDGE_KCP", "0")
+	hostRelay, hostAddr := newTestBridgeRelay(t, "host-relay-flags")
+	defer hostRelay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	entryRelay := &RelayNode{
+		ctx:         ctx,
+		bridgePools: make(map[string]*relayPeerPool),
+	}
+	entryRelay.SetBridgeWidth(1)
+	entryRelay.bridgePools[hostAddr] = newRelayPeerPool(ctx, hostAddr, "entry-relay-flags", 1)
+	defer entryRelay.closeBridgePools()
+
+	flags := uint8(network.LegFlagExtra | network.LegFlagResume)
+	conn, err := entryRelay.openBridgeStream(hostAddr, "target-node", "origin-pub-key", "resume-conn", flags)
+	if err != nil {
+		t.Fatalf("openBridgeStream: %v", err)
+	}
+	defer conn.Close()
+
+	select {
+	case got := <-hostRelay.acceptedFlags:
+		if got != flags {
+			t.Fatalf("对端 MuxStream.LegFlags=%d, want %d", got, flags)
+		}
+	case <-ctx.Done():
+		t.Fatalf("等待对端接收 OPEN flags 超时: %v", ctx.Err())
+	}
+}
+
+func TestRelayNode_CollectStripedLegPreservesFlags(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	client := networkFrameWork.NewMuxSession(context.Background(), clientConn, true)
+	server := networkFrameWork.NewMuxSession(context.Background(), serverConn, false)
+	defer client.Close()
+	defer server.Close()
+
+	flags := uint8(network.LegFlagExtra | network.LegFlagResume)
+	clientStream, err := client.OpenStreamLeg("striped-resume", "target-node", "origin-pub-key", 0, 2, flags)
+	if err != nil {
+		t.Fatalf("OpenStreamLeg: %v", err)
+	}
+	defer clientStream.Close()
+	serverStream, err := server.Accept()
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	node := &RelayNode{stripedLegs: make(map[string]*stripedAccept)}
+	node.collectStripedLeg(serverStream)
+	node.mu.Lock()
+	accept := node.stripedLegs[serverStream.StreamID()]
+	node.mu.Unlock()
+	if accept == nil {
+		t.Fatal("首条 striped leg 未进入待归并集合")
+	}
+	if accept.flags != flags {
+		t.Fatalf("stripedAccept.flags=%d, want %d", accept.flags, flags)
+	}
+}
+
 // ============================================================================
 // 测试辅助：newTestBridgeRelay 启动一个能接收 bridge-mux 物理连接并 echo 的 relay 服务
 // ============================================================================
@@ -225,22 +288,24 @@ func newTestBridgeRelay(t *testing.T, nodeID string) (*testBridgeRelay, string) 
 	addr := ln.Addr().String()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &testBridgeRelay{
-		nodeID: nodeID,
-		ln:     ln,
-		ctx:    ctx,
-		cancel: cancel,
-		acceptCount: new(int32),
+		nodeID:        nodeID,
+		ln:            ln,
+		ctx:           ctx,
+		cancel:        cancel,
+		acceptCount:   new(int32),
+		acceptedFlags: make(chan uint8, 16),
 	}
 	go r.serve()
 	return r, addr
 }
 
 type testBridgeRelay struct {
-	nodeID      string
-	ln          net.Listener
-	ctx         context.Context
-	cancel      context.CancelFunc
-	acceptCount *int32
+	nodeID        string
+	ln            net.Listener
+	ctx           context.Context
+	cancel        context.CancelFunc
+	acceptCount   *int32
+	acceptedFlags chan uint8
 }
 
 func (r *testBridgeRelay) serve() {
@@ -270,6 +335,10 @@ func (r *testBridgeRelay) handleConn(conn net.Conn) {
 			return
 		}
 		atomic.AddInt32(r.acceptCount, 1)
+		select {
+		case r.acceptedFlags <- st.LegFlags():
+		default:
+		}
 		go r.echoStream(st)
 	}
 }

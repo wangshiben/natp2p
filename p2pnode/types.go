@@ -27,7 +27,7 @@ import (
 // NodeID 是 P2P 网络中节点的全局唯一标识。
 // 值由公钥 hex 字符串进行 SHA256 再编码为 hex 得到，与 networkFrameWork 中 nodeId 体系一致。
 //
-// 示例："68f3b7c07731f0f50ed4f27d5f3449917472acb9f718a4db4cc8e85ff28e7aaa"
+// 示例：使用运行时生成的 64 字符十六进制字符串。
 type NodeID string
 
 // XOR 计算两个 NodeID 之间的 Kademlia 距离。

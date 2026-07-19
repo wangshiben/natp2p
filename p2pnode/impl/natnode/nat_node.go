@@ -152,7 +152,7 @@ func (n *NATNode) OnConnection(cb p2pnode.OnConnectionCallback) {
 }
 
 // Listen 向指定 relay 注册并阻塞等待入站连接。
-// 每条入站 hello 触发 TLS 握手 → 元数据交换 → DHT 更新 → 回调。
+// 每条入站 hello 触发 Noise E2E 握手 → 元数据交换 → DHT 更新 → 回调。
 // ctx 取消时返回。
 func (n *NATNode) Listen(ctx context.Context, addr string) error {
 	// 合并外部 ctx 与节点生命周期。
@@ -183,25 +183,39 @@ func (n *NATNode) registerAndServe(addr string) error {
 	}
 	networkFrameWork.EnableReconnectSurvival(stream)
 
+	entry := &relayEntry{addr: addr, stream: stream}
 	n.mu.Lock()
-	n.registeredRelays[addr] = &relayEntry{addr: addr, stream: stream}
+	n.registeredRelays[addr] = entry
 	// 已成功注册的 relay 即为本节点的入口 relay, 可经它发起跨中继连接。
 	n.entryRelays[addr] = struct{}{}
 	n.mu.Unlock()
 
-	return n.handleInboundHello(addr, stream)
+	return n.handleInboundHello(addr, entry)
 }
 
-// handleInboundHello 在已注册的流上等待 hello，完成 TLS 握手与元数据交换，
+// handleInboundHello 在已注册的流上等待 hello，完成 Noise E2E 握手与元数据交换，
 // 更新路由表，触发 onConnection 回调。
 // 一次握手后该流被加密并专属于该对端；后续连接走其他注册流。
-func (n *NATNode) handleInboundHello(relayAddr string, stream network.Stream) error {
+func (n *NATNode) handleInboundHello(relayAddr string, entry *relayEntry) (err error) {
+	stream := entry.stream
+	defer func() {
+		if err == nil {
+			return
+		}
+
+		n.mu.Lock()
+		for addr, current := range n.registeredRelays {
+			if current == entry {
+				delete(n.registeredRelays, addr)
+			}
+		}
+		n.mu.Unlock()
+		_ = stream.Close()
+	}()
+
 	// 读取对端经 relay 发来的首条消息（hello）。
 	firstMsg, err := stream.NextMessage(n.ctx)
 	if err != nil {
-		n.mu.Lock()
-		delete(n.registeredRelays, relayAddr)
-		n.mu.Unlock()
 		return err
 	}
 
@@ -209,17 +223,11 @@ func (n *NATNode) handleInboundHello(relayAddr string, stream network.Stream) er
 	peerPubKeyHex := string(firstMsg.Payload)
 	remoteNode, err := DHTable.NewNodeFromPubKeyHex(peerPubKeyHex)
 	if err != nil {
-		n.mu.Lock()
-		delete(n.registeredRelays, relayAddr)
-		n.mu.Unlock()
 		return fmt.Errorf("natnode: 解析对端公钥失败: %w", err)
 	}
 
 	// 先在原始流上绑定对端身份（必须在 StreamClient 包装之前）。
 	if !networkFrameWork.SetStreamIdentity(stream, remoteNode.PeerID(), firstMsg.Header.ConnectionId) {
-		n.mu.Lock()
-		delete(n.registeredRelays, relayAddr)
-		n.mu.Unlock()
 		return fmt.Errorf("natnode: SetStreamIdentity 失败, peer: %s", remoteNode.PeerID())
 	}
 
@@ -228,21 +236,15 @@ func (n *NATNode) handleInboundHello(relayAddr string, stream network.Stream) er
 	// 用 StreamClient 包装，提供心跳过滤与 ConnectionId 自填充。
 	sc := client.NewStreamClient(stream)
 
-	// 执行服务端 TLS 握手。
+	// 执行 Noise responder 握手。
 	peerInfo, err := n.handshake.HandshakeIncoming(n.ctx, sc, firstMsg)
 	if err != nil {
-		n.mu.Lock()
-		delete(n.registeredRelays, relayAddr)
-		n.mu.Unlock()
 		return fmt.Errorf("natnode: 与 %s 握手失败: %w", peerID, err)
 	}
 
 	// 交换元数据：发送己方 NodeID + relay 列表，接收对方。
 	peerRelays, err := n.exchangeMetadata(sc, peerID)
 	if err != nil {
-		n.mu.Lock()
-		delete(n.registeredRelays, relayAddr)
-		n.mu.Unlock()
 		return fmt.Errorf("natnode: 与 %s 元数据交换失败: %w", peerID, err)
 	}
 
@@ -376,7 +378,7 @@ func (n *NATNode) connectViaEntryRelay(ctx context.Context, relayAddr string, ta
 	// 用 StreamClient 包装。
 	sc := client.NewStreamClient(rawStream)
 
-	// 执行客户端 TLS 握手。
+	// 执行 Noise initiator 握手。
 	peerInfo, err := n.handshake.HandshakeOutgoing(ctx, sc, target)
 	if err != nil {
 		sc.Close()

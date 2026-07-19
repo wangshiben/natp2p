@@ -18,6 +18,7 @@ func TestMessageSerialization(t *testing.T) {
 	originalRouteName := "/api/v1/test"
 	originalPayload := []byte("hello world this is a test payload")
 	connectionId := uuid.New().String()
+	legSessionId := uuid.New().String()
 	// 创建原始消息
 	originalMsg := &Message{
 		Header: &Header{
@@ -26,6 +27,7 @@ func TestMessageSerialization(t *testing.T) {
 			RouteName:     originalRouteName,
 			PayLoadLength: uint(len(originalPayload)),
 			ConnectionId:  connectionId,
+			LegSessionId:  legSessionId,
 		},
 		Payload: originalPayload,
 	}
@@ -70,6 +72,9 @@ func TestMessageSerialization(t *testing.T) {
 	}
 	if parsedMsg.Header.ConnectionId != connectionId {
 		t.Errorf("ConnectionId mismatch: expected %s, got %s", connectionId, parsedMsg.Header.ConnectionId)
+	}
+	if parsedMsg.Header.LegSessionId != legSessionId {
+		t.Errorf("LegSessionId mismatch: expected %s, got %s", legSessionId, parsedMsg.Header.LegSessionId)
 	}
 
 	t.Logf("Serialization and Deserialization successful.")

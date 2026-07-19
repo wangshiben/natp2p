@@ -161,6 +161,7 @@ func (p *relayPeerPool) connCount() int {
 // 扩容判定（针对整个池，§4.1）：
 //   - 存在 ≥1 条健康连接，且「所有健康连接都达到高水位」(避免少数热点误触发)；
 //   - 且当前连接总数 < poolMaxConns。
+//
 // 满足则新增 1 条 physConn（高峰批量预扩在 Phase D 接管单次增量）。
 func (p *relayPeerPool) autoscale() {
 	ticker := time.NewTicker(poolSampleInterval)
@@ -398,7 +399,6 @@ func (pc *physConn) idleExpired(now time.Time) bool {
 	return now.Sub(pc.idleSince) >= poolIdleTimeout
 }
 
-
 // newRelayPeerPool 创建到 hostAddr 的连接池，立即启动 minWarmConns 条物理连接。
 func newRelayPeerPool(parent context.Context, hostAddr, selfNodeID string, minWarmConns int) *relayPeerPool {
 	ctx, cancel := context.WithCancel(parent)
@@ -441,7 +441,7 @@ func (p *relayPeerPool) addPhysConn() *physConn {
 // F2（模式 A 摊散调度）：选连接综合「写压力(pendingBytes)」与「并发会话数」打分，
 // 把新逻辑连接摊到最空闲的物理连接，规避把多条流挤在同一条 TCP 导致的写串行队头阻塞。
 // 不同逻辑连接因此天然分散到多条独立 cwnd 的 TCP，聚合带宽更高。
-func (p *relayPeerPool) OpenStream(connID, targetNodeID, originPubKey string) (*networkFrameWork.MuxStream, error) {
+func (p *relayPeerPool) OpenStream(connID, targetNodeID, originPubKey string, legFlags ...uint8) (*networkFrameWork.MuxStream, error) {
 	best := p.pickLeastLoaded()
 	if best == nil {
 		p.mu.Lock()
@@ -458,7 +458,7 @@ func (p *relayPeerPool) OpenStream(connID, targetNodeID, originPubKey string) (*
 	if sess == nil || sess.IsClosed() {
 		return nil, errNoHealthyConn
 	}
-	return sess.OpenStream(connID, targetNodeID, originPubKey)
+	return sess.OpenStream(connID, targetNodeID, originPubKey, legFlags...)
 }
 
 // pickLeastLoaded 返回综合负载最小的健康物理连接（模式 A 摊散核心）。
@@ -495,12 +495,12 @@ func (p *relayPeerPool) pickLeastLoaded() *physConn {
 //   - width<=1：单 leg（模式 A 退化 / 默认），等价 OpenStream 包一层 LogicalConn。
 //   - width>1：条带化（模式 B，F3 启用），在 width 条不同 physConn 上各开一条 leg，
 //     组装成条带化逻辑连接（出站轮转分片+序号，入站重排）。
-func (p *relayPeerPool) OpenLogicalConn(connID, targetNodeID, originPubKey string, width int) (*networkFrameWork.LogicalConn, error) {
+func (p *relayPeerPool) OpenLogicalConn(connID, targetNodeID, originPubKey string, width int, legFlags ...uint8) (*networkFrameWork.LogicalConn, error) {
 	if width < 1 {
 		width = 1
 	}
 	if width == 1 {
-		st, err := p.OpenStream(connID, targetNodeID, originPubKey)
+		st, err := p.OpenStream(connID, targetNodeID, originPubKey, legFlags...)
 		if err != nil {
 			return nil, err
 		}
@@ -532,7 +532,7 @@ func (p *relayPeerPool) OpenLogicalConn(connID, targetNodeID, originPubKey strin
 			continue
 		}
 		// 每条 leg 用同 connID + (legIndex, legCount)，对端据此归并为一条条带化逻辑连接。
-		st, err := sess.OpenStreamLeg(connID, targetNodeID, originPubKey, idx, legCount)
+		st, err := sess.OpenStreamLeg(connID, targetNodeID, originPubKey, idx, legCount, legFlags...)
 		if err != nil {
 			continue
 		}
@@ -691,7 +691,7 @@ func (n *RelayNode) poolFor(hostAddr string) *relayPeerPool {
 //
 // F1/F3 改造：返回 *LogicalConn（仍实现 net.Conn），桥接调用端透明（只认 net.Conn）。
 // width 取自 RelayNode.bridgeWidth（F4 动态调整；默认 1=非条带化）。
-func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connID string) (net.Conn, error) {
+func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connID string, legFlags ...uint8) (net.Conn, error) {
 	pool := n.poolFor(hostAddr)
 	// width 决策：bridgeWidth>0 为显式强制（测试/配置）；==0 为自动（吞吐驱动推荐）。
 	width := int(n.bridgeWidth.Load())
@@ -701,7 +701,7 @@ func (n *RelayNode) openBridgeStream(hostAddr, targetNodeID, originPubKey, connI
 	deadline := time.Now().Add(bridgeOpenTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		lc, err := pool.OpenLogicalConn(connID, targetNodeID, originPubKey, width)
+		lc, err := pool.OpenLogicalConn(connID, targetNodeID, originPubKey, width, legFlags...)
 		if err == nil {
 			return lc, nil
 		}

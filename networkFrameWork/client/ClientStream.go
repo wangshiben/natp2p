@@ -36,7 +36,7 @@ type StreamClient struct {
 //
 // 使用场景：
 //   - client 模式通常直接调用 ConnectNodeWithTargetRelay，它内部会创建 StreamClient。
-//   - relayServer 模式需要先用底层 stream 等待对端首条 hello、完成 TLS 握手，之后再调用
+//   - relayServer 模式需要先用底层 stream 等待对端首条 hello、完成 Noise E2E 握手，之后再调用
 //     本函数统一接入 StreamClient 的心跳过滤和 ConnectionId 自动填充逻辑。
 func NewStreamClient(stream network.Stream) *StreamClient {
 	return &StreamClient{
@@ -164,7 +164,7 @@ func (s *StreamClient) ConnectionId() string {
 
 // SetCryptoSuite 给底层 stream 安装加解密套件。
 //
-// 参数 suite：通过 TLS/ECDH 握手得到的加密实现。安装后，底层 SendMessage 会先加密 Payload，
+// 参数 suite：通过 Noise 握手得到的 E2E Record 实现。安装后，逻辑流会先 Seal Payload，
 // NextMessage 在重组完成后会解密 Payload；StreamClient 自身不直接处理加解密细节。
 func (s *StreamClient) SetCryptoSuite(suite network.EncrypSuite) {
 	s.stream.SetCryptoSuite(suite)
@@ -178,14 +178,14 @@ func (s *StreamClient) SetCryptoSuite(suite network.EncrypSuite) {
 // 参数：
 //
 //	nodeId     目标 node 的 ID（也就是设备1注册到 relay 时公布的 NodeId）。
-//	relayAddr  公网 relay 地址，例如 "1.2.3.4:9000"。
+//	relayAddr  公网 relay 地址，例如 "203.0.113.10:9000"。
 //	keyPair    当前客户端自己的 ECDH 私钥；本函数只读取它，不保存它。
 //
 // 建连流程：
 //  1. 从 keyPair 取出公钥字符串 originNodeId，作为本客户端身份材料。
 //  2. TryConnectTCPStream(relayAddr, nodeId, originNodeId) 连接公网 relay，
 //     并发送首条 hello 消息。该函数会生成本次业务连接的 ConnectionId。
-//  3. crypoto.NewTLSCrypto(stream, keyPair) 基于底层 stream 做一次握手，
+//  3. crypoto.NewTLSCrypto(stream, keyPair) 基于底层 stream 做一次 Noise V2 握手，
 //     确认对端确实持有目标 node 的私钥，并生成后续 Payload 加解密套件。
 //  4. 构造 StreamClient，把加密套件安装到底层 stream。
 //

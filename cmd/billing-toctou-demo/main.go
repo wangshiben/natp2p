@@ -9,8 +9,8 @@
 //	打法：
 //	  1) seeder：用【单条裸 TCP leg】(TryConnectTCPOnlyStream) 朝入口 relay 送一条业务首帧
 //	     (Header.NodeId=B, Payload=A 公钥)。relay 在 StreamOn【之前】调用 onBusinessConnect ——
-//	     它 Store(A|B) 占位后【阻塞在延迟代理的 /reserve 上数秒】(本演示把窗口拉到数秒，忠实
-//	     还原 CA 与 relay 分处两机的真实 RTT)。这条 leg 永远卡在 onBusinessConnect 里、从不
+//	     它 Store(A|B) 占位后【阻塞在延迟代理的 /reserve 上数秒】(用可控延迟扩大竞态窗口)。
+//	     这条 leg 永远卡在 onBusinessConnect 里、从不
 //	     StreamOn，因此【绝不碰 B 的 group】—— 它唯一作用就是把 (A|B) 占位挂住 depositWindow。
 //	  2) real：窗口内 A→B 发一条真正的 Connect。它的【两条 dual-leg】都 Load 到 seeder 的占位 →
 //	     都 free-pass → 这是一条【没有被拒 leg、握手干净】的正常双 leg 连接，只是从没付过费。

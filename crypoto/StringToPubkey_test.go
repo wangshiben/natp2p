@@ -27,7 +27,11 @@ func TestExtractPublicKeyFromHex(t *testing.T) {
 }
 
 func TestExtractPublicKeyFromHex2(t *testing.T) {
-	pubKey := "045938a88208ef46f2cd01682279aab8660184a768e6d97ed1628eda3d442c35d15bcb660775fdeac0c23b1e67ae787cb7d87242029fc4d3675252a80a0f3a453a"
+	pair, err := MakeKeyPair()
+	if err != nil {
+		t.Fatalf("生成密钥对失败: %v", err)
+	}
+	pubKey := GetPubKeyStr(pair.PublicKey())
 	hex, err := ExtractPublicKeyFromHex(pubKey)
 	if err != nil {
 		t.Fatalf("提取公钥失败: %v", err)

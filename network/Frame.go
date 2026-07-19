@@ -33,9 +33,9 @@ type Frame struct {
 }
 
 const (
-	FrameTypeData           uint8 = 0
-	FrameTypeAck            uint8 = 1
-	FrameTypeRetransmit     uint8 = 2
+	FrameTypeData            uint8 = 0
+	FrameTypeAck             uint8 = 1
+	FrameTypeRetransmit      uint8 = 2
 	FrameTypeFrameSizeChange uint8 = 3 // 帧大小变更控制帧
 )
 
@@ -64,7 +64,52 @@ const FrameHeaderLength = frameMagicLength + frameMessageIdLength + frameSeqIdLe
 // DefaultMaxFramePayload 是默认的单帧最大负载，向调用方暴露便于动态调整。
 const DefaultMaxFramePayload = 1400
 
+// maxFramePayloadLength 是线上单帧负载的绝对安全上限。正常数据帧由协商限制在 8 KiB
+// 左右；ACK 即使携带最大数量的区间也小于 512 KiB。该上限必须在按线头长度分配内存前校验。
+const maxFramePayloadLength = 1 << 20
+
+var errFramePayloadTooLarge = errors.New("frame payload exceeds safety limit")
+
 var frameMagicBytes = []byte(FrameMagic)
+
+// WireSize 返回 Frame 编码后的线上字节数，并校验变长字段能否写入线格式。
+func (f *Frame) WireSize() (int, error) {
+	if f == nil {
+		return 0, errors.New("frame is nil")
+	}
+	if len(f.Payload) > maxFramePayloadLength {
+		return 0, errFramePayloadTooLarge
+	}
+	if len(f.ConnectionId) > int(^uint16(0)) {
+		return 0, errors.New("frame connectionId too long")
+	}
+	return FrameHeaderLength + len(f.ConnectionId) + len(f.Payload), nil
+}
+
+// AppendTo 把 Frame 的线格式追加到 dst。若 dst 容量足够，不会产生额外分配。
+func (f *Frame) AppendTo(dst []byte) ([]byte, error) {
+	size, err := f.WireSize()
+	if err != nil {
+		return dst, err
+	}
+	if cap(dst)-len(dst) < size {
+		grown := make([]byte, len(dst), len(dst)+size)
+		copy(grown, dst)
+		dst = grown
+	}
+
+	dst = append(dst, frameMagicBytes...)
+	dst = binary.LittleEndian.AppendUint64(dst, f.MessageId)
+	dst = binary.LittleEndian.AppendUint32(dst, f.SeqId)
+	dst = binary.LittleEndian.AppendUint32(dst, f.TotalFrames)
+	dst = binary.LittleEndian.AppendUint64(dst, f.AckId)
+	dst = append(dst, f.FrameType)
+	dst = binary.LittleEndian.AppendUint16(dst, uint16(len(f.ConnectionId)))
+	dst = binary.LittleEndian.AppendUint32(dst, uint32(len(f.Payload)))
+	dst = append(dst, f.ConnectionId...)
+	dst = append(dst, f.Payload...)
+	return dst, nil
+}
 
 // ParseToBytes 序列化 Frame 为二进制。
 //
@@ -73,45 +118,7 @@ var frameMagicBytes = []byte(FrameMagic)
 //	[AckId(8 LE)] [FrameType(1)] [ConnIdLen(2 LE)] [PayloadLen(4 LE)]
 //	[ConnectionId(ConnIdLen)] [Payload(PayloadLen)]
 func (f *Frame) ParseToBytes() ([]byte, error) {
-	if uint64(len(f.Payload)) > uint64(^uint32(0)) {
-		return nil, errors.New("frame payload too large")
-	}
-	connId := []byte(f.ConnectionId)
-	if len(connId) > int(^uint16(0)) {
-		return nil, errors.New("frame connectionId too long")
-	}
-	buf := make([]byte, FrameHeaderLength+len(connId)+len(f.Payload))
-	idx := 0
-
-	copy(buf[idx:], frameMagicBytes)
-	idx += frameMagicLength
-
-	binary.LittleEndian.PutUint64(buf[idx:idx+frameMessageIdLength], f.MessageId)
-	idx += frameMessageIdLength
-
-	binary.LittleEndian.PutUint32(buf[idx:idx+frameSeqIdLength], f.SeqId)
-	idx += frameSeqIdLength
-
-	binary.LittleEndian.PutUint32(buf[idx:idx+frameTotalFramesLength], f.TotalFrames)
-	idx += frameTotalFramesLength
-
-	binary.LittleEndian.PutUint64(buf[idx:idx+frameAckIdLength], f.AckId)
-	idx += frameAckIdLength
-
-	buf[idx] = f.FrameType
-	idx += frameTypeLength
-
-	binary.LittleEndian.PutUint16(buf[idx:idx+frameConnIdLenLength], uint16(len(connId)))
-	idx += frameConnIdLenLength
-
-	binary.LittleEndian.PutUint32(buf[idx:idx+framePayloadLenLength], uint32(len(f.Payload)))
-	idx += framePayloadLenLength
-
-	copy(buf[idx:], connId)
-	idx += len(connId)
-
-	copy(buf[idx:], f.Payload)
-	return buf, nil
+	return f.AppendTo(nil)
 }
 
 // ParseFrame 从二进制反序列化为 Frame。
@@ -147,6 +154,9 @@ func ParseFrame(data []byte) (*Frame, error) {
 
 	payloadLen := binary.LittleEndian.Uint32(data[idx : idx+framePayloadLenLength])
 	idx += framePayloadLenLength
+	if payloadLen > maxFramePayloadLength {
+		return nil, errFramePayloadTooLarge
+	}
 
 	if len(data)-idx < int(connIdLen)+int(payloadLen) {
 		return nil, errors.New("frame payload truncated")
@@ -188,6 +198,9 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 	// body = ConnectionId(ConnIdLen) + Payload(PayloadLen)，需在第二段一并读出。
 	payloadLen := binary.LittleEndian.Uint32(header[FrameHeaderLength-framePayloadLenLength : FrameHeaderLength])
 	connIdLen := binary.LittleEndian.Uint16(header[FrameHeaderLength-framePayloadLenLength-frameConnIdLenLength : FrameHeaderLength-framePayloadLenLength])
+	if payloadLen > maxFramePayloadLength {
+		return nil, errFramePayloadTooLarge
+	}
 	bodyLen := int(connIdLen) + int(payloadLen)
 	if bodyLen == 0 {
 		return ParseFrame(header)

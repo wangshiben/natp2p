@@ -43,19 +43,23 @@ import (
 )
 
 func main() {
-	caURL := flag.String("ca", "http://203.0.113.10:9000", "已部署 CA 地址")
-	relay := flag.String("relay", "203.0.113.10:9010", "已部署 index/relay 地址")
+	caURL := flag.String("ca", os.Getenv("BNFS_BILLING_CA_URL"), "CA 地址（也可用 BNFS_BILLING_CA_URL）")
+	relay := flag.String("relay", os.Getenv("BNFS_BILLING_RELAY_ADDR"), "index/relay 地址（也可用 BNFS_BILLING_RELAY_ADDR）")
 	sizeMB := flag.Int("size", 100, "传输大小(MB)")
 	workers := flag.Int("workers", 48, "持续并发 hammer Connect 的 worker 数（制造稠密到达 + 加剧 CA ledger 锁争用，拉宽占位窗口）")
 	maxAttempts := flag.Int("attempts", 4000, "所有 worker 合计最多发起多少次 Connect 后放弃")
 	flag.Parse()
+	if *caURL == "" || *relay == "" {
+		fmt.Fprintln(os.Stderr, "必须通过参数或 BNFS_BILLING_* 环境变量提供 CA 和 relay 地址")
+		os.Exit(2)
+	}
 
 	logx.SetLevel(logx.LevelInfo)
 	target := int64(*sizeMB) * 1024 * 1024
 	const chunk = 256 * 1024
 
 	fmt.Printf("=== 连接保证金去重 TOCTOU 竞态穿透验证 (判据2: 0 余额传 %dMB) ===\n", *sizeMB)
-	fmt.Printf("CA=%s relay=%s workers=%d attempts<=%d\n\n", *caURL, *relay, *workers, *maxAttempts)
+	fmt.Printf("测试端点已配置，workers=%d attempts<=%d\n\n", *workers, *maxAttempts)
 
 	// —— 两个全新的 0 余额身份（只 /issue 领证，绝不 /credit）——
 	skey, err := crypoto.MakeKeyPair()
@@ -66,12 +70,12 @@ func main() {
 	nodeB, err := natnode.NewNATNode(skey, *relay)
 	must("创建 B(server)", err)
 	must("B 申请 server 证书(0 余额)", admissioncli.SetupNat(nodeB, *caURL, admissioncli.RoleServer()))
-	fmt.Printf("[B] server NodeID=%s (余额始终 0)\n", nodeB.ID())
+	fmt.Println("[B] server 身份已就绪（余额应始终为 0）")
 
 	nodeA, err := natnode.NewNATNode(ckey, *relay)
 	must("创建 A(client)", err)
 	must("A 申请 client 证书(0 余额)", admissioncli.SetupNat(nodeA, *caURL, admissioncli.RoleClient()))
-	fmt.Printf("[A] client NodeID=%s (余额始终 0)\n\n", nodeA.ID())
+	fmt.Println("[A] client 身份已就绪（余额应始终为 0）")
 
 	cBefore := balanceOf(*caURL, string(nodeA.ID()))
 	sBefore := balanceOf(*caURL, string(nodeB.ID()))

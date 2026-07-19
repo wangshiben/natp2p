@@ -1,6 +1,7 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/network"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,118 @@ import (
 	"testing"
 	"time"
 )
+
+func TestMuxOpenLegFlagsWireCompatibility(t *testing.T) {
+	const (
+		target = "target-node"
+		pubKey = "origin-pub-key"
+	)
+	flags := uint8(network.LegFlagExtra | network.LegFlagResume)
+
+	if got, want := string(encodeMuxOpen(target, pubKey)), target+"\n"+pubKey; got != want {
+		t.Fatalf("旧单 leg OPEN 编码变化: got %q want %q", got, want)
+	}
+	if got, want := string(encodeMuxOpen(target, pubKey, 0)), target+"\n"+pubKey; got != want {
+		t.Fatalf("flags=0 的单 leg OPEN 编码变化: got %q want %q", got, want)
+	}
+	if got, want := string(encodeMuxOpenLeg(target, pubKey, 2, 4)), target+"\n"+pubKey+"\n2\n4"; got != want {
+		t.Fatalf("旧条带化 OPEN 编码变化: got %q want %q", got, want)
+	}
+	if got, want := string(encodeMuxOpenLeg(target, pubKey, 2, 4, 0)), target+"\n"+pubKey+"\n2\n4"; got != want {
+		t.Fatalf("flags=0 的条带化 OPEN 编码变化: got %q want %q", got, want)
+	}
+
+	tests := []struct {
+		name     string
+		payload  []byte
+		legIndex int
+		legCount int
+		legFlags uint8
+	}{
+		{name: "旧单 leg", payload: []byte(target + "\n" + pubKey), legIndex: 0, legCount: 1},
+		{name: "旧条带化", payload: []byte(target + "\n" + pubKey + "\n2\n4"), legIndex: 2, legCount: 4},
+		{name: "新单 leg", payload: encodeMuxOpen(target, pubKey, flags), legIndex: 0, legCount: 1, legFlags: flags},
+		{name: "新条带化", payload: encodeMuxOpenLeg(target, pubKey, 2, 4, flags), legIndex: 2, legCount: 4, legFlags: flags},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := decodeMuxOpen(tt.payload)
+			if info.targetNodeID != target || info.originPubKey != pubKey {
+				t.Fatalf("OPEN 身份元信息不匹配: target=%q pubKey=%q", info.targetNodeID, info.originPubKey)
+			}
+			if info.legIndex != tt.legIndex || info.legCount != tt.legCount || info.legFlags != tt.legFlags {
+				t.Fatalf("OPEN leg 元信息不匹配: index=%d count=%d flags=%d", info.legIndex, info.legCount, info.legFlags)
+			}
+		})
+	}
+}
+
+func TestMuxSession_LegFlagsReachSynthesizedHello(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	client := NewMuxSession(context.Background(), clientConn, true)
+	server := NewMuxSession(context.Background(), serverConn, false)
+	defer client.Close()
+	defer server.Close()
+
+	const (
+		connID = "resume-conn"
+		target = "target-node"
+		pubKey = "origin-pub-key"
+	)
+	flags := uint8(network.LegFlagExtra | network.LegFlagResume)
+	clientStream, err := client.OpenStream(connID, target, pubKey, flags)
+	if err != nil {
+		t.Fatalf("OpenStream: %v", err)
+	}
+	defer clientStream.Close()
+
+	serverStream, err := server.Accept()
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if got := serverStream.LegFlags(); got != flags {
+		t.Fatalf("MuxStream.LegFlags=%d, want %d", got, flags)
+	}
+
+	accepted, err := AcceptBridgeMuxStream(serverStream)
+	if err != nil {
+		t.Fatalf("AcceptBridgeMuxStream: %v", err)
+	}
+	frame, err := network.ReadFrame(accepted)
+	if err != nil {
+		t.Fatalf("读取合成 hello 帧: %v", err)
+	}
+	message, err := network.AssembleFrames([]*network.Frame{frame})
+	if err != nil {
+		t.Fatalf("解析合成 hello 帧: %v", err)
+	}
+	if message.Header.LegFlags != flags {
+		t.Fatalf("合成 hello LegFlags=%d, want %d", message.Header.LegFlags, flags)
+	}
+	if message.Header.ConnectionId != connID || message.Header.NodeId != target || string(message.Payload) != pubKey {
+		t.Fatalf("合成 hello 元信息不匹配: connID=%q target=%q payload=%q", message.Header.ConnectionId, message.Header.NodeId, message.Payload)
+	}
+}
+
+func TestAcceptBridgeMuxLogicalConn_LegFlags(t *testing.T) {
+	flags := uint8(network.LegFlagExtra | network.LegFlagResume)
+	logicalConn := newLogicalConn("striped-resume", nil, nil)
+	accepted, err := AcceptBridgeMuxLogicalConn(logicalConn, "target-node", "origin-pub-key", flags)
+	if err != nil {
+		t.Fatalf("AcceptBridgeMuxLogicalConn: %v", err)
+	}
+	frame, err := network.ReadFrame(accepted)
+	if err != nil {
+		t.Fatalf("读取条带化合成 hello 帧: %v", err)
+	}
+	message, err := network.AssembleFrames([]*network.Frame{frame})
+	if err != nil {
+		t.Fatalf("解析条带化合成 hello 帧: %v", err)
+	}
+	if got := message.Header.LegFlags; got != flags {
+		t.Fatalf("条带化合成 hello LegFlags=%d, want %d", got, flags)
+	}
+}
 
 // TestMuxSession_MultiStream 验证一条物理连接(net.Pipe)上多路 stream 并发收发与隔离。
 func TestMuxSession_MultiStream(t *testing.T) {

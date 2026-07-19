@@ -50,7 +50,7 @@ type HandshakeHandler interface {
 	// 实现参考 relayServer：
 	//   1. 用 stream 构造 client.NewStreamClient(stream)
 	//   2. 用 streamClient + 己方密钥对创建 crypoto.NewTLSCrypto(streamClient, pair)
-	//   3. TLS 握手完成后推导对端 PeerInfo
+	//   3. Noise E2E 握手完成后推导对端 PeerInfo
 	//
 	// 若身份验证失败返回 error，调用方应关闭连接。
 	HandshakeIncoming(ctx context.Context, stream network.Stream, firstMsg *network.Message) (PeerInfo, error)

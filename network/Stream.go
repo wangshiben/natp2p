@@ -25,3 +25,9 @@ type MessageIdentitySuite interface {
 	EncryptWithMessageID(Payload []byte, messageID []byte) (ciphertext []byte, id []byte, err error)
 	DecryptWithMessageID(Payload []byte) (plaintext []byte, messageID []byte, ok bool, err error)
 }
+
+type MessageIdentityAADSuite interface {
+	MessageIdentitySuite
+	EncryptWithMessageIDAndAAD(Payload, aad, messageID []byte) (ciphertext []byte, id []byte, err error)
+	DecryptWithMessageIDAndAAD(Payload, aad []byte) (plaintext []byte, messageID []byte, ok bool, err error)
+}

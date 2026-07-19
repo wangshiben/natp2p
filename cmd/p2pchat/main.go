@@ -38,11 +38,16 @@ import (
 )
 
 // defaultIndexAddr 是默认的 index 节点地址(中继中心)。
-// p2p.stationchange.cn 当前解析到作为 index server 的那台机器。
+// 部署时通过 BNFS_INDEX_ADDR 配置；未配置时仅使用本机回环地址。
 //   - relay 启动后默认向它注册自己为 relay 邻居(可由 relay 命令第 4 个参数覆盖);
 //   - node 启动后默认经它 bootstrap 就近选 relay(可由 node 命令第 1 个参数覆盖);
 //   - index 自身不向任何节点注册。
-const defaultIndexAddr = "p2p.stationchange.cn:9000"
+var defaultIndexAddr = func() string {
+	if addr := strings.TrimSpace(os.Getenv("BNFS_INDEX_ADDR")); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:9000"
+}()
 
 // stdinScanner 是全进程共享的标准输入扫描器。
 // 必须全局唯一: bufio.Scanner 会按块缓冲读取, 若 main 与各子控制台(relay/node)各建一个,
@@ -329,6 +334,7 @@ func runNode(relayAddr string, keyFile string) {
 //   - 不含端口 / 不是合法 host:port: 视为误填, 回退 defaultIndexAddr;
 //   - 是合法 host:port 但短超时 TCP 探测不可达: 回退 defaultIndexAddr;
 //   - 其余(可达)原样返回。
+//
 // 注意: 即便返回 defaultIndexAddr, 后续 Bootstrap 仍会做一次完整查询/可达性回退,
 // 这里只是把"明显无效/不可达"的输入提前挡掉, 避免卡在一个连不上的自定义地址上。
 func resolveNodeAddr(addr string) string {

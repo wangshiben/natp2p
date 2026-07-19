@@ -6,7 +6,8 @@
 set -u
 
 BIN=/tmp/tuntest/bin
-LOG_DIR="/root/natP2p/cmd/tunnel/localsim/results_$(date +%Y%m%d_%H%M%S)"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+LOG_DIR="$SCRIPT_DIR/results_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
 
 # 端口分配

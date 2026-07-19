@@ -1,6 +1,7 @@
 package relaynode
 
 import (
+	"bnfs_p2p/crypoto"
 	"bnfs_p2p/p2pnode"
 	"bnfs_p2p/p2pnode/impl/natnode"
 	"context"
@@ -14,9 +15,144 @@ import (
 
 // 独立端口，避免与其它测试冲突。
 const (
-	kcpRelay1Addr = "127.0.0.1:19601"
-	kcpRelay2Addr = "127.0.0.1:19602"
+	kcpRelay1Addr     = "127.0.0.1:19601"
+	kcpRelay2Addr     = "127.0.0.1:19602"
+	tcpRelay1Addr     = "127.0.0.1:19603"
+	tcpRelay2Addr     = "127.0.0.1:19604"
+	restartRelay1Addr = "127.0.0.1:19605"
+	restartRelay2Addr = "127.0.0.1:19606"
 )
+
+func TestCrossRelay_DualTCPColdStart(t *testing.T) {
+	t.Setenv("BNFS_DISABLE_KCP", "1")
+	relay1 := startRelay(t, tcpRelay1Addr, tcpRelay1Addr)
+	defer relay1.Close()
+	relay2 := startRelay(t, tcpRelay2Addr, tcpRelay2Addr)
+	defer relay2.Close()
+
+	relay1.ConnectPeer(tcpRelay2Addr)
+	relay2.ConnectPeer(tcpRelay1Addr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server, err := natnode.NewNATNode(nil, tcpRelay2Addr)
+	if err != nil {
+		t.Fatalf("创建 TCP-only server 失败: %v", err)
+	}
+	defer server.Close()
+	serverReady := make(chan p2pnode.Connection, 1)
+	server.OnConnection(func(connection p2pnode.Connection) { serverReady <- connection })
+	go func() { _ = server.Listen(ctx, tcpRelay2Addr) }()
+
+	client, err := natnode.NewNATNode(nil, tcpRelay1Addr)
+	if err != nil {
+		t.Fatalf("创建 TCP-only client 失败: %v", err)
+	}
+	defer client.Close()
+	go func() { _ = client.Listen(ctx, tcpRelay1Addr) }()
+
+	time.Sleep(1500 * time.Millisecond)
+	connectCtx, connectCancel := context.WithTimeout(ctx, 12*time.Second)
+	defer connectCancel()
+	clientConnection, err := client.Connect(connectCtx, server.ID())
+	if err != nil {
+		t.Fatalf("TCP-only 冷启动跨中继连接失败: %v", err)
+	}
+
+	var serverConnection p2pnode.Connection
+	select {
+	case serverConnection = <-serverReady:
+	case <-time.After(8 * time.Second):
+		t.Fatal("TCP-only server 未收到跨中继连接")
+	}
+
+	payload := []byte("cross-relay-dual-tcp-cold-start")
+	if err := clientConnection.Send(ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: payload}); err != nil {
+		t.Fatalf("TCP-only client 发送失败: %v", err)
+	}
+	received, err := serverConnection.Receive(ctx)
+	if err != nil {
+		t.Fatalf("TCP-only server 接收失败: %v", err)
+	}
+	if string(received.Payload) != string(payload) {
+		t.Fatalf("TCP-only 跨中继内容不一致: got=%q want=%q", received.Payload, payload)
+	}
+}
+
+func TestCrossRelay_DualTCPColdRestartAfterKCPRegistration(t *testing.T) {
+	t.Setenv("BNFS_DISABLE_KCP", "")
+	relay1 := startRelay(t, restartRelay1Addr, restartRelay1Addr)
+	defer relay1.Close()
+	relay2 := startRelay(t, restartRelay2Addr, restartRelay2Addr)
+	defer relay2.Close()
+	relay1.ConnectPeer(restartRelay2Addr)
+	relay2.ConnectPeer(restartRelay1Addr)
+
+	serverKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatalf("生成稳定 server 身份失败: %v", err)
+	}
+	firstContext, firstCancel := context.WithCancel(context.Background())
+	firstServer, err := natnode.NewNATNode(serverKey, restartRelay2Addr)
+	if err != nil {
+		t.Fatalf("创建首代 KCP server 失败: %v", err)
+	}
+	go func() { _ = firstServer.Listen(firstContext, restartRelay2Addr) }()
+	time.Sleep(1200 * time.Millisecond)
+	serverID := firstServer.ID()
+	firstCancel()
+	_ = firstServer.Close()
+
+	t.Setenv("BNFS_DISABLE_KCP", "1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	secondServer, err := natnode.NewNATNode(serverKey, restartRelay2Addr)
+	if err != nil {
+		t.Fatalf("创建第二代 TCP-only server 失败: %v", err)
+	}
+	defer secondServer.Close()
+	serverReady := make(chan p2pnode.Connection, 1)
+	secondServer.OnConnection(func(connection p2pnode.Connection) { serverReady <- connection })
+	go func() { _ = secondServer.Listen(ctx, restartRelay2Addr) }()
+	time.Sleep(1200 * time.Millisecond)
+
+	t.Setenv("BNFS_DISABLE_KCP", "")
+	client, err := natnode.NewNATNode(nil, restartRelay1Addr)
+	if err != nil {
+		t.Fatalf("创建跨中继 client 失败: %v", err)
+	}
+	defer client.Close()
+	go func() { _ = client.Listen(ctx, restartRelay1Addr) }()
+	time.Sleep(1200 * time.Millisecond)
+
+	connectCtx, connectCancel := context.WithTimeout(ctx, 12*time.Second)
+	defer connectCancel()
+	clientConnection, err := client.Connect(connectCtx, serverID)
+	if err != nil {
+		t.Fatalf("KCP→双 TCP 冷重启后跨中继连接失败: %v", err)
+	}
+	defer clientConnection.Close()
+
+	var serverConnection p2pnode.Connection
+	select {
+	case serverConnection = <-serverReady:
+	case <-time.After(8 * time.Second):
+		t.Fatal("第二代 TCP-only server 未收到跨中继连接")
+	}
+
+	payload := []byte("kcp-to-dual-tcp-cold-restart")
+	if err := clientConnection.Send(ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: payload}); err != nil {
+		t.Fatalf("冷重启后 client 发送失败: %v", err)
+	}
+	received, err := serverConnection.Receive(ctx)
+	if err != nil {
+		t.Fatalf("冷重启后 server 接收失败: %v", err)
+	}
+	if string(received.Payload) != string(payload) {
+		t.Fatalf("冷重启跨中继内容不一致: got=%q want=%q", received.Payload, payload)
+	}
+}
 
 // TestCrossRelay_DualLeg_LargeTransfer 验证 dual(KCP+TCP) 拨号下跨中继桥接能否
 // 完整传输大流量数据。这是路线 B 的可行性前提：KCP leg 经裸字节 peerConn 跨中继是否走通。

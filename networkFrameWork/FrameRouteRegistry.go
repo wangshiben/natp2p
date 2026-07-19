@@ -2,8 +2,15 @@ package networkFrameWork
 
 import (
 	"bnfs_p2p/network"
+	"container/list"
 	"context"
 	"sync"
+	"time"
+)
+
+const (
+	frameRouteTombstoneTTL = 90 * time.Second
+	frameRouteMaxPairs     = 131072
 )
 
 // frameRouteEntry 描述一条从源 leg 到目标 leg 的路由：
@@ -14,6 +21,7 @@ import (
 type frameRouteEntry struct {
 	dest  FrameRelayEndpoint
 	dstID uint64
+	pair  *frameRoutePair
 }
 
 // clientRouteKey 是 client 侧路由表的复合 key。
@@ -23,6 +31,18 @@ type frameRouteEntry struct {
 type clientRouteKey struct {
 	connectionID string
 	messageID    uint64
+}
+
+type frameRoutePair struct {
+	relayID     uint64
+	clientKey   clientRouteKey
+	relayEntry  *frameRouteEntry
+	clientEntry *frameRouteEntry
+	totalFrames uint32
+	completed   bool
+	expiresAt   time.Time
+	expiryItem  *list.Element
+	removed     bool
 }
 
 // frameRouteRegistry 是「一个 StreamGroup 内、relay 与所有 client leg 之间」的双向路由表。
@@ -39,40 +59,210 @@ type clientRouteKey struct {
 //   - relayServer 的 ACK 经 relay leg 进来时，pumpRelayToClients 用 relaySide[ackMsgId]
 //     就能直接查到「该回哪个 client、用哪个原始 MessageId」。
 type frameRouteRegistry struct {
-	mu         sync.Mutex
-	relaySide  map[uint64]*frameRouteEntry
-	clientSide map[clientRouteKey]*frameRouteEntry
+	mu              sync.Mutex
+	relaySide       map[uint64]*frameRouteEntry
+	clientSide      map[clientRouteKey]*frameRouteEntry
+	connectionPairs map[string]map[*frameRoutePair]struct{}
+	expiry          *list.List
+	pairCount       int
+	tombstoneTTL    time.Duration
+	maxPairs        int
+	now             func() time.Time
 }
 
 func newFrameRouteRegistry() *frameRouteRegistry {
+	return newFrameRouteRegistryWithLimits(frameRouteTombstoneTTL, frameRouteMaxPairs)
+}
+
+func newFrameRouteRegistryWithLimits(ttl time.Duration, maxPairs int) *frameRouteRegistry {
+	if ttl <= 0 {
+		ttl = frameRouteTombstoneTTL
+	}
+	if maxPairs <= 0 {
+		maxPairs = frameRouteMaxPairs
+	}
 	return &frameRouteRegistry{
-		relaySide:  make(map[uint64]*frameRouteEntry),
-		clientSide: make(map[clientRouteKey]*frameRouteEntry),
+		relaySide:       make(map[uint64]*frameRouteEntry),
+		clientSide:      make(map[clientRouteKey]*frameRouteEntry),
+		connectionPairs: make(map[string]map[*frameRoutePair]struct{}),
+		expiry:          list.New(),
+		tombstoneTTL:    ttl,
+		maxPairs:        maxPairs,
+		now:             time.Now,
 	}
 }
 
 func (r *frameRouteRegistry) relayGet(messageID uint64) *frameRouteEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.relaySide[messageID]
-}
-
-func (r *frameRouteRegistry) relaySet(messageID uint64, entry *frameRouteEntry) {
-	r.mu.Lock()
-	r.relaySide[messageID] = entry
-	r.mu.Unlock()
+	now := r.now()
+	r.expireLocked(now)
+	entry := r.relaySide[messageID]
+	if entry != nil {
+		r.touchLocked(entry.pair, now)
+	}
+	return entry
 }
 
 func (r *frameRouteRegistry) clientGet(connectionID string, messageID uint64) *frameRouteEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.clientSide[clientRouteKey{connectionID: connectionID, messageID: messageID}]
+	now := r.now()
+	r.expireLocked(now)
+	entry := r.clientSide[clientRouteKey{connectionID: connectionID, messageID: messageID}]
+	if entry != nil {
+		r.touchLocked(entry.pair, now)
+	}
+	return entry
 }
 
-func (r *frameRouteRegistry) clientSet(connectionID string, messageID uint64, entry *frameRouteEntry) {
+func (r *frameRouteRegistry) bindPair(relayID uint64, relayEntry *frameRouteEntry, clientKey clientRouteKey, clientEntry *frameRouteEntry, totalFrames uint32) (*frameRoutePair, bool) {
 	r.mu.Lock()
-	r.clientSide[clientRouteKey{connectionID: connectionID, messageID: messageID}] = entry
+	defer r.mu.Unlock()
+	now := r.now()
+	r.expireLocked(now)
+	relayMatch := r.relaySide[relayID]
+	clientMatch := r.clientSide[clientKey]
+	if relayMatch != nil || clientMatch != nil {
+		if relayMatch != nil && clientMatch != nil && relayMatch.pair == clientMatch.pair {
+			pair := relayMatch.pair
+			if pair != nil && pair.relayID == relayID && pair.clientKey == clientKey && pair.totalFrames == totalFrames {
+				r.touchLocked(pair, now)
+				return pair, true
+			}
+		}
+		return nil, false
+	}
+	for r.pairCount >= r.maxPairs {
+		if !r.evictOldestCompletedLocked() {
+			return nil, false
+		}
+	}
+	pair := &frameRoutePair{
+		relayID:     relayID,
+		clientKey:   clientKey,
+		relayEntry:  relayEntry,
+		clientEntry: clientEntry,
+		totalFrames: totalFrames,
+	}
+	relayEntry.pair = pair
+	clientEntry.pair = pair
+	r.relaySide[relayID] = relayEntry
+	r.clientSide[clientKey] = clientEntry
+	r.pairCount++
+	connectionSet := r.connectionPairs[clientKey.connectionID]
+	if connectionSet == nil {
+		connectionSet = make(map[*frameRoutePair]struct{})
+		r.connectionPairs[clientKey.connectionID] = connectionSet
+	}
+	connectionSet[pair] = struct{}{}
+	r.touchLocked(pair, now)
+	return pair, true
+}
+
+func (r *frameRouteRegistry) complete(entry *frameRouteEntry) {
+	if entry == nil || entry.pair == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pair := entry.pair
+	if pair.removed {
+		return
+	}
+	now := r.now()
+	pair.completed = true
+	r.touchLocked(pair, now)
+	r.expireLocked(now)
+}
+
+func (r *frameRouteRegistry) purgeConnection(connectionID string) {
+	if connectionID == "" {
+		return
+	}
+	r.mu.Lock()
+	for pair := range r.connectionPairs[connectionID] {
+		r.removePairLocked(pair)
+	}
+	delete(r.connectionPairs, connectionID)
 	r.mu.Unlock()
+}
+
+func (r *frameRouteRegistry) clear() {
+	r.mu.Lock()
+	for item := r.expiry.Front(); item != nil; item = item.Next() {
+		pair := item.Value.(*frameRoutePair)
+		pair.removed = true
+		pair.expiryItem = nil
+	}
+	r.relaySide = make(map[uint64]*frameRouteEntry)
+	r.clientSide = make(map[clientRouteKey]*frameRouteEntry)
+	r.connectionPairs = make(map[string]map[*frameRoutePair]struct{})
+	r.expiry.Init()
+	r.pairCount = 0
+	r.mu.Unlock()
+}
+
+func (r *frameRouteRegistry) touchLocked(pair *frameRoutePair, now time.Time) {
+	if pair == nil || pair.removed {
+		return
+	}
+	if pair.expiryItem != nil {
+		r.expiry.Remove(pair.expiryItem)
+	}
+	pair.expiresAt = now.Add(r.tombstoneTTL)
+	pair.expiryItem = r.expiry.PushBack(pair)
+}
+
+func (r *frameRouteRegistry) expireLocked(now time.Time) {
+	for {
+		front := r.expiry.Front()
+		if front == nil {
+			return
+		}
+		pair := front.Value.(*frameRoutePair)
+		if pair.expiresAt.After(now) {
+			return
+		}
+		r.removePairLocked(pair)
+	}
+}
+
+func (r *frameRouteRegistry) evictOldestCompletedLocked() bool {
+	for item := r.expiry.Front(); item != nil; item = item.Next() {
+		pair := item.Value.(*frameRoutePair)
+		if pair.completed {
+			r.removePairLocked(pair)
+			return true
+		}
+	}
+	return false
+}
+
+func (r *frameRouteRegistry) removePairLocked(pair *frameRoutePair) {
+	if pair == nil || pair.removed {
+		return
+	}
+	if entry := r.relaySide[pair.relayID]; entry != nil && entry.pair == pair {
+		delete(r.relaySide, pair.relayID)
+	}
+	if entry := r.clientSide[pair.clientKey]; entry != nil && entry.pair == pair {
+		delete(r.clientSide, pair.clientKey)
+	}
+	if pair.expiryItem != nil {
+		r.expiry.Remove(pair.expiryItem)
+		pair.expiryItem = nil
+	}
+	if connectionSet := r.connectionPairs[pair.clientKey.connectionID]; connectionSet != nil {
+		delete(connectionSet, pair)
+		if len(connectionSet) == 0 {
+			delete(r.connectionPairs, pair.clientKey.connectionID)
+		}
+	}
+	pair.removed = true
+	if r.pairCount > 0 {
+		r.pairCount--
+	}
 }
 
 // newFrameRouteEntry 在第一次见到某个新 srcMessageId 时调用。
@@ -104,6 +294,33 @@ func parseFrameHeader(f *network.Frame) (*network.Header, bool) {
 	return h, true
 }
 
+type relayFrameWriteBatch struct {
+	entry           *frameRouteEntry
+	source          []*network.Frame
+	forwarded       []*network.Frame
+	accountedBytes  int64
+	accountedFrames int64
+}
+
+func (b *relayFrameWriteBatch) empty() bool {
+	return b == nil || len(b.forwarded) == 0
+}
+
+func (b *relayFrameWriteBatch) reset() {
+	b.entry = nil
+	b.source = b.source[:0]
+	b.forwarded = b.forwarded[:0]
+	b.accountedBytes = 0
+	b.accountedFrames = 0
+}
+
+func canBatchRelayFrames(first, next *network.Frame) bool {
+	if first == nil || next == nil || !isRelayBatchDataFrame(first) || !isRelayBatchDataFrame(next) {
+		return false
+	}
+	return first.MessageId == next.MessageId && first.ConnectionId == next.ConnectionId && first.TotalFrames == next.TotalFrames
+}
+
 // pumpRelayToClients 是 relay->client 方向的 frame pump。
 //
 // 帧来源：relay leg（设备1 那侧）。帧去向：根据业务 ConnectionId 找到对应 client leg。
@@ -117,45 +334,107 @@ func parseFrameHeader(f *network.Frame) (*network.Header, bool) {
 //
 // 找不到目标 client（还没连上 / 已断开）就丢弃该帧。写失败则退出 pump。
 // hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
-func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string) {
+func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string, onClientFailure func(string, FrameRelayEndpoint)) {
 	hookState := newForwardHookState(hookConfig, nodeID)
+	batch := relayFrameWriteBatch{
+		source:    make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
+		forwarded: make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
+	}
+	flush := func() {
+		if batch.empty() {
+			return
+		}
+		entry := batch.entry
+		if err := writeEndpointFrameBatch(ctx, entry.dest, batch.forwarded); err != nil {
+			hookState.rollbackUncommitted(batch.accountedBytes, batch.accountedFrames)
+			connectionID := entry.dest.ConnectionId()
+			if entry.pair != nil {
+				connectionID = entry.pair.clientKey.connectionID
+			}
+			if hookConfig != nil {
+				hookConfig.ensureRetransmitCache().forgetConnection(nodeID, connectionID)
+			}
+			if onClientFailure != nil {
+				onClientFailure(connectionID, entry.dest)
+			} else {
+				routes.purgeConnection(connectionID)
+			}
+			batch.reset()
+			return
+		}
+		for _, source := range batch.source {
+			if entry.pair != nil && isFullFrameAck(source, entry.pair.totalFrames) {
+				routes.complete(entry)
+			}
+		}
+		batch.reset()
+	}
 
 	for {
-		f, err := relay.NextFrame(ctx)
+		frames, err := nextEndpointFrameBatch(ctx, relay)
 		if err != nil {
+			flush()
 			return
 		}
-
-		// 调用 hook（如果配置了）
-		if !hookState.onFrame(ctx, f, "relay_to_clients") {
-			return
-		}
-
-		entry := routes.relayGet(f.MessageId)
-		if entry == nil {
-			// relay 侧第一次见到这个 MessageId：按帧头 connectionId 路由到目标 client leg。
-			// 改用 f.ConnectionId（每帧自带）而非解析首帧 payload：对每一帧都生效、
-			// 不依赖首帧可解析、不怕首帧丢/乱序。connectionId 经 out:=*f 全程 verbatim 透传。
-			connId := f.ConnectionId
-			if connId == "" {
+		for _, f := range frames {
+			if f == nil {
 				continue
 			}
-			dst := lookup(connId)
-			if dst == nil {
-				continue
+			billingBoundary := hookState.wouldInvokeHook(f)
+			if !batch.empty() && (!canBatchRelayFrames(batch.source[0], f) || billingBoundary) {
+				flush()
 			}
-			entry = newFrameRouteEntry(dst)
-			// 正向：relay 的这个 MessageId -> 目标 client(dstID)。
-			routes.relaySet(f.MessageId, entry)
-			// 反向回程：client 用 dstID 回的 ACK -> 写回 relay leg 的原始 MessageId。
-			routes.clientSet(dst.ConnectionId(), entry.dstID, &frameRouteEntry{dest: relay, dstID: f.MessageId})
-		}
 
-		out := *f
-		out.MessageId = entry.dstID
-		if err := entry.dest.HandleFrame(ctx, &out); err != nil {
-			return
+			// hook 仍按原始 FIFO 每帧执行；可能触发外部计费的帧保持单帧写边界。
+			beforeBytes, beforeFrames := hookState.pendingAccounting()
+			if !hookState.onFrame(ctx, f, "relay_to_clients") {
+				flush()
+				return
+			}
+			afterBytes, afterFrames := hookState.pendingAccounting()
+
+			entry := routes.relayGet(f.MessageId)
+			if entry == nil {
+				// 每帧自带 ConnectionId，不依赖首帧 payload 可解析或有序到达。
+				connID := f.ConnectionId
+				if connID == "" {
+					continue
+				}
+				dst := lookup(connID)
+				if dst == nil {
+					continue
+				}
+				newEntry := newFrameRouteEntry(dst)
+				pair, ok := routes.bindPair(
+					f.MessageId,
+					newEntry,
+					clientRouteKey{connectionID: dst.ConnectionId(), messageID: newEntry.dstID},
+					&frameRouteEntry{dest: relay, dstID: f.MessageId},
+					f.TotalFrames,
+				)
+				if !ok {
+					continue
+				}
+				entry = pair.relayEntry
+			}
+
+			if !batch.empty() && batch.entry != entry {
+				flush()
+			}
+			out := *f
+			out.MessageId = entry.dstID
+			batch.entry = entry
+			batch.source = append(batch.source, f)
+			batch.forwarded = append(batch.forwarded, &out)
+			if !billingBoundary {
+				batch.accountedBytes += afterBytes - beforeBytes
+				batch.accountedFrames += afterFrames - beforeFrames
+			}
+			if !isRelayBatchDataFrame(f) || billingBoundary {
+				flush()
+			}
 		}
+		flush()
 	}
 }
 
@@ -173,55 +452,107 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 // hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
 func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string) {
 	hookState := newForwardHookState(hookConfig, nodeID)
+	batch := relayFrameWriteBatch{
+		source:    make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
+		forwarded: make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
+	}
+	flush := func() bool {
+		if batch.empty() {
+			return true
+		}
+		entry := batch.entry
+		if err := writeEndpointFrameBatch(ctx, entry.dest, batch.forwarded); err != nil {
+			if bridgeDebug {
+				logBridge("C2R HandleFrameBatch->relay 失败 connId=%s frames=%d err=%v", client.ConnectionId(), len(batch.forwarded), err)
+			}
+			batch.reset()
+			return false
+		}
+		for _, source := range batch.source {
+			if source.FrameType == network.FrameTypeAck && hookConfig != nil {
+				if ranges, err := network.DecodeAckRanges(source.Payload); err == nil && len(ranges) > 0 {
+					hookConfig.ensureRetransmitCache().acknowledge(
+						nodeID, client.ConnectionId(), entry.dstID, source.TotalFrames, ranges,
+					)
+				}
+			}
+			if entry.pair != nil && isFullFrameAck(source, entry.pair.totalFrames) {
+				routes.complete(entry)
+			}
+		}
+		batch.reset()
+		return true
+	}
 
 	for {
-		f, err := client.NextFrame(ctx)
+		frames, err := nextEndpointFrameBatch(ctx, client)
 		if err != nil {
 			if bridgeDebug {
 				logBridge("C2R NextFrame 退出 connId=%s err=%v", client.ConnectionId(), err)
 			}
+			_ = flush()
 			return
 		}
-		if bridgeDebug {
-			logBridge("C2R got frame connId=%s msg=%d seq=%d type=%d", client.ConnectionId(), f.MessageId, f.SeqId, f.FrameType)
-		}
-
-		// 调用 hook（如果配置了）
-		if !hookState.onFrame(ctx, f, "client_to_relay") {
-			if bridgeDebug {
-				logBridge("C2R hook 返回 error，停止转发 connId=%s", client.ConnectionId())
-			}
-			return
-		}
-
-		entry := routes.clientGet(client.ConnectionId(), f.MessageId)
-		if entry == nil {
-			if f.FrameType == network.FrameTypeAck {
+		for _, f := range frames {
+			if f == nil {
 				continue
 			}
-			if f.SeqId != 0 {
-				continue
-			}
-			entry = newFrameRouteEntry(relay)
-			// 正向：client 的这个 MessageId -> relay leg(dstID)。
-			routes.clientSet(client.ConnectionId(), f.MessageId, entry)
-			// 反向回程：relay 用 dstID 回的 ACK -> 写回该 client 的原始 MessageId。
-			routes.relaySet(entry.dstID, &frameRouteEntry{dest: client, dstID: f.MessageId})
-		}
-		out := *f
-		out.MessageId = entry.dstID
-		if err := entry.dest.HandleFrame(ctx, &out); err != nil {
 			if bridgeDebug {
-				logBridge("C2R HandleFrame->relay 失败 connId=%s err=%v", client.ConnectionId(), err)
+				logBridge("C2R got frame connId=%s msg=%d seq=%d type=%d", client.ConnectionId(), f.MessageId, f.SeqId, f.FrameType)
 			}
-			return
-		}
-		if f.FrameType == network.FrameTypeAck && hookConfig != nil {
-			if ranges, err := network.DecodeAckRanges(f.Payload); err == nil && len(ranges) > 0 {
-				hookConfig.ensureRetransmitCache().acknowledge(
-					nodeID, client.ConnectionId(), entry.dstID, f.TotalFrames, ranges,
+			billingBoundary := hookState.wouldInvokeHook(f)
+			if !batch.empty() && (!canBatchRelayFrames(batch.source[0], f) || billingBoundary) {
+				if !flush() {
+					return
+				}
+			}
+
+			if !hookState.onFrame(ctx, f, "client_to_relay") {
+				if bridgeDebug {
+					logBridge("C2R hook 返回 error，停止转发 connId=%s", client.ConnectionId())
+				}
+				_ = flush()
+				return
+			}
+
+			entry := routes.clientGet(client.ConnectionId(), f.MessageId)
+			if entry == nil {
+				if f.FrameType == network.FrameTypeAck || f.SeqId != 0 {
+					continue
+				}
+				newEntry := newFrameRouteEntry(relay)
+				clientEntry := newEntry
+				relayEntry := &frameRouteEntry{dest: client, dstID: f.MessageId}
+				pair, ok := routes.bindPair(
+					newEntry.dstID,
+					relayEntry,
+					clientRouteKey{connectionID: client.ConnectionId(), messageID: f.MessageId},
+					clientEntry,
+					f.TotalFrames,
 				)
+				if !ok {
+					continue
+				}
+				entry = pair.clientEntry
 			}
+			if !batch.empty() && batch.entry != entry {
+				if !flush() {
+					return
+				}
+			}
+			out := *f
+			out.MessageId = entry.dstID
+			batch.entry = entry
+			batch.source = append(batch.source, f)
+			batch.forwarded = append(batch.forwarded, &out)
+			if !isRelayBatchDataFrame(f) || billingBoundary {
+				if !flush() {
+					return
+				}
+			}
+		}
+		if !flush() {
+			return
 		}
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -110,6 +112,17 @@ func TestFrameConnectionIdRoundTrip(t *testing.T) {
 			}
 			assertFrameEq(t, read, original)
 		})
+	}
+}
+
+func TestReadFrameRejectsOversizedPayloadBeforeBodyRead(t *testing.T) {
+	header := make([]byte, FrameHeaderLength)
+	copy(header, []byte(FrameMagic))
+	binary.LittleEndian.PutUint32(header[FrameHeaderLength-framePayloadLenLength:], maxFramePayloadLength+1)
+
+	frame, err := ReadFrame(bytes.NewReader(header))
+	if !errors.Is(err, errFramePayloadTooLarge) || frame != nil {
+		t.Fatalf("ReadFrame oversized payload = (%v, %v), want safety-limit error", frame, err)
 	}
 }
 

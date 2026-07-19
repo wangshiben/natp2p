@@ -159,6 +159,7 @@ func TryRegisterRelayStream(pubKey, relayAddress string) (network.Stream, error)
 		NodeIdVersion: 1,
 		PayLoadLength: 0,
 		ConnectionId:  "",
+		LegSessionId:  uuid.New().String(),
 		OriginData:    nil,
 	}
 	body := &network.Message{
@@ -182,6 +183,7 @@ func TryRegisterRelayStreamWithSign(pubKey, relayAddress string, signJSON []byte
 		NodeId:        originalNodeId,
 		NodeIdVersion: 1,
 		ConnectionId:  "",
+		LegSessionId:  uuid.New().String(),
 	}
 	body := &network.Message{
 		Header:  header,
@@ -197,6 +199,7 @@ func TryRegisterRelayStreamWithSignAndRelayPolicy(pubKey string, signJSON []byte
 		NodeId:        originalNodeId,
 		NodeIdVersion: 1,
 		ConnectionId:  "",
+		LegSessionId:  uuid.New().String(),
 	}
 	body := &network.Message{Header: header, Payload: EncodeRegisterPayload(pubKey, signJSON)}
 	return clientStreamWithRelayPolicy(body, "", originalNodeId, "", true, policy)
@@ -212,6 +215,7 @@ func TryRegisterRelayStreamTCP(pubKey, relayAddress string) (network.Stream, err
 		NodeId:        originalNodeId,
 		NodeIdVersion: 1,
 		ConnectionId:  "",
+		LegSessionId:  uuid.New().String(),
 	}
 	body := &network.Message{Header: header, Payload: []byte(pubKey)}
 	return clientStream(body, relayAddress, originalNodeId, "", false)
@@ -260,6 +264,9 @@ func TryRegisterStream(addr, originalPubkeyHex, targetNodeId, streamMode string)
 		ConnectionId:  connectionId,
 		OriginData:    nil,
 	}
+	if connectionId == "" {
+		header.LegSessionId = uuid.New().String()
+	}
 	body := &network.Message{
 		Header:  header,
 		Payload: []byte(originalPubkeyHex),
@@ -295,6 +302,7 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 	}
 
 	dual := newDualStream(originalNodeId, connectionId)
+	dual.beginInitialDialSetup()
 	if notifier, ok := relayPolicy.(RelayChangeNotifier); ok {
 		dual.watchRelayChanges(notifier)
 	}
@@ -354,6 +362,18 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 		markResumeLeg(fm)
 		return dialTCP(ctx, fm)
 	}
+	setInitialReconnectDialer := func(id streamTransport, dialer streamReconnectDialer, persistent bool) {
+		if persistent {
+			dual.setPersistentReconnectDialer(id, dialer)
+			return
+		}
+		dual.SetReconnectDialer(id, dialer)
+	}
+	kcpDisabled := disableKCP()
+	if !kcpDisabled {
+		setInitialReconnectDialer(streamTransportKCP, kcpDialer, false)
+	}
+	setInitialReconnectDialer(streamTransportTCP, tcpDialer, relayPolicy != nil)
 
 	// KCP 优先 + 200ms 窗口：KCP 与 TCP 并发拨号(各自发首帧、等端到端 ACK)。偏向 KCP：
 	//   - KCP 在 kcpPriorityWindow(200ms) 内完成握手 → preferred=KCP(保跨境高吞吐)；
@@ -372,7 +392,7 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 	// dual 随后退化成双 TCP，与“晚到 KCP 作为 backup 并入”的设计相矛盾。
 	kcpCtx, kcpCancel := context.WithCancel(context.Background())
 	defer kcpCancel()
-	if disableKCP() {
+	if kcpDisabled {
 		kcpCancel()
 		resCh <- dialResult{streamTransportKCP, nil, fmt.Errorf("KCP disabled by BNFS_DISABLE_KCP")}
 	} else {
@@ -387,6 +407,7 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 	}()
 
 	kcpOK := false
+	tcpOK := false
 	attach := func(r dialResult) {
 		if r.err != nil {
 			if r.kind == streamTransportKCP {
@@ -396,11 +417,8 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 			}
 			return
 		}
-		dialer := tcpDialer
-		if r.kind == streamTransportKCP {
-			dialer = kcpDialer
-		}
-		legID, aerr := dual.attachLeg(r.kind, r.stream)
+		legID := r.kind
+		aerr := dual.attachWithID(legID, r.kind, r.stream)
 		if aerr != nil {
 			_ = r.stream.Close()
 			if r.kind == streamTransportKCP {
@@ -410,13 +428,10 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 			}
 			return
 		}
-		if relayPolicy != nil && r.kind == streamTransportTCP {
-			dual.setPersistentReconnectDialer(legID, dialer)
-		} else {
-			dual.SetReconnectDialer(legID, dialer)
-		}
 		if r.kind == streamTransportKCP {
 			kcpOK = true
+		} else {
+			tcpOK = true
 		}
 	}
 
@@ -460,29 +475,35 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 
 	// KCP 失败但已有 TCP：补一条 extra TCP leg 保「双 TCP failover」冗余。
 	// extra 首帧带 legExtraMarker，relay 据此并存而非顶替已有同协议 leg。
-	if !kcpOK && len(dual.legStreams()) > 0 {
+	if !kcpOK && tcpOK {
+		// 初始 KCP 已明确失败，不能让完成握手后的 reconnect survival 再用 Resume
+		// 复活这条从未建立过的 leg。即使 extra TCP 首拨失败，冗余恢复也只由
+		// tcp#2 的独立重连拨号器负责。
+		dual.SetReconnectDialer(streamTransportKCP, nil)
+		extraLegID := relayBackupLegID(streamTransportTCP)
+		setInitialReconnectDialer(extraLegID, extraTCPDialer, relayPolicy != nil)
 		extraFirst := cloneMessage(FirstMessage)
 		markExtraLeg(extraFirst)
 		if tcp2, e2 := dialTCP(context.Background(), extraFirst); e2 == nil {
-			if legID, aerr := dual.attachLeg(streamTransportTCP, tcp2); aerr != nil {
+			if aerr := dual.attachWithID(extraLegID, streamTransportTCP, tcp2); aerr != nil {
 				_ = tcp2.Close()
 			} else {
-				if relayPolicy != nil {
-					dual.setPersistentReconnectDialer(legID, extraTCPDialer)
-				} else {
-					dual.SetReconnectDialer(legID, extraTCPDialer)
-				}
 				logx.Infof("[Dialers] KCP 不通, 补第二条 TCP leg(id=%s) 组成双 TCP failover: target=%.16s connId=%s",
-					legID, originalNodeId, connectionId)
+					extraLegID, originalNodeId, connectionId)
 			}
+		} else {
+			tcpErr = e2
 		}
 	}
 
-	if len(dual.legStreams()) == 0 {
+	if !dual.finishInitialDialSetup() {
 		if tcpErr != nil {
 			return nil, tcpErr
 		}
-		return nil, kcpErr
+		if kcpErr != nil {
+			return nil, kcpErr
+		}
+		return nil, errors.New("all initial dual-stream legs closed during setup")
 	}
 	// 统一心跳：只在 preferred leg 上发，standby 静默（见上方注释）。
 	dual.startKeepAlive()

@@ -121,29 +121,9 @@ func (r *relayHashResponder) SessionCount() int {
 	return len(r.sessions)
 }
 
-//  relay_hash_chain_test.go:306: device2 NODEId: 04cdd7fe5a016cfade4ae953f0164d43662d77f8d744284bc84588d0c217056a48157ee15da70d00d3f64d1e00a8112aed8513be02791f56b4bd421329c69bb6fc
-//    relay_hash_chain_test.go:307: device2 nodeId: 818901bbe315286a34143b9d41e6ce567fed4d789ac177e1d7764637622c2ec1
-//    relay_hash_chain_test.go:308: device2 nodeId hash: c13913aa8d102e17bba23ecb128abd4c3e4acbdc2b92fe4f646b35a7b7a4c1af
-//    relay_hash_chain_test.go:309: device3-a NODEId: 044211ebe205fb235f49bc639944a667cda724b113665faab6d4b391ea937c5a9e7d31144d4b37e02a7df6beb8bf84489ff039cc1c8e9c4b8cfbc12ee419db4fc4
-//    relay_hash_chain_test.go:310: device3-a nodeId: 6e186665339dda4b02170b0d173f239c37b4665fbf71f22a3a3187cadd4bc25c
-//    relay_hash_chain_test.go:311: device3-a NODEId hash: 6e186665339dda4b02170b0d173f239c37b4665fbf71f22a3a3187cadd4bc25c
-//    relay_hash_chain_test.go:312: device3-a nodeId hash: 30810f42a13c89245d2d6661a790716ba390e71fdce4ebc87a766668168b732a
-//    relay_hash_chain_test.go:313: device3-b NODEId: 04c8ec8af850ada7615f870b87b72f072e4a4867d53a5d1d4d31b6aefc861a0698482a289fd634d050c9547f4d86545329ad50f17d96fbe5c0f3c50beb89cd151b
-//    relay_hash_chain_test.go:314: device3-b nodeId: cbb7b2ddc659959f2b24cf309caf5f4748e3d4232fd3ab4441bbc72bc86efbd7
-//    relay_hash_chain_test.go:315: device3-b NODEId hash: cbb7b2ddc659959f2b24cf309caf5f4748e3d4232fd3ab4441bbc72bc86efbd7
-//    relay_hash_chain_test.go:316: device3-b nodeId hash: c3b1b41d779c00db1af6cf224a4c711c271d0d6eb8a17593344a38ecd4e76c06
-//    relay_hash_chain_test.go:358: device3-b communication count: 42
-//    relay_hash_chain_test.go:359: device3-b final hash: 67e240394d9b5f7b832b11e1de4b958972a3f89bf6cc30604966012c935a1529
-//    relay_hash_chain_test.go:360: device3-b hash chain: 1:c3b1b41d779c...6c06 -> 2:4e13d63ff86c...3a71 -> 3:d439022301fb...b3f6 -> 4:18c38a4be286...f837 -> 5:fc170eaff3b0...8cbd -> 6:765c326e1715...e9a6 -> 7:bc4b06a32824...3e0b -> 8:972fbe505dd4...8e6a -> 9:97e0e458f555...b6b3 -> 10:871f20fb31dc...fda4 -> 11:0476613995bd...8c3d -> 12:5b4d3929ab0b...01b8 -> 13:7bdd2cdef26b...a288 -> 14:2a9872319608...e692 -> 15:5cb77cc64fdf...a002 -> 16:173ffb563b40...8180 -> 17:6059b449ae59...d5da -> 18:b1192638a8e7...14f9 -> 19:4ddb866383a6...1bf8 -> 20:f6cb210a51db...d921 -> 21:e4b27d1fc3d5...2a5b -> 22:6422d60e5630...5172 -> 23:9ad8ae478db6...ade5 -> 24:936e5d4570cf...db71 -> 25:77e7dfe4912a...9aaf -> 26:ad5e57502e9e...318f -> 27:a5dbee7aa2ac...80cb -> 28:a338805e68be...85df -> 29:852d1f844174...d309 -> 30:479a8c89d06d...9bae -> 31:47ade7266e8c...392a -> 32:23a9f1145fd5...cb56 -> 33:a25a023df635...09c4 -> 34:4d0023ecf615...1c73 -> 35:fa1c31eeadd2...c48a -> 36:339b2c2514ed...384d -> 37:b344d641fce3...2075 -> 38:e6a60d9358e2...d48f -> 39:0721ab94ce73...a67a -> 40:85a42bd83dfd...3269 -> 41:e9a63c338881...a250 ->
-//   42:67e240394d9b...1529
-//    relay_hash_chain_test.go:358: device3-a communication count: 42
-//    relay_hash_chain_test.go:359: device3-a final hash: 40162f15c7e0457c4dcd110b56800acc88354af15690888bfe5bdc305a6254e5
-//    relay_hash_chain_test.go:360: device3-a hash chain: 1:30810f42a13c...732a -> 2:97d8a550f43d...9f5c -> 3:3c15dcb4544a...97ca -> 4:95896c288e63...0fe3 -> 5:16c30019eb6e...08b6 -> 6:ecef9b1039f3...4dc8 -> 7:26e90b6ac71e...65e7 -> 8:9824d483d77d...8f16 -> 9:d45895671756...b645 -> 10:5f3c68e5e485...f2ac -> 11:761d2163c51e...f47d -> 12:8fade462ff3b...34b5 -> 13:a74c571f135e...31cb -> 14:296e42b05cec...bb56 -> 15:dd1660a35b26...24eb -> 16:a7ae8e9854c2...e8e2 -> 17:267d2c2e8fda...b63d -> 18:86b17b883c67...3ace -> 19:40e4603bae1f...5f3c -> 20:c6d8f06031f0...1855 -> 21:0861b2e17c90...0ad3 -> 22:d420b2185007...233b -> 23:b63a09d39e02...8695 -> 24:c60a224e2e70...50a1 -> 25:4988a60a4db1...8bf3 -> 26:998b9e818d7f...cc13 -> 27:835ab3bbba82...a0f9 -> 28:2f4b59377a9f...40e0 -> 29:d434fa141a35...76d0 -> 30:60057b7922af...96c4 -> 31:cc6ab3282789...ba8c -> 32:d5bf6c072244...4c56 -> 33:e6fd2d7c1c98...c045 -> 34:f9c413dd2a24...eba7 -> 35:86cdd211563f...edc3 -> 36:69d5e0904bad...2370 -> 37:a18b8c8d7ed4...7b8d -> 38:cb87cfa4d84e...da2e -> 39:7f225090e5f3...1c72 -> 40:0920e3a2ce38...69d5 -> 41:331c8f82ef80...43fc
-//   -> 42:40162f15c7e0...54e5
-
 func TestConnectionResource_Close(t *testing.T) {
-	node2 := "c13913aa8d102e17bba23ecb128abd4c3e4acbdc2b92fe4f646b35a7b7a4c1af"
-	node3 := "c3b1b41d779c00db1af6cf224a4c711c271d0d6eb8a17593344a38ecd4e76c06"
+	node2 := strings.Repeat("2", 64)
+	node3 := strings.Repeat("3", 64)
 	chainResult := verifyRelayHashChain(node3, node2, node3, 42)
 	fmt.Printf("chainResult: %s\n", chainResult)
 }

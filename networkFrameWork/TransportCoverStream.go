@@ -27,6 +27,30 @@ const relayQueryRouteHint = "/relay/query"
 // 由 onMissingGroup → acceptBridgeMux 直接接管底层裸连接跑 MuxSession。
 const relayBridgeMuxRouteHint = "/relay/bridge-mux"
 
+const (
+	retiredRegistrationSessionTTL   = 10 * time.Minute
+	retiredRegistrationSessionLimit = 32
+	retiredBusinessConnectionTTL    = 10 * time.Minute
+	retiredBusinessConnectionLimit  = 4096
+	dormantRegistrationSessionLimit = 4096
+)
+
+var ErrStaleRegistrationSession = errors.New("stale registration session")
+
+var ErrStaleBusinessConnection = errors.New("business connection belongs to a retired registration session")
+
+type retiredBusinessConnection struct {
+	registrationSessionID string
+	expiresAt             time.Time
+}
+
+type dormantRegistrationSession struct {
+	registrationSessionID             string
+	connectionIDs                     []string
+	initializationFailedConnectionIDs []string
+	expiresAt                         time.Time
+}
+
 // TransportCover 将 TCP/UDP 连接转换为 Stream。
 type TransportCover struct {
 	StreamGroup map[string]*StreamGroup
@@ -58,7 +82,7 @@ type TransportCover struct {
 	//
 	// 参数：
 	//   targetNodeId    被连接/被服务的目标（server）NodeId（= 业务首帧 Header.NodeId）。
-	//   clientPubKeyHex 发起方（client）公钥 hex（= 业务首帧 Payload，供 TLS 握手用），
+	//   clientPubKeyHex 发起方（client）公钥 hex（= 业务首帧 Payload，供 Noise 身份绑定使用），
 	//                   relayNode 据它派生 client NodeId。
 	//   connID          本次业务连接标识。
 	//
@@ -70,6 +94,10 @@ type TransportCover struct {
 
 	// forwardHookConfig 转发 hook 配置（可选），传递给新创建的 StreamGroup
 	forwardHookConfig *ForwardHookConfig
+
+	retiredRegistrationSessions map[string]map[string]time.Time
+	retiredBusinessConnections  map[string]map[string]retiredBusinessConnection
+	dormantRegistrationSessions map[string]dormantRegistrationSession
 }
 
 // SetBusinessConnectHook 安装「业务连接接入校验」钩子（StreamOn 前调用，返回 error 则拒绝接入）。传 nil 卸载。
@@ -234,18 +262,19 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			return
 		}
 
-		// 非桥接路径：补发首包 ACK（readFirstMessageSync 未发）。
+		// 非桥接路径由各分支在完成必要的首帧处理后补发 ACK 并启动循环。
 		//
-		// 注意：StartLoops() 不在此处统一启动，而是推迟到【流模式确定之后】各分支内启动。
+		// 注意：AckFirstMessage() / StartLoops() 不在此处统一执行，而是推迟到
+		// 【流模式和首帧去向确定之后】各分支内执行。
 		// 原因（修复跨中继握手丢帧竞态）：业务连接 leg 在 StreamOn 里才会被切成 pure-forwarder
 		// 并装上 frameTap；若在此处提前 StartLoops，readLoop 可能在模式切换前就读到 client
 		// 紧跟首帧发来的下一帧（如 TLS pubkey），把它当普通消息组进【无人读取的死 inbox】，
 		// 该帧永不被 frame pump 转发 → 对端握手缺帧卡死。loopback 高速下高频触发，
 		// 真机因网络延迟使模式切换先完成而侥幸不现。见记忆 crossrelay-inprocess-hang-rootcause。
-		_ = stream.AckFirstMessage()
 
 		if len(message.Header.ConnectionId) == 0 {
 			// 注册流：ConnectionId 为空表示这是 relay 注册流。
+			_ = stream.AckFirstMessage()
 
 			// 网络准入(indexSign): 注册 payload 可能是「裸公钥 hex」(旧/无证书)或「JSON 信封
 			// {pk,is}」(带 CA 证书)。信封情况下 SHA256(payload) != SHA256(pk)，需按内部 pk 修正
@@ -271,44 +300,110 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			// 注册流不切 pure-forwarder（它就是被 StreamGroup 用 Message 语义消费/转发的载体），
 			// 故可立即启动读循环。
 			stream.StartLoops()
+			registrationSessionID := message.Header.LegSessionId
+			resume := isResumeLegMarked(message)
+			extra := isExtraLegMarked(message)
+			var retiredGroup *StreamGroup
+			var inheritedConnectionIDs []string
+			var inheritedInitializationFailedConnectionIDs []string
+			var registerHook func(nodeId, remoteAddr string)
+			var registeredNodeId string
+			now := time.Now()
 			t.lock.Lock()
 			group := t.StreamGroup[stream.NodeId()]
+			if t.isRegistrationSessionRetiredLocked(stream.NodeId(), registrationSessionID, now) {
+				t.lock.Unlock()
+				err := fmt.Errorf("%w: nodeId=%.16s session=%s",
+					ErrStaleRegistrationSession, stream.NodeId(), registrationSessionID)
+				logx.Warnf("[relay] 拒绝已退役注册代次: %v", err)
+				stream.Close()
+				errChan <- err
+				return
+			}
+			if group != nil && group.isClosed() {
+				if registrationSessionChanged(group.registrationSessionID, registrationSessionID) {
+					t.retireGroupLocked(stream.NodeId(), group, now)
+					retiredGroup = group
+				} else {
+					inheritedConnectionIDs = append(inheritedConnectionIDs, group.snapshotConnectionIDs()...)
+					inheritedInitializationFailedConnectionIDs = append(inheritedInitializationFailedConnectionIDs,
+						group.snapshotInitializationFailedConnectionIDs()...)
+				}
+				delete(t.StreamGroup, stream.NodeId())
+				group = nil
+			}
+			if group != nil && registrationSessionChanged(group.registrationSessionID, registrationSessionID) {
+				if resume {
+					t.lock.Unlock()
+					err := fmt.Errorf("%w: nodeId=%.16s active=%s incoming=%s",
+						ErrStaleRegistrationSession, stream.NodeId(), group.registrationSessionID, registrationSessionID)
+					logx.Warnf("[relay] 拒绝旧代次 Resume 注册: %v", err)
+					stream.Close()
+					errChan <- err
+					return
+				}
+				t.retireGroupLocked(stream.NodeId(), group, now)
+				retiredGroup = group
+				group = nil
+			}
 			if group == nil {
-				logx.Infof("[relay] 新建 StreamGroup: nodeId=%.16s", stream.NodeId())
-				group = NewStreamGroup(stream, defaultHookfunc)
+				if dormant, ok := t.takeDormantRegistrationSessionLocked(stream.NodeId(), now); ok {
+					if registrationSessionChanged(dormant.registrationSessionID, registrationSessionID) {
+						t.retireRegistrationSessionLocked(stream.NodeId(), dormant.registrationSessionID, now)
+						t.retireBusinessConnectionsLocked(stream.NodeId(), dormant.registrationSessionID,
+							dormant.connectionIDs, now)
+					} else {
+						inheritedConnectionIDs = append(inheritedConnectionIDs, dormant.connectionIDs...)
+						inheritedInitializationFailedConnectionIDs = append(inheritedInitializationFailedConnectionIDs,
+							dormant.initializationFailedConnectionIDs...)
+					}
+				}
+				group = newStreamGroupWithRelaySession(stream, defaultHookfunc, extra, registrationSessionID)
+				group.inheritConnectionIDs(inheritedConnectionIDs)
+				group.inheritInitializationFailedConnectionIDs(inheritedInitializationFailedConnectionIDs)
 				// 把 TransportCover 上配置的转发 hook 传递给新建的 StreamGroup
 				if t.forwardHookConfig != nil {
 					group.SetForwardHook(t.forwardHookConfig)
 				}
 				t.StreamGroup[stream.NodeId()] = group
-				registerHook := t.onRegister
-				registeredNodeId := stream.NodeId()
+				registerHook = t.onRegister
+				registeredNodeId = stream.NodeId()
 				t.lock.Unlock()
-				go group.StartListen()
+				go t.listenGroup(stream.NodeId(), group)
+				if retiredGroup != nil {
+					retiredGroup.Close()
+					logx.Infof("[relay] 注册代次切换并清理旧 StreamGroup: nodeId=%.16s old=%s new=%s",
+						registeredNodeId, retiredGroup.registrationSessionID, registrationSessionID)
+				}
 				if registerHook != nil {
 					registerHook(registeredNodeId, remoteAddr)
 				}
+				logx.Infof("[relay] 新建 StreamGroup: nodeId=%.16s session=%s", registeredNodeId, registrationSessionID)
 			} else {
 				t.lock.Unlock()
-				logx.Infof("[relay] 附加 relay leg 到已有 StreamGroup: nodeId=%.16s", stream.NodeId())
-				if err := group.AttachRelayStreamCoexist(stream, true); err != nil {
+				if err := group.attachRelayStreamCoexist(stream, extra, resume); err != nil {
 					logx.Errorf("[relay] AttachRelayStream 失败: nodeId=%.16s err=%v", stream.NodeId(), err)
 					stream.Close()
 					errChan <- err
 					return
 				}
+				logx.Infof("[relay] 附加 relay leg 到已有 StreamGroup: nodeId=%.16s", stream.NodeId())
 			}
 		} else {
 			// 业务连接：ConnectionId 非空表示客户端连接
-			t.lock.RLock()
+			t.lock.Lock()
 			group := t.StreamGroup[message.Header.NodeId]
 			missingHandler := t.onMissingGroup
 			businessConnectHook := t.onBusinessConnect
-			t.lock.RUnlock()
+			staleBusinessConnection := group != nil &&
+				t.isBusinessConnectionRetiredLocked(message.Header.NodeId, message.Header.ConnectionId,
+					group.registrationSessionID, time.Now())
+			t.lock.Unlock()
 			if group == nil {
 				// 本地没有该目标的 group。若安装了 missing-group 回调（relayNode），
 				// 交给它处理：可能是另一台 relay 的控制链路接入，或需要跨中继桥接。
 				if missingHandler != nil {
+					_ = stream.AckFirstMessage()
 					// 控制链路 / relay 查询等：handler 会在该流上正常 NextMessage/SendMessage,
 					// 需先启动读循环。（桥接业务连接已在上方 isBridge 分支提前接管，不会到这里。）
 					stream.StartLoops()
@@ -327,6 +422,14 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 					message.Header.NodeId, message.Header.ConnectionId)
 				stream.Close()
 				errChan <- fmt.Errorf("relay group not found for nodeId %s", message.Header.NodeId)
+				return
+			}
+			if staleBusinessConnection {
+				err := fmt.Errorf("%w: targetNodeId=%.16s connId=%s",
+					ErrStaleBusinessConnection, message.Header.NodeId, message.Header.ConnectionId)
+				logx.Warnf("[relay] 拒绝旧服务端代次的业务 leg: %v", err)
+				stream.Close()
+				errChan <- err
 				return
 			}
 			// 服务边界角色强制（方案B）：本地托管该目标节点, 在把业务连接接上它之前校验其角色。
@@ -351,23 +454,22 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			}
 			logx.Infof("[relay] StreamOn 成功: targetNodeId=%.16s connId=%s forward=%v",
 				message.Header.NodeId, message.Header.ConnectionId, forwardFirstMessage)
-			if forwardFirstMessage && isResumeLegMarked(message) {
-				forwardFirstMessage = false
-				logx.Infof("[relay] 恢复已有 ConnectionId，抑制重复业务首帧: targetNodeId=%.16s connId=%s",
-					message.Header.NodeId, message.Header.ConnectionId)
+			if err := group.AwaitFirstMessage(message.Header.ConnectionId); err != nil {
+				logx.Errorf("[relay] 等待服务端确认业务首帧失败: targetNodeId=%.16s err=%v",
+					message.Header.NodeId, err)
+				stream.Close()
+				errChan <- err
+				return
 			}
-			// 现在 leg 已被 StreamOn 切成 pure-forwarder 并装好 frameTap，再启动读循环：
-			// 此后 readLoop 收到的每一帧都进 tap 被 frame pump 可靠转发，不会落入死 inbox。
+			// 新逻辑连接只有在目标 Server 的真实 ACK 返回后才确认原始首帧；同代 Resume
+			// 则等待同一个 shared gate 后本地确认。先 ACK 再开读循环，使等待期间积压的
+			// 首帧重传由 TcpStream 去重，不会被 frame pump 当成第二份公钥继续转发。
+			if err := stream.AckFirstMessage(); err != nil {
+				stream.Close()
+				errChan <- err
+				return
+			}
 			stream.StartLoops()
-			if forwardFirstMessage {
-				if err := group.relayStream.SendMessage(context.Background(), message); err != nil {
-					logx.Errorf("[relay] 转发首条消息失败: targetNodeId=%.16s err=%v",
-						message.Header.NodeId, err)
-					stream.Close()
-					errChan <- err
-					return
-				}
-			}
 		}
 		errChan <- nil
 	}()
@@ -382,8 +484,185 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 	}
 }
 
+func (t *TransportCover) listenGroup(nodeID string, group *StreamGroup) {
+	group.StartListen()
+	t.lock.Lock()
+	if t.StreamGroup[nodeID] == group {
+		delete(t.StreamGroup, nodeID)
+		t.rememberDormantRegistrationSessionLocked(nodeID, group, time.Now())
+	}
+	t.lock.Unlock()
+}
+
+func registrationSessionChanged(currentSessionID, incomingSessionID string) bool {
+	return incomingSessionID != "" && currentSessionID != incomingSessionID
+}
+
+func (t *TransportCover) rememberDormantRegistrationSessionLocked(nodeID string, group *StreamGroup, now time.Time) {
+	if nodeID == "" || group == nil {
+		return
+	}
+	if t.dormantRegistrationSessions == nil {
+		t.dormantRegistrationSessions = make(map[string]dormantRegistrationSession)
+	}
+	for dormantNodeID, dormant := range t.dormantRegistrationSessions {
+		if !now.Before(dormant.expiresAt) {
+			delete(t.dormantRegistrationSessions, dormantNodeID)
+		}
+	}
+	if _, exists := t.dormantRegistrationSessions[nodeID]; !exists &&
+		len(t.dormantRegistrationSessions) >= dormantRegistrationSessionLimit {
+		var oldestNodeID string
+		var oldestExpiry time.Time
+		for dormantNodeID, dormant := range t.dormantRegistrationSessions {
+			if oldestNodeID == "" || dormant.expiresAt.Before(oldestExpiry) {
+				oldestNodeID = dormantNodeID
+				oldestExpiry = dormant.expiresAt
+			}
+		}
+		delete(t.dormantRegistrationSessions, oldestNodeID)
+	}
+	t.dormantRegistrationSessions[nodeID] = dormantRegistrationSession{
+		registrationSessionID:             group.registrationSessionID,
+		connectionIDs:                     group.snapshotConnectionIDs(),
+		initializationFailedConnectionIDs: group.snapshotInitializationFailedConnectionIDs(),
+		expiresAt:                         now.Add(retiredRegistrationSessionTTL),
+	}
+}
+
+func (t *TransportCover) takeDormantRegistrationSessionLocked(nodeID string, now time.Time) (dormantRegistrationSession, bool) {
+	dormant, ok := t.dormantRegistrationSessions[nodeID]
+	if !ok {
+		return dormantRegistrationSession{}, false
+	}
+	delete(t.dormantRegistrationSessions, nodeID)
+	if !now.Before(dormant.expiresAt) {
+		return dormantRegistrationSession{}, false
+	}
+	return dormant, true
+}
+
+func (t *TransportCover) retireGroupLocked(nodeID string, group *StreamGroup, now time.Time) {
+	if group == nil {
+		return
+	}
+	connectionIDs := group.stopAndSnapshotConnectionIDs()
+	t.retireRegistrationSessionLocked(nodeID, group.registrationSessionID, now)
+	t.retireBusinessConnectionsLocked(nodeID, group.registrationSessionID, connectionIDs, now)
+}
+
+func (t *TransportCover) retireRegistrationSessionLocked(nodeID, sessionID string, now time.Time) {
+	if nodeID == "" || sessionID == "" {
+		return
+	}
+	sessions := t.retiredRegistrationSessions[nodeID]
+	if sessions == nil {
+		sessions = make(map[string]time.Time)
+		t.retiredRegistrationSessions[nodeID] = sessions
+	}
+	for id, expiresAt := range sessions {
+		if !now.Before(expiresAt) {
+			delete(sessions, id)
+		}
+	}
+	for len(sessions) >= retiredRegistrationSessionLimit {
+		var oldestID string
+		var oldestExpiry time.Time
+		for id, expiresAt := range sessions {
+			if oldestID == "" || expiresAt.Before(oldestExpiry) {
+				oldestID = id
+				oldestExpiry = expiresAt
+			}
+		}
+		delete(sessions, oldestID)
+	}
+	sessions[sessionID] = now.Add(retiredRegistrationSessionTTL)
+}
+
+func (t *TransportCover) isRegistrationSessionRetiredLocked(nodeID, sessionID string, now time.Time) bool {
+	if nodeID == "" || sessionID == "" {
+		return false
+	}
+	sessions := t.retiredRegistrationSessions[nodeID]
+	if sessions == nil {
+		return false
+	}
+	for id, expiresAt := range sessions {
+		if !now.Before(expiresAt) {
+			delete(sessions, id)
+		}
+	}
+	if len(sessions) == 0 {
+		delete(t.retiredRegistrationSessions, nodeID)
+		return false
+	}
+	_, ok := sessions[sessionID]
+	return ok
+}
+
+func (t *TransportCover) retireBusinessConnectionsLocked(nodeID, sessionID string, connectionIDs []string, now time.Time) {
+	if nodeID == "" || sessionID == "" || len(connectionIDs) == 0 {
+		return
+	}
+	connections := t.retiredBusinessConnections[nodeID]
+	if connections == nil {
+		connections = make(map[string]retiredBusinessConnection)
+		t.retiredBusinessConnections[nodeID] = connections
+	}
+	for connectionID, retired := range connections {
+		if !now.Before(retired.expiresAt) {
+			delete(connections, connectionID)
+		}
+	}
+	for _, connectionID := range connectionIDs {
+		if connectionID == "" {
+			continue
+		}
+		if len(connections) >= retiredBusinessConnectionLimit {
+			var oldestID string
+			var oldestExpiry time.Time
+			for id, retired := range connections {
+				if oldestID == "" || retired.expiresAt.Before(oldestExpiry) {
+					oldestID = id
+					oldestExpiry = retired.expiresAt
+				}
+			}
+			delete(connections, oldestID)
+		}
+		connections[connectionID] = retiredBusinessConnection{
+			registrationSessionID: sessionID,
+			expiresAt:             now.Add(retiredBusinessConnectionTTL),
+		}
+	}
+}
+
+func (t *TransportCover) isBusinessConnectionRetiredLocked(nodeID, connectionID, activeSessionID string, now time.Time) bool {
+	if nodeID == "" || connectionID == "" || activeSessionID == "" {
+		return false
+	}
+	connections := t.retiredBusinessConnections[nodeID]
+	if connections == nil {
+		return false
+	}
+	retired, ok := connections[connectionID]
+	if !ok {
+		return false
+	}
+	if !now.Before(retired.expiresAt) {
+		delete(connections, connectionID)
+		if len(connections) == 0 {
+			delete(t.retiredBusinessConnections, nodeID)
+		}
+		return false
+	}
+	return retired.registrationSessionID != activeSessionID
+}
+
 func NewTransportCover() *TransportCover {
 	return &TransportCover{
-		StreamGroup: make(map[string]*StreamGroup),
+		StreamGroup:                 make(map[string]*StreamGroup),
+		retiredRegistrationSessions: make(map[string]map[string]time.Time),
+		retiredBusinessConnections:  make(map[string]map[string]retiredBusinessConnection),
+		dormantRegistrationSessions: make(map[string]dormantRegistrationSession),
 	}
 }

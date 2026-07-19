@@ -19,6 +19,9 @@ type Header struct {
 	// relay 据此对该 leg 采取并存语义而非顶替同协议旧 leg。0 表示普通/重连 leg。
 	// 老版本发送方该字节为 0，向后兼容。
 	LegFlags uint8 `json:"leg_flags"`
+	// LegSessionId 标识一次逻辑拨号代次。初始 KCP/TCP/extra leg 与后续 Resume leg
+	// 共享同一个 UUID；新的逻辑拨号使用新 UUID，Relay 据此隔离同身份的冷重启代次。
+	LegSessionId string `json:"leg_session_id"`
 }
 type Message struct {
 	Header  *Header `json:"header"`
@@ -31,6 +34,7 @@ const (
 	version1           = 1
 	NodeIdHexLength    = 64 // SHA256 Hex 字符串长度为 64
 	ConnectionIdLength = 36 //ConnectionId 长度
+	LegSessionIdLength = 36 // UUID 字符串长度
 )
 
 const (
@@ -115,6 +119,14 @@ func ParseHeader(headerBytes []byte) (*Header, error) {
 		index++
 	}
 
+	// 8.6 读取逻辑拨号代次 ID（36 bytes）。旧版本发送方的剩余 padding 全为 0，
+	// 因而会自然解析为空字符串并保持兼容。
+	var legSessionId string
+	if index+LegSessionIdLength <= len(headerBytes) && index+LegSessionIdLength <= HeaderLength {
+		legSessionId = strings.TrimRight(string(headerBytes[index:index+LegSessionIdLength]), "\x00")
+		index += LegSessionIdLength
+	}
+
 	return &Header{
 		RouteName:     RouteName,
 		NodeId:        nodeId,
@@ -122,6 +134,7 @@ func ParseHeader(headerBytes []byte) (*Header, error) {
 		PayLoadLength: payloadLength,
 		ConnectionId:  connectionId,
 		LegFlags:      legFlags,
+		LegSessionId:  legSessionId,
 		//OriginData:    headerBytes[:],
 	}, nil
 }
@@ -199,6 +212,21 @@ func (h *Header) ParseToBytes() ([]byte, error) {
 	if currentIndex < HeaderLength {
 		headerBytes[currentIndex] = h.LegFlags
 		currentIndex++
+	}
+
+	// 10. 非空时写入逻辑拨号代次 ID。注册/业务常用的短 RouteName 均有充足 padding；
+	// 若调用方同时使用超长 RouteName，则明确报错，不能静默丢失代次边界。
+	if h.LegSessionId != "" {
+		if len(h.LegSessionId) > LegSessionIdLength {
+			return nil, errors.New("leg session id too long")
+		}
+		if currentIndex+LegSessionIdLength > HeaderLength {
+			return nil, errors.New("header size overflow while writing leg session id")
+		}
+		legSessionIdBytes := make([]byte, LegSessionIdLength)
+		copy(legSessionIdBytes, []byte(h.LegSessionId))
+		copy(headerBytes[currentIndex:], legSessionIdBytes)
+		currentIndex += LegSessionIdLength
 	}
 	// 剩余部分默认为 0，无需额外操作
 
