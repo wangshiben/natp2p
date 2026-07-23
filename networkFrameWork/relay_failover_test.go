@@ -80,6 +80,37 @@ func (s *immediateEOFStream) NodeId() string                     { return "node"
 func (s *immediateEOFStream) ConnectionId() string               { return "connection" }
 func (s *immediateEOFStream) SetCryptoSuite(network.EncrypSuite) {}
 
+type healthyReconnectStream struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newHealthyReconnectStream() *healthyReconnectStream {
+	return &healthyReconnectStream{closed: make(chan struct{})}
+}
+
+func (s *healthyReconnectStream) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+func (s *healthyReconnectStream) NextMessage(context.Context) (*network.Message, error) {
+	<-s.closed
+	return nil, errors.New("closed")
+}
+
+func (s *healthyReconnectStream) SendMessage(context.Context, *network.Message) error { return nil }
+func (s *healthyReconnectStream) SendMessageAsync(ctx context.Context, message *network.Message, callback network.MessageResultCallback) error {
+	err := s.SendMessage(ctx, message)
+	if callback != nil {
+		callback(network.MessageResult{Success: true})
+	}
+	return err
+}
+func (s *healthyReconnectStream) NodeId() string                     { return "node" }
+func (s *healthyReconnectStream) ConnectionId() string               { return "connection" }
+func (s *healthyReconnectStream) SetCryptoSuite(network.EncrypSuite) {}
+
 func TestLegAvailableSignalBroadcastsToAllWaiters(t *testing.T) {
 	dual := newDualStream("node", "connection")
 	defer dual.Close()
@@ -207,5 +238,39 @@ func TestReconnectSurvivalKeepsEstablishedStreamAlive(t *testing.T) {
 	case <-dual.ctx.Done():
 		t.Fatal("握手后的逻辑流应等待 Relay 恢复或切换")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSuccessfulReconnectPromotesVerifiedLeg(t *testing.T) {
+	dual := newDualStreamWithPump("node", "connection", false)
+	defer dual.Close()
+	staleKCP := newHealthyReconnectStream()
+	if err := dual.attachWithID(streamTransportKCP, streamTransportKCP, staleKCP); err != nil {
+		t.Fatalf("attach stale KCP: %v", err)
+	}
+
+	reconnectedTCP := newHealthyReconnectStream()
+	dual.runReconnect(streamTransportTCP, func(context.Context) (network.Stream, error) {
+		return reconnectedTCP, nil
+	})
+	if got := dual.preferredTransport(); got != streamTransportTCP {
+		t.Fatalf("verified TCP reconnect should replace stale KCP preference, got %s", got)
+	}
+	primaryID, primary, _, _ := dual.sendOrder()
+	if primaryID != streamTransportTCP || primary != reconnectedTCP {
+		t.Fatalf("send order did not select reconnected TCP: id=%s stream=%T", primaryID, primary)
+	}
+
+	dual.detach(streamTransportKCP, staleKCP)
+	reconnectedKCP := newHealthyReconnectStream()
+	dual.runReconnect(streamTransportKCP, func(context.Context) (network.Stream, error) {
+		return reconnectedKCP, nil
+	})
+	if got := dual.preferredTransport(); got != streamTransportKCP {
+		t.Fatalf("later verified KCP reconnect should become preferred, got %s", got)
+	}
+	primaryID, primary, _, _ = dual.sendOrder()
+	if primaryID != streamTransportKCP || primary != reconnectedKCP {
+		t.Fatalf("send order did not select reconnected KCP: id=%s stream=%T", primaryID, primary)
 	}
 }

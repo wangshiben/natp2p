@@ -4,8 +4,9 @@
 //	[1 byte type][4 bytes streamID big-endian][payload...]
 //
 // Frame types: OPEN (client announces a new stream), DATA (stream bytes),
-// CLOSE (stream finished). The side that dials local TCP connections opens
-// streams; the peer accepts them via the Accept channel.
+// CLOSE (stream finished), and SESSION_CLOSE (the tunnel is shutting down).
+// The side that dials local TCP connections opens streams; the peer accepts
+// them via the Accept channel.
 package mux
 
 import (
@@ -15,6 +16,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"bnfs_p2p/p2pnode"
 )
@@ -28,7 +30,10 @@ const defaultMaxChunk = 64 * 1024
 // 流水线核心参数：把"窗口=1 停等"提升为"窗口=W"，吞吐≈W×chunk/RTT，直到填满 BDP 或撞节流。
 // W≈BDP/chunk；240ms RTT、~1MB/s、chunk 64KB → BDP≈240KB → W≈4，取 8 留余量。
 // 可用 TUNNEL_SEND_WINDOW 覆盖。
-const defaultSendWindow = 8
+const (
+	defaultSendWindow       = 8
+	sessionCloseSendTimeout = 2 * time.Second
+)
 
 var streamMaxChunk = resolveMaxChunk()
 
@@ -51,14 +56,17 @@ func resolveSendWindow() int {
 }
 
 const (
-	frameOpen  byte = 1
-	frameData  byte = 2
-	frameClose byte = 3
+	frameOpen         byte = 1
+	frameData         byte = 2
+	frameClose        byte = 3
+	frameSessionClose byte = 4
 )
 
 // 帧头布局：
-//   OPEN：       [1 type][4 streamID]                — 无序号
-//   DATA/CLOSE： [1 type][4 streamID][8 seq]         — 带 per-stream 单调序号
+//
+//	OPEN：       [1 type][4 streamID]                — 无序号
+//	DATA/CLOSE： [1 type][4 streamID][8 seq]         — 带 per-stream 单调序号
+//
 // DATA 的 seq 供收端重排（流水线下并发在途消息可能乱序到达）；
 // CLOSE 的 seq 携带 finalSeq（= 发端已发 DATA 帧总数），收端据此排空到末尾再关，防丢尾。
 const (
@@ -111,9 +119,19 @@ func NewSession(ctx context.Context, conn p2pnode.Connection, isClient bool) *Se
 // Accept returns the next stream opened by the peer. Blocks until one arrives
 // or the session closes (then returns nil, ErrSessionClosed).
 func (s *Session) Accept() (*Stream, error) {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil, ErrSessionClosed
+	}
 	select {
-	case st, ok := <-s.accept:
-		if !ok {
+	case st := <-s.accept:
+		s.mu.Lock()
+		closed = s.closed
+		s.mu.Unlock()
+		if closed {
+			st.closeLocal()
 			return nil, ErrSessionClosed
 		}
 		return st, nil
@@ -144,6 +162,10 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 // Close tears down the session and all streams.
 func (s *Session) Close() error {
+	return s.shutdown(true)
+}
+
+func (s *Session) shutdown(notifyPeer bool) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -155,12 +177,19 @@ func (s *Session) Close() error {
 		streams = append(streams, st)
 	}
 	s.streams = make(map[uint32]*Stream)
-	close(s.accept)
 	s.mu.Unlock()
 
-	s.cancel()
 	for _, st := range streams {
 		st.closeLocal()
 	}
-	return s.conn.Close()
+
+	var notifyErr error
+	if notifyPeer {
+		notifyCtx, notifyCancel := context.WithTimeout(context.Background(), sessionCloseSendTimeout)
+		notifyErr = s.sendSessionClose(notifyCtx)
+		notifyCancel()
+	}
+
+	s.cancel()
+	return errors.Join(notifyErr, s.conn.Close())
 }

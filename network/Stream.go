@@ -19,6 +19,10 @@ type EncrypSuite interface {
 	Decrypt(Payload []byte) ([]byte, error)
 }
 
+// OutboundRecordObserver 在一条带计费字段的消息完成 E2E Seal、但尚未交给任一传输 leg 前调用。
+// message 是只读的密文快照，messageID 是稳定的端到端记录 ID；返回错误会阻止发送。
+type OutboundRecordObserver func(message *Message, messageID []byte) error
+
 type MessageIdentitySuite interface {
 	EncrypSuite
 	NewMessageID() []byte

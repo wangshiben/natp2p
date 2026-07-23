@@ -53,6 +53,39 @@ const (
 
 const KeepAliveRoute = "/ping"
 
+type streamKeepAlivePolicy struct {
+	idleBaseline time.Duration
+	probeBase    time.Duration
+	maxProbes    int
+	probeTimeout time.Duration
+}
+
+func defaultStreamKeepAlivePolicy() streamKeepAlivePolicy {
+	return streamKeepAlivePolicy{
+		idleBaseline: keepAliveIdleBaseline,
+		probeBase:    keepAliveProbeBase,
+		maxProbes:    keepAliveMaxProbes,
+		probeTimeout: keepAliveProbeTimeout,
+	}
+}
+
+func (p streamKeepAlivePolicy) normalized() streamKeepAlivePolicy {
+	defaults := defaultStreamKeepAlivePolicy()
+	if p.idleBaseline <= 0 {
+		p.idleBaseline = defaults.idleBaseline
+	}
+	if p.probeBase <= 0 {
+		p.probeBase = defaults.probeBase
+	}
+	if p.maxProbes <= 0 {
+		p.maxProbes = defaults.maxProbes
+	}
+	if p.probeTimeout <= 0 {
+		p.probeTimeout = defaults.probeTimeout
+	}
+	return p
+}
+
 // pendingInboxMessage 是 inboxCh 上传递的内部消息结构。
 // 当帧重组完成时若 crypto 尚未安装（典型场景：Noise 握手与对端首条加密消息抵达存在竞态），
 // 就把 needDecrypt=true 的原始密文挂进队列，由 NextMessage 在被读取时再用当时的 crypto 解密。
@@ -145,6 +178,7 @@ type TcpStream struct {
 	testAckDelayNanos  atomic.Int64
 	testDataFrameDelay time.Duration
 	testLogRetransmit  bool
+	keepAlivePolicy    streamKeepAlivePolicy
 }
 
 // startTcpStream 在已经建好的连接上开 readLoop 与 recvAckTimer，
@@ -183,6 +217,7 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		frameSizeChangeAcks: make(map[int]chan bool),
 		testDataFrameDelay:  testDurationFromEnv("BNFS_TEST_DATA_FRAME_DELAY"),
 		testLogRetransmit:   testBoolFromEnv("BNFS_TEST_LOG_RETRANSMIT"),
+		keepAlivePolicy:     defaultStreamKeepAlivePolicy(),
 	}
 	t.testAckDelayNanos.Store(int64(testDurationFromEnv("BNFS_TEST_ACK_DELAY")))
 	// 身份字段经原子指针存储（见字段注释），构造期串行设置，之后任何并发读写都走原子。
@@ -285,7 +320,7 @@ func AcceptTcpStreamSync(conn net.Conn) (*TcpStream, *network.Message, error) {
 }
 
 // AckFirstMessage 给同步读到的首条消息回 ACK。
-// 普通（非裸字节桥接）路径在 StartLoops 前调用, 以补回 readFirstMessageSync 未发的首包 ACK。
+// 同步接入路径在 StartLoops 前调用，以补回 readFirstMessageSync 未发的首包 ACK。
 func (t *TcpStream) AckFirstMessage() error {
 	if t.firstMsgTotalFrames == 0 {
 		return nil
@@ -300,8 +335,8 @@ func (t *TcpStream) AckFirstMessage() error {
 // StartLoops 是 startLoops 的导出别名, 供 AcceptTcpStreamSync 的调用方在确定流模式后启动读循环。
 func (t *TcpStream) StartLoops() { t.startLoops() }
 
-// RawConn 返回底层 net.Conn, 供裸字节级桥接（relay 透明转发）直接 io.Copy 使用。
-// 仅当未启动 readLoop（如 AcceptTcpStreamSync 之后未 StartLoops）时, 裸读才不会与 readLoop 抢字节。
+// RawConn 返回底层 net.Conn，供传输识别和生命周期管理使用。
+// 仅当未启动 readLoop 时才允许调用方直接读取，避免与 readLoop 争用字节流。
 func (t *TcpStream) RawConn() net.Conn { return t.connection }
 
 // IsClosed 报告该流是否已关闭（streamCtx 已取消）。
@@ -346,6 +381,16 @@ func (t *TcpStream) readFirstMessageSync() (*network.Message, uint64, uint32, er
 
 func (t *TcpStream) NodeId() string       { return t.getNodeId() }
 func (t *TcpStream) ConnectionId() string { return t.getConnectionId() }
+
+// LatestReceiveTime 返回本物理 leg 最近一次收到对端任意帧的时间。
+// Relay 用它被动回收已经失去对端、但底层 KCP 会话迟迟不返回 EOF 的注册流。
+func (t *TcpStream) LatestReceiveTime() time.Time {
+	micros := t.lastRecvMicros.Load()
+	if micros <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMicro(micros)
+}
 
 // getNodeId / setNodeId / getConnectionId / setConnectionId 原子访问身份字段。
 // nil 指针（从未 set）视为空串。所有读写点必须经这四个方法，不得直接碰字段，否则 -race 会报竞争。
@@ -426,6 +471,7 @@ func (t *TcpStream) SetIdentity(nodeId, connectionId string) {
 //	        若 lastRecv 被刷新（收到任意帧）→ 判活、退出探测态、退避清零；
 //	        否则 probeCount++；连续 keepAliveMaxProbes 次都没刷新 → 判死。
 func (t *TcpStream) keepLive() {
+	policy := t.keepAlivePolicy.normalized()
 	connType := "TCP"
 	if t.connection != nil && t.connection.RemoteAddr().Network() != "tcp" {
 		connType = "KCP"
@@ -450,8 +496,8 @@ func (t *TcpStream) keepLive() {
 
 	for {
 		// —— 非探测态：等到静默超过基线才开始探测 ——
-		if d := idleSince(); d < keepAliveIdleBaseline {
-			if !sleep(keepAliveIdleBaseline - d) {
+		if d := idleSince(); d < policy.idleBaseline {
+			if !sleep(policy.idleBaseline - d) {
 				return
 			}
 			continue
@@ -459,12 +505,12 @@ func (t *TcpStream) keepLive() {
 
 		// —— 探测态：指数退避连续探测 ——
 		probeCount := 0
-		backoff := keepAliveProbeBase
+		backoff := policy.probeBase
 		alive := false
-		for probeCount < keepAliveMaxProbes {
+		for probeCount < policy.maxProbes {
 			before := t.lastRecvMicros.Load() // 探测前的收帧快照
 
-			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, keepAliveProbeTimeout)
+			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, policy.probeTimeout)
 			start := time.Now()
 			err := t.SendMessage(heartbeatCtx, &network.Message{
 				Header: &network.Header{
@@ -501,7 +547,7 @@ func (t *TcpStream) keepLive() {
 		}
 		// 连续 keepAliveMaxProbes 次探测窗口内都没收到任何帧 → 判死。
 		logx.Warnf("[%s] keepLive 判死: 连续 %d 次指数退避探测均无任何回帧, 关闭 leg: nodeId=%.16s connId=%s",
-			connType, keepAliveMaxProbes, t.getNodeId(), t.getConnectionId())
+			connType, policy.maxProbes, t.getNodeId(), t.getConnectionId())
 		t.failAndClose(errors.New("keepalive: peer unreachable after exponential-backoff probes"))
 		return
 	}
@@ -648,7 +694,7 @@ func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network
 	if t.pureForwarder.Load() && !awaitAckInPureMode {
 		// pure forwarder leg：写完帧就返回。不建 pending、不等 ACK、不重传，
 		// 因为 ACK 由对端真正的接收者直接回到原始发送者，跟本 leg 无关。
-		return t.writeFrames(frames)
+		return t.writeFramesContext(ctx, frames)
 	}
 	total := uint32(len(frames))
 	tracker := newAckTracker(total)
@@ -802,7 +848,7 @@ func (t *TcpStream) writeFramesContext(ctx context.Context, frames []*network.Fr
 		}
 		totalBytes := 0
 		for index, frame := range frames {
-			if err := t.writeBytesLocked(encoded[index]); err != nil {
+			if err := t.writeBytesLockedContext(ctx, encoded[index]); err != nil {
 				return err
 			}
 			totalBytes += len(encoded[index])
@@ -842,7 +888,7 @@ func (t *TcpStream) writeFramesContext(ctx context.Context, frames []*network.Fr
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := t.writeBytesLocked(buf); err != nil {
+	if err := t.writeBytesLockedContext(ctx, buf); err != nil {
 		return err
 	}
 
@@ -872,6 +918,23 @@ func (t *TcpStream) setTestAckDelay(delay time.Duration) {
 }
 
 func (t *TcpStream) writeBytesLocked(buf []byte) error {
+	return t.writeBytesLockedContext(context.Background(), buf)
+}
+
+func (t *TcpStream) writeBytesLockedContext(ctx context.Context, buf []byte) error {
+	if ctx == nil {
+		return errors.New("write bytes: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := t.connection.SetWriteDeadline(deadline); err != nil {
+			t.failAndClose(err)
+			return err
+		}
+		defer func() { _ = t.connection.SetWriteDeadline(time.Time{}) }()
+	}
 	written, err := t.connection.Write(buf)
 	if err == nil && written != len(buf) {
 		err = io.ErrShortWrite

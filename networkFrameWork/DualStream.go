@@ -15,9 +15,12 @@ import (
 )
 
 const (
-	maxReconnectAttempts    = 10
-	initialReconnectBackoff = 200 * time.Millisecond
-	maxReconnectBackoff     = 5 * time.Second
+	maxReconnectAttempts            = 10
+	initialReconnectBackoff         = 200 * time.Millisecond
+	maxReconnectBackoff             = 5 * time.Second
+	defaultKCPGoodputMinPayload     = 64 * 1024
+	defaultKCPGoodputBytesPerSecond = 1024 * 1024
+	defaultKCPGoodputStartupBudget  = 2 * time.Second
 )
 
 var (
@@ -109,6 +112,46 @@ type messageIDSender interface {
 	sendMessageWithMessageID(ctx context.Context, message *network.Message, messageID []byte) error
 }
 
+type kcpSendQualityPolicy struct {
+	minimumPayloadBytes       int
+	minimumGoodputBytesPerSec int64
+	startupBudget             time.Duration
+}
+
+func defaultKCPSendQualityPolicy() kcpSendQualityPolicy {
+	return kcpSendQualityPolicy{
+		minimumPayloadBytes:       defaultKCPGoodputMinPayload,
+		minimumGoodputBytesPerSec: defaultKCPGoodputBytesPerSecond,
+		startupBudget:             defaultKCPGoodputStartupBudget,
+	}
+}
+
+func (policy kcpSendQualityPolicy) budget(payloadBytes int) (time.Duration, bool) {
+	if payloadBytes < policy.minimumPayloadBytes || policy.minimumPayloadBytes <= 0 ||
+		policy.minimumGoodputBytesPerSec <= 0 || policy.startupBudget < 0 {
+		return 0, false
+	}
+
+	wholeSeconds := int64(payloadBytes) / policy.minimumGoodputBytesPerSec
+	remainingBytes := int64(payloadBytes) % policy.minimumGoodputBytesPerSec
+	maximumDuration := time.Duration(1<<63 - 1)
+	if wholeSeconds > int64((maximumDuration-policy.startupBudget)/time.Second) {
+		return maximumDuration, true
+	}
+	transferBudget := time.Duration(wholeSeconds) * time.Second
+	if remainingBytes > 0 {
+		fractionalBudget := time.Duration(float64(remainingBytes) / float64(policy.minimumGoodputBytesPerSec) * float64(time.Second))
+		if fractionalBudget <= 0 {
+			fractionalBudget = time.Nanosecond
+		}
+		transferBudget += fractionalBudget
+	}
+	if transferBudget > maximumDuration-policy.startupBudget {
+		return maximumDuration, true
+	}
+	return policy.startupBudget + transferBudget, true
+}
+
 // DualStream 把同一逻辑连接下的 KCP/TCP 两条底层流聚合成一个 network.Stream。
 // SendMessage 默认优先走 KCP，KCP 发送失败后切换到 TCP；NextMessage 汇聚两条底层流的入站消息。
 // 该结构体也被 relay 侧复用，用来把同一逻辑会话的多条 leg 收拢成一个逻辑流。
@@ -119,6 +162,7 @@ type DualStream struct {
 	nodeId         string
 	connectionId   string
 	crypto         network.EncrypSuite
+	recordObserver network.OutboundRecordObserver
 	collectInbound bool
 
 	e2eDeliveredMu sync.Mutex
@@ -145,6 +189,7 @@ type DualStream struct {
 	initialDialSetup    atomic.Bool
 	legSignalMu         sync.Mutex
 	legSignal           chan struct{}
+	kcpSendQuality      kcpSendQualityPolicy
 }
 
 func newDualStream(nodeId, connectionId string) *DualStream {
@@ -167,6 +212,7 @@ func newDualStreamWithPump(nodeId, connectionId string, collectInbound bool) *Du
 		reconnectDisabled:   make(map[streamTransport]bool),
 		reconnectPersistent: make(map[streamTransport]bool),
 		legSignal:           make(chan struct{}),
+		kcpSendQuality:      defaultKCPSendQualityPolicy(),
 	}
 }
 
@@ -292,13 +338,28 @@ func (d *DualStream) SendMessageAsync(ctx context.Context, message *network.Mess
 // 若两条 leg 都失败或都不存在，关闭整个逻辑流并返回错误。
 func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) error {
 	sealedMessage := cloneMessage(message)
+	payloadBytes := 0
+	if sealedMessage != nil {
+		payloadBytes = len(sealedMessage.Payload)
+	}
 	d.mu.RLock()
 	crypto := d.crypto
+	recordObserver := d.recordObserver
 	d.mu.RUnlock()
+	var sealedMessageID []byte
 	if crypto != nil {
-		if _, err := network.SealMessagePayload(crypto, sealedMessage, nil); err != nil {
+		messageID, err := network.SealMessagePayload(crypto, sealedMessage, nil)
+		if err != nil {
 			return fmt.Errorf("DualStream E2E seal failed: %w", err)
 		}
+		sealedMessageID = append([]byte(nil), messageID...)
+		if sealedMessage.Header != nil && sealedMessage.Header.BillingSequence != 0 && recordObserver != nil {
+			if err := recordObserver(cloneMessage(sealedMessage), append([]byte(nil), messageID...)); err != nil {
+				return fmt.Errorf("DualStream billing record rejected: %w", err)
+			}
+		}
+	} else if sealedMessage != nil && sealedMessage.Header != nil && sealedMessage.Header.BillingSequence != 0 {
+		return errors.New("DualStream billing record requires E2E encryption")
 	}
 	for {
 		legSignal := d.currentLegSignal()
@@ -324,24 +385,36 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 			backupKind, backup = streamTransportUnknown, nil
 		}
 
-		err := primary.SendMessage(ctx, cloneMessage(sealedMessage))
-		if err == nil {
+		winner, primaryErr, backupErr, hedged := d.sendWithKCPGoodputBudget(
+			ctx, sealedMessage, sealedMessageID, payloadBytes, primaryKind, primary, backupKind, backup,
+		)
+		if winner != streamTransportUnknown {
+			if primaryErr != nil && ctx.Err() == nil {
+				d.handleSendFailure("primary", primaryKind, primary, primaryErr)
+			}
+			if backupErr != nil && ctx.Err() == nil {
+				d.handleSendFailure("backup", backupKind, backup, backupErr)
+			}
+			if winner == backupKind && !hedged {
+				d.setPreferred(backupKind)
+			}
+			if hedged {
+				logx.Warnf("[DualStream] KCP 发送超过质量预算，已启动 TCP hedge 并将 preferred 降级为 TCP: nodeId=%.16s connId=%s payload=%d winner=%s",
+					d.NodeId(), d.ConnectionId(), payloadBytes, winner)
+			}
 			return nil
 		}
 		if ctx.Err() != nil {
-			return err
+			if primaryErr != nil {
+				return primaryErr
+			}
+			return ctx.Err()
 		}
-		primaryKindStr := transportName(legFamily(primaryKind))
-		d.mu.RLock()
-		stillCurrent := d.streamLocked(primaryKind) == primary
-		d.mu.RUnlock()
-		if stillCurrent {
-			logx.Warnf("[DualStream] SendMessage primary %s 失败, 尝试 backup: nodeId=%.16s connId=%s err=%v",
-				primaryKindStr, d.NodeId(), d.ConnectionId(), err)
-			d.handleLegFailure(primaryKind, primary)
+		if primaryErr != nil {
+			d.handleSendFailure("primary", primaryKind, primary, primaryErr)
 		}
 
-		if backup != nil {
+		if backup != nil && !hedged {
 			retryErr := backup.SendMessage(ctx, cloneMessage(sealedMessage))
 			if retryErr == nil {
 				d.setPreferred(backupKind)
@@ -357,14 +430,126 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 					d.handleLegFailure(backupKind, backup)
 				}
 			}
+			backupErr = retryErr
+		} else if backupErr != nil {
+			d.handleSendFailure("backup", backupKind, backup, backupErr)
 		}
 
 		if !d.hasReconnectChance() {
-			return err
+			if primaryErr != nil {
+				return primaryErr
+			}
+			return backupErr
 		}
 		logx.Warnf("[DualStream] 当前所有 leg 发送失败，等待 Relay 重连后重发同一 E2E 消息: nodeId=%.16s connId=%s",
 			d.NodeId(), d.ConnectionId())
 	}
+}
+
+type dualStreamSendResult struct {
+	kind streamTransport
+	err  error
+}
+
+func (d *DualStream) sendWithKCPGoodputBudget(
+	ctx context.Context,
+	message *network.Message,
+	messageID []byte,
+	payloadBytes int,
+	primaryKind streamTransport,
+	primary network.Stream,
+	backupKind streamTransport,
+	backup network.Stream,
+) (streamTransport, error, error, bool) {
+	if primary == nil {
+		return streamTransportUnknown, errors.New("stream closed"), nil, false
+	}
+	d.mu.RLock()
+	qualityPolicy := d.kcpSendQuality
+	d.mu.RUnlock()
+	qualityBudget, qualityEnabled := qualityPolicy.budget(payloadBytes)
+	if message != nil && message.Header != nil && message.Header.RouteName == KeepAliveRoute {
+		qualityEnabled = false
+	}
+	if backup == nil || legFamily(primaryKind) != streamTransportKCP ||
+		legFamily(backupKind) != streamTransportTCP || len(messageID) == 0 || !qualityEnabled {
+		err := primary.SendMessage(ctx, cloneMessage(message))
+		if err == nil {
+			return primaryKind, nil, nil, false
+		}
+		return streamTransportUnknown, err, nil, false
+	}
+
+	sendContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan dualStreamSendResult, 2)
+	send := func(kind streamTransport, stream network.Stream) {
+		results <- dualStreamSendResult{
+			kind: kind,
+			err:  stream.SendMessage(sendContext, cloneMessage(message)),
+		}
+	}
+	go send(primaryKind, primary)
+
+	timer := time.NewTimer(qualityBudget)
+	defer timer.Stop()
+	select {
+	case result := <-results:
+		if result.err == nil {
+			return result.kind, nil, nil, false
+		}
+		return streamTransportUnknown, result.err, nil, false
+	case <-timer.C:
+		if err := ctx.Err(); err != nil {
+			return streamTransportUnknown, err, nil, false
+		}
+	case <-ctx.Done():
+		return streamTransportUnknown, ctx.Err(), nil, false
+	}
+
+	// 这是质量降级而不是存活故障：保留 KCP leg 与其在途发送，仅把后续流量稳定切到 TCP。
+	// 两条发送共享的子 context 只在一条成功或调用方取消后停止另一条；该内部取消绝不能
+	// 冒充 leg failure，因此 loser 的结果不会离开本函数进入 handleLegFailure。
+	d.setPreferred(backupKind)
+	go send(backupKind, backup)
+	var primaryErr error
+	var backupErr error
+	for completed := 0; completed < 2; completed++ {
+		select {
+		case result := <-results:
+			if result.err == nil {
+				return result.kind, primaryErr, backupErr, true
+			}
+			if result.kind == primaryKind {
+				primaryErr = result.err
+			} else {
+				backupErr = result.err
+			}
+		case <-ctx.Done():
+			return streamTransportUnknown, ctx.Err(), backupErr, true
+		}
+	}
+	return streamTransportUnknown, primaryErr, backupErr, true
+}
+
+func (d *DualStream) handleSendFailure(role string, kind streamTransport, stream network.Stream, err error) {
+	if stream == nil || err == nil {
+		return
+	}
+	d.mu.RLock()
+	stillCurrent := d.streamLocked(kind) == stream
+	d.mu.RUnlock()
+	if !stillCurrent {
+		return
+	}
+	if role == "backup" {
+		logx.Warnf("[DualStream] SendMessage backup %s 也失败: nodeId=%.16s connId=%s err=%v",
+			transportName(legFamily(kind)), d.NodeId(), d.ConnectionId(), err)
+	} else {
+		logx.Warnf("[DualStream] SendMessage primary %s 失败, 尝试 backup: nodeId=%.16s connId=%s err=%v",
+			transportName(legFamily(kind)), d.NodeId(), d.ConnectionId(), err)
+	}
+	d.handleLegFailure(kind, stream)
 }
 
 func (d *DualStream) SendMessageAwaitAck(ctx context.Context, message *network.Message) error {
@@ -399,6 +584,12 @@ func (d *DualStream) SendMessageAwaitAck(ctx context.Context, message *network.M
 	// Noise hello 不会跨 leg 越过尚未发布到 Server 应用层的公钥首帧。
 	d.setPreferred(primaryKind)
 	return nil
+}
+
+func (d *DualStream) SetOutboundRecordObserver(observer network.OutboundRecordObserver) {
+	d.mu.Lock()
+	d.recordObserver = observer
+	d.mu.Unlock()
 }
 
 func (d *DualStream) NodeId() string {
@@ -441,6 +632,33 @@ func (d *DualStream) ConnectionId() string {
 		}
 	}
 	return ""
+}
+
+// LatestReceiveTime 返回所有现役物理 leg 中最新的收帧时间。
+// 零值表示当前 leg 无法提供物理接收活跃度，调用方不得据此判定超时。
+func (d *DualStream) LatestReceiveTime() time.Time {
+	d.mu.RLock()
+	streams := make([]network.Stream, 0, len(d.legs))
+	for _, entry := range d.legs {
+		if entry != nil && entry.stream != nil {
+			streams = append(streams, entry.stream)
+		}
+	}
+	d.mu.RUnlock()
+
+	var latest time.Time
+	for _, stream := range streams {
+		var receivedAt time.Time
+		if activity, ok := stream.(interface{ LatestReceiveTime() time.Time }); ok {
+			receivedAt = activity.LatestReceiveTime()
+		} else if tcpStream := tcpStreamFromStream(stream); tcpStream != nil {
+			receivedAt = tcpStream.LatestReceiveTime()
+		}
+		if receivedAt.After(latest) {
+			latest = receivedAt
+		}
+	}
+	return latest
 }
 
 func (d *DualStream) SetCryptoSuite(suite network.EncrypSuite) {
@@ -1048,6 +1266,7 @@ func (d *DualStream) runReconnect(id streamTransport, dial streamReconnectDialer
 		stream, err := dial(d.ctx)
 		if err == nil && stream != nil {
 			if attachErr := d.attachWithID(id, family, stream); attachErr == nil {
+				d.setPreferred(id)
 				logx.Infof("[DualStream] %s 重连成功: nodeId=%.16s connId=%s leg=%s 第%d次尝试",
 					kindStr, d.nodeId, d.connectionId, id, attempt)
 				return
@@ -1130,9 +1349,8 @@ func (d *DualStream) setPreferred(kind streamTransport) {
 
 // startKeepAlive 启动 DualStream 级统一心跳：每 900ms 经 SendMessage 发一帧 /ping。
 // SendMessage 只走当前 preferred leg（失败才切 backup 并触发 handleLegFailure），
-// 因此心跳始终只在数据 leg 上发、standby 全程静默 —— 这正是 relay 跨中继桥接保持
-// active leg 稳定、不被 standby 心跳翻动而劈裂下行帧的前提。failover 后 preferred 迁移，
-// 心跳自动跟随，role-swap 安全。仅 dual 模式调用一次；单 leg 路径仍各自 keepLive。
+// 因此心跳与业务帧使用同一主备状态；failover 后 preferred 迁移，心跳自动跟随。
+// 仅 dual 模式调用一次；单 leg 路径仍各自 keepLive。
 func (d *DualStream) startKeepAlive() {
 	go func() {
 		ticker := time.NewTicker(900 * time.Millisecond)
@@ -1268,6 +1486,19 @@ func applyIdentity(stream network.Stream, nodeId, connectionId string) bool {
 // 在握手阶段把 nodeId / connectionId 注入到任意 network.Stream 实现里。
 func SetStreamIdentity(stream network.Stream, nodeId, connectionId string) bool {
 	return applyIdentity(stream, nodeId, connectionId)
+}
+
+// SetOutboundRecordObserver 安装逻辑流级的 Seal 观察器。观察器只在逻辑消息首次 Seal 时调用，
+// KCP/TCP 重试复用同一密文，不会形成重复计量。
+func SetOutboundRecordObserver(stream network.Stream, observer network.OutboundRecordObserver) bool {
+	setter, ok := stream.(interface {
+		SetOutboundRecordObserver(network.OutboundRecordObserver)
+	})
+	if !ok {
+		return false
+	}
+	setter.SetOutboundRecordObserver(observer)
+	return true
 }
 
 // EnableReconnectSurvival 在已完成注册或端到端 Noise 握手的流上启用透明 Relay

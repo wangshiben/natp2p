@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -51,6 +52,83 @@ func TestExportLoadPrivateKey_RoundTrip(t *testing.T) {
 	// 对称性：再次导出应当得到相同的 hex
 	if hexStr != restored.ExportPrivateKeyHex() {
 		t.Fatal("再次导出私钥与首次不一致")
+	}
+}
+
+func TestLoadOrCreatePrivateKeyFileConcurrentStableIdentity(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "identities", "relay.key")
+	const workers = 32
+	keys := make([]string, workers)
+	errorsByWorker := make([]error, workers)
+	var waitGroup sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		waitGroup.Add(1)
+		go func(index int) {
+			defer waitGroup.Done()
+			privateKey, err := LoadOrCreatePrivateKeyFile(keyPath)
+			errorsByWorker[index] = err
+			if err == nil {
+				keys[index] = crypoto.GetPrivKeyStr(privateKey)
+			}
+		}(worker)
+	}
+	waitGroup.Wait()
+	for worker, err := range errorsByWorker {
+		if err != nil {
+			t.Fatalf("worker %d: %v", worker, err)
+		}
+		if keys[worker] != keys[0] {
+			t.Fatalf("worker %d returned a different Relay identity", worker)
+		}
+	}
+	restarted, err := LoadOrCreatePrivateKeyFile(keyPath)
+	if err != nil {
+		t.Fatalf("restart load: %v", err)
+	}
+	if crypoto.GetPrivKeyStr(restarted) != keys[0] {
+		t.Fatal("restart did not reuse the persisted Relay identity")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat identity: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("identity permissions = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestLoadOrCreatePrivateKeyFileCorruptFailsClosed(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "relay.key")
+	if err := os.WriteFile(keyPath, []byte("corrupt-identity"), 0o600); err != nil {
+		t.Fatalf("seed corrupt identity: %v", err)
+	}
+	if _, err := LoadOrCreatePrivateKeyFile(keyPath); err == nil {
+		t.Fatal("corrupt persisted identity must fail closed")
+	}
+	contents, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read corrupt identity: %v", err)
+	}
+	if string(contents) != "corrupt-identity" {
+		t.Fatal("corrupt identity was overwritten")
+	}
+}
+
+func TestLoadPrivateKeyFromFileAcceptsRawP256Identity(t *testing.T) {
+	privateKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatalf("生成测试身份失败: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "raw-identity.key")
+	if err := os.WriteFile(keyPath, privateKey.Bytes(), 0o600); err != nil {
+		t.Fatalf("写入原始身份失败: %v", err)
+	}
+	loaded, err := LoadPrivateKeyFromFile(keyPath)
+	if err != nil {
+		t.Fatalf("加载原始身份失败: %v", err)
+	}
+	if crypoto.GetPrivKeyStr(loaded) != crypoto.GetPrivKeyStr(privateKey) {
+		t.Fatal("原始身份加载后发生变化")
 	}
 }
 

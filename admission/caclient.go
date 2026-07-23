@@ -25,9 +25,54 @@ type CAClient struct {
 	baseURL string
 	http    *http.Client
 
-	mu     sync.RWMutex
-	caPub  *ecdsa.PublicKey
-	issuer string
+	mu         sync.RWMutex
+	caPub      *ecdsa.PublicKey
+	issuer     string
+	issueToken string
+	adminToken string
+}
+
+// SetIssueBearerToken configures the role-scoped credential used only for
+// certificate enrollment. It is never attached to settlement requests.
+func (c *CAClient) SetIssueBearerToken(token string) error {
+	if err := ValidateBearerToken(token); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.issueToken = token
+	c.mu.Unlock()
+	return nil
+}
+
+// SetIssueBearerTokenFile loads the enrollment credential from a private
+// file, keeping it out of command lines and generated Compose documents.
+func (c *CAClient) SetIssueBearerTokenFile(filename string) error {
+	token, err := LoadBearerTokenFile(filename)
+	if err != nil {
+		return err
+	}
+	return c.SetIssueBearerToken(token)
+}
+
+// SetAdminBearerToken configures the credential for explicit administrative
+// mutations such as /credit.
+func (c *CAClient) SetAdminBearerToken(token string) error {
+	if err := ValidateBearerToken(token); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.adminToken = token
+	c.mu.Unlock()
+	return nil
+}
+
+// SetAdminBearerTokenFile loads the administrative credential from disk.
+func (c *CAClient) SetAdminBearerTokenFile(filename string) error {
+	token, err := LoadBearerTokenFile(filename)
+	if err != nil {
+		return err
+	}
+	return c.SetAdminBearerToken(token)
 }
 
 // NewCAClient 创建一个指向 baseURL（如 "http://203.0.113.10:9000"）的 CA 客户端。
@@ -113,6 +158,7 @@ func (c *CAClient) Issue(ctx context.Context, reqBody IssueRequest) (*SignedCert
 		return nil, fmt.Errorf("admission: 构造 /issue 请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req, PathIssue)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("admission: 请求 CA /issue 失败: %w", err)
@@ -144,6 +190,20 @@ func (c *CAClient) Settle(ctx context.Context, req SettleRequest) (*SettleRespon
 	}
 	if out.Error != "" {
 		return nil, fmt.Errorf("admission: CA 结算失败: %s", out.Error)
+	}
+	return &out, nil
+}
+
+// SettleVoucher submits a canonical double-signed cumulative voucher to the
+// CA. When the CA rejects it, the response is returned together with the error
+// so callers can distinguish retryable conditions from terminal rejections.
+func (c *CAClient) SettleVoucher(ctx context.Context, req VoucherSettleRequest) (*VoucherSettleResponse, error) {
+	var out VoucherSettleResponse
+	if err := c.postJSON(ctx, PathVoucherSettle, req, &out); err != nil {
+		return nil, err
+	}
+	if out.Error != "" {
+		return &out, fmt.Errorf("admission: CA 双签凭证结算失败: %s", out.Error)
 	}
 	return &out, nil
 }
@@ -184,6 +244,7 @@ func (c *CAClient) postJSON(ctx context.Context, path string, body any, out any)
 		return fmt.Errorf("admission: 构造 %s 请求失败: %w", path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req, path)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("admission: 请求 %s 失败: %w", path, err)
@@ -197,4 +258,19 @@ func (c *CAClient) postJSON(ctx context.Context, path string, body any, out any)
 		return fmt.Errorf("admission: 解析 %s 应答失败 (status=%d body=%s): %w", path, resp.StatusCode, string(respBody), err)
 	}
 	return nil
+}
+
+func (c *CAClient) authorize(request *http.Request, path string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	token := ""
+	switch path {
+	case PathIssue:
+		token = c.issueToken
+	case PathCredit:
+		token = c.adminToken
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 }

@@ -81,9 +81,9 @@ func CanonicalE2EAAD(header *Header) ([]byte, error) {
 	if header == nil {
 		return nil, errors.New("network: E2E message header is nil")
 	}
-	const domain = "BNFS/E2E-MESSAGE-AAD/V2"
+	const domain = "BNFS/E2E-MESSAGE-AAD/V3"
 	fields := []string{header.RouteName, header.NodeId, header.ConnectionId}
-	total := len(domain) + 1
+	total := len(domain) + 1 + len(header.BillingSessionID) + 16
 	for _, field := range fields {
 		if len(field) > int(^uint16(0)) {
 			return nil, errors.New("network: E2E AAD field is too long")
@@ -99,5 +99,11 @@ func CanonicalE2EAAD(header *Header) ([]byte, error) {
 		aad = append(aad, length[:]...)
 		aad = append(aad, field...)
 	}
+	aad = append(aad, header.BillingSessionID[:]...)
+	var number [8]byte
+	binary.BigEndian.PutUint64(number[:], header.BillingSequence)
+	aad = append(aad, number[:]...)
+	binary.BigEndian.PutUint64(number[:], header.BillingBytes)
+	aad = append(aad, number[:]...)
 	return aad, nil
 }

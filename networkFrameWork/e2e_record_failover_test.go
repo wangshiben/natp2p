@@ -131,6 +131,55 @@ type observingE2ELeg struct {
 	cryptoInstalls int
 }
 
+type blockingE2ELeg struct {
+	*observingE2ELeg
+	started      chan struct{}
+	canceled     chan struct{}
+	startOnce    sync.Once
+	canceledOnce sync.Once
+}
+
+func newBlockingE2ELeg() *blockingE2ELeg {
+	return &blockingE2ELeg{
+		observingE2ELeg: newObservingE2ELeg(nil),
+		started:         make(chan struct{}),
+		canceled:        make(chan struct{}),
+	}
+}
+
+func (leg *blockingE2ELeg) SendMessage(ctx context.Context, message *network.Message) error {
+	leg.mu.Lock()
+	leg.sentPayloads = append(leg.sentPayloads, append([]byte(nil), message.Payload...))
+	leg.mu.Unlock()
+	leg.startOnce.Do(func() { close(leg.started) })
+	<-ctx.Done()
+	leg.canceledOnce.Do(func() { close(leg.canceled) })
+	return ctx.Err()
+}
+
+type delayedE2ELeg struct {
+	*observingE2ELeg
+	delay time.Duration
+}
+
+func newDelayedE2ELeg(delay time.Duration) *delayedE2ELeg {
+	return &delayedE2ELeg{observingE2ELeg: newObservingE2ELeg(nil), delay: delay}
+}
+
+func (leg *delayedE2ELeg) SendMessage(ctx context.Context, message *network.Message) error {
+	leg.mu.Lock()
+	leg.sentPayloads = append(leg.sentPayloads, append([]byte(nil), message.Payload...))
+	leg.mu.Unlock()
+	timer := time.NewTimer(leg.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return leg.sendErr
+	}
+}
+
 func newObservingE2ELeg(sendErr error) *observingE2ELeg {
 	return &observingE2ELeg{
 		nodeID:       "e2e-test-peer",
@@ -252,6 +301,295 @@ func TestDualStreamKCPToTCPFailoverSealsOnce(t *testing.T) {
 	}
 	if dual.preferredTransport() != streamTransportTCP {
 		t.Fatalf("TCP should become preferred after KCP failure, got %s", dual.preferredTransport())
+	}
+}
+
+func TestDualStreamSlowKCPHedgesToTCPWithoutClosingKCP(t *testing.T) {
+	suite := &countingE2ESuite{}
+	kcpLeg := newBlockingE2ELeg()
+	tcpLeg := newObservingE2ELeg(nil)
+	dual := newDualStream("e2e-test-peer", "00000000-0000-0000-0000-000000000001")
+	dual.kcpSendQuality = kcpSendQualityPolicy{
+		minimumPayloadBytes:       64 * 1024,
+		minimumGoodputBytesPerSec: 1024 * 1024 * 1024,
+		startupBudget:             20 * time.Millisecond,
+	}
+	t.Cleanup(func() { _ = dual.Close() })
+
+	if err := dual.attach(streamTransportKCP, kcpLeg); err != nil {
+		t.Fatalf("attach KCP leg: %v", err)
+	}
+	if err := dual.attach(streamTransportTCP, tcpLeg); err != nil {
+		t.Fatalf("attach TCP leg: %v", err)
+	}
+	dual.SetCryptoSuite(suite)
+	observedRecords := 0
+	dual.SetOutboundRecordObserver(func(_ *network.Message, messageID []byte) error {
+		observedRecords++
+		if len(messageID) == 0 {
+			t.Fatal("billing observer received an empty E2E message ID")
+		}
+		return nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	payload := bytes.Repeat([]byte("h"), 64*1024)
+	message := newE2ETestMessage(payload)
+	message.Header.BillingSequence = 1
+	message.Header.BillingBytes = uint64(len(payload))
+	message.Header.BillingSessionID[0] = 1
+	if err := dual.SendMessage(ctx, message); err != nil {
+		t.Fatalf("hedged send: %v", err)
+	}
+	select {
+	case <-kcpLeg.canceled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("losing KCP send did not observe the internal hedge cancellation")
+	}
+	if dual.preferredTransport() != streamTransportTCP {
+		t.Fatalf("TCP should become preferred after quality hedge, got %s", dual.preferredTransport())
+	}
+	select {
+	case <-kcpLeg.closed:
+		t.Fatal("quality demotion closed a live KCP leg")
+	default:
+	}
+	dual.mu.RLock()
+	kcpStillAttached := dual.streamLocked(streamTransportKCP) == kcpLeg
+	dual.mu.RUnlock()
+	if !kcpStillAttached {
+		t.Fatal("quality demotion detached the KCP leg")
+	}
+
+	if err := dual.SendMessage(ctx, newE2ETestMessage([]byte("stay on TCP"))); err != nil {
+		t.Fatalf("preferred TCP send: %v", err)
+	}
+	kcpPayloads, _ := kcpLeg.snapshot()
+	tcpPayloads, _ := tcpLeg.snapshot()
+	if len(kcpPayloads) != 1 || len(tcpPayloads) != 2 {
+		t.Fatalf("send attempts after demotion: KCP=%d TCP=%d, want 1/2", len(kcpPayloads), len(tcpPayloads))
+	}
+	if !bytes.Equal(kcpPayloads[0], tcpPayloads[0]) {
+		t.Fatal("quality hedge did not reuse the same sealed E2E record")
+	}
+	if observedRecords != 1 {
+		t.Fatalf("quality hedge observed %d billable records, want exactly 1", observedRecords)
+	}
+	sealCalls, _ := suite.counts()
+	if sealCalls != 2 {
+		t.Fatalf("logical sends sealed %d times, want 2", sealCalls)
+	}
+}
+
+func TestKCPGoodputBudgetScalesWithPayload(t *testing.T) {
+	policy := defaultKCPSendQualityPolicy()
+	if _, enabled := policy.budget(64*1024 - 1); enabled {
+		t.Fatal("sub-threshold control payload unexpectedly received a KCP quality budget")
+	}
+	first, enabled := policy.budget(64 * 1024)
+	if !enabled {
+		t.Fatal("64 KiB data payload did not receive a KCP quality budget")
+	}
+	second, enabled := policy.budget(128 * 1024)
+	if !enabled {
+		t.Fatal("128 KiB data payload did not receive a KCP quality budget")
+	}
+	if first != 2*time.Second+time.Second/16 {
+		t.Fatalf("64 KiB quality budget=%v, want %v", first, 2*time.Second+time.Second/16)
+	}
+	if second-first != time.Second/16 {
+		t.Fatalf("quality budget did not scale at 1 MiB/s: first=%v second=%v", first, second)
+	}
+}
+
+func TestDualStreamKCPGoodputBudgetDoesNotHedgeSmallMessages(t *testing.T) {
+	suite := &countingE2ESuite{}
+	kcpLeg := newBlockingE2ELeg()
+	tcpLeg := newObservingE2ELeg(nil)
+	dual := newDualStream("e2e-test-peer", "00000000-0000-0000-0000-000000000001")
+	dual.kcpSendQuality = kcpSendQualityPolicy{
+		minimumPayloadBytes:       64 * 1024,
+		minimumGoodputBytesPerSec: 1024 * 1024 * 1024,
+		startupBudget:             time.Millisecond,
+	}
+	t.Cleanup(func() { _ = dual.Close() })
+	if err := dual.attach(streamTransportKCP, kcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attach(streamTransportTCP, tcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	dual.SetCryptoSuite(suite)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	message := newE2ETestMessage([]byte("small control message"))
+	message.Header.RouteName = KeepAliveRoute
+	err := dual.SendMessage(ctx, message)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("small message send error=%v, want caller deadline", err)
+	}
+	select {
+	case <-kcpLeg.canceled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("KCP send did not observe caller cancellation")
+	}
+	if payloads, _ := tcpLeg.snapshot(); len(payloads) != 0 {
+		t.Fatalf("small control message was hedged to TCP %d times", len(payloads))
+	}
+	if dual.preferredTransport() != streamTransportKCP {
+		t.Fatalf("caller cancellation changed preferred leg to %s", dual.preferredTransport())
+	}
+	select {
+	case <-kcpLeg.closed:
+		t.Fatal("caller context cancellation closed the KCP leg")
+	default:
+	}
+}
+
+func TestDualStreamKCPGoodputBudgetRespectsEarlierCallerDeadline(t *testing.T) {
+	suite := &countingE2ESuite{}
+	kcpLeg := newBlockingE2ELeg()
+	tcpLeg := newObservingE2ELeg(nil)
+	dual := newDualStream("e2e-test-peer", "00000000-0000-0000-0000-000000000001")
+	dual.kcpSendQuality = kcpSendQualityPolicy{
+		minimumPayloadBytes:       64 * 1024,
+		minimumGoodputBytesPerSec: 1024 * 1024 * 1024,
+		startupBudget:             200 * time.Millisecond,
+	}
+	t.Cleanup(func() { _ = dual.Close() })
+	if err := dual.attach(streamTransportKCP, kcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attach(streamTransportTCP, tcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	dual.SetCryptoSuite(suite)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err := dual.SendMessage(ctx, newE2ETestMessage(bytes.Repeat([]byte("d"), 64*1024)))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("large message send error=%v, want caller deadline", err)
+	}
+	if payloads, _ := tcpLeg.snapshot(); len(payloads) != 0 {
+		t.Fatalf("caller deadline incorrectly started %d TCP hedges", len(payloads))
+	}
+	if dual.preferredTransport() != streamTransportKCP {
+		t.Fatalf("caller deadline changed preferred leg to %s", dual.preferredTransport())
+	}
+	select {
+	case <-kcpLeg.closed:
+		t.Fatal("caller deadline closed the healthy KCP leg")
+	default:
+	}
+}
+
+func TestDualStreamKCPGoodputBudgetAllowsShortJitter(t *testing.T) {
+	suite := &countingE2ESuite{}
+	kcpLeg := newDelayedE2ELeg(20 * time.Millisecond)
+	tcpLeg := newObservingE2ELeg(nil)
+	dual := newDualStream("e2e-test-peer", "00000000-0000-0000-0000-000000000001")
+	dual.kcpSendQuality = kcpSendQualityPolicy{
+		minimumPayloadBytes:       64 * 1024,
+		minimumGoodputBytesPerSec: 1024 * 1024 * 1024,
+		startupBudget:             75 * time.Millisecond,
+	}
+	t.Cleanup(func() { _ = dual.Close() })
+	if err := dual.attach(streamTransportKCP, kcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attach(streamTransportTCP, tcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	dual.SetCryptoSuite(suite)
+
+	if err := dual.SendMessage(context.Background(), newE2ETestMessage(bytes.Repeat([]byte("j"), 64*1024))); err != nil {
+		t.Fatal(err)
+	}
+	if payloads, _ := tcpLeg.snapshot(); len(payloads) != 0 {
+		t.Fatalf("short KCP jitter started %d TCP hedges", len(payloads))
+	}
+	if dual.preferredTransport() != streamTransportKCP {
+		t.Fatalf("short KCP jitter changed preferred leg to %s", dual.preferredTransport())
+	}
+}
+
+func TestDualStreamKCPGoodputBudgetRequiresDeduplicatedE2ERecord(t *testing.T) {
+	kcpLeg := newBlockingE2ELeg()
+	tcpLeg := newObservingE2ELeg(nil)
+	dual := newDualStream("e2e-test-peer", "00000000-0000-0000-0000-000000000001")
+	dual.kcpSendQuality = kcpSendQualityPolicy{
+		minimumPayloadBytes:       64 * 1024,
+		minimumGoodputBytesPerSec: 1024 * 1024 * 1024,
+		startupBudget:             time.Millisecond,
+	}
+	t.Cleanup(func() { _ = dual.Close() })
+	if err := dual.attach(streamTransportKCP, kcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attach(streamTransportTCP, tcpLeg); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err := dual.SendMessage(ctx, newE2ETestMessage(bytes.Repeat([]byte("u"), 64*1024)))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unsealed message send error=%v, want caller deadline", err)
+	}
+	if payloads, _ := tcpLeg.snapshot(); len(payloads) != 0 {
+		t.Fatalf("unsealed message was unsafely duplicated over TCP %d times", len(payloads))
+	}
+	if dual.preferredTransport() != streamTransportKCP {
+		t.Fatalf("unsealed message changed preferred leg to %s", dual.preferredTransport())
+	}
+}
+
+func TestDualStreamKCPGoodputBudgetKeepsTCPPreferredWhenKCPFinishesFirst(t *testing.T) {
+	suite := &countingE2ESuite{}
+	kcpLeg := newDelayedE2ELeg(25 * time.Millisecond)
+	tcpLeg := newBlockingE2ELeg()
+	dual := newDualStream("e2e-test-peer", "00000000-0000-0000-0000-000000000001")
+	dual.kcpSendQuality = kcpSendQualityPolicy{
+		minimumPayloadBytes:       64 * 1024,
+		minimumGoodputBytesPerSec: 1024 * 1024 * 1024,
+		startupBudget:             10 * time.Millisecond,
+	}
+	t.Cleanup(func() { _ = dual.Close() })
+	if err := dual.attach(streamTransportKCP, kcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attach(streamTransportTCP, tcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	dual.SetCryptoSuite(suite)
+
+	started := time.Now()
+	if err := dual.SendMessage(context.Background(), newE2ETestMessage(bytes.Repeat([]byte("q"), 64*1024))); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("KCP completed after its budget but blocked behind the TCP hedge for %v", elapsed)
+	}
+	select {
+	case <-tcpLeg.canceled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("blocked TCP loser did not observe internal cancellation")
+	}
+	if dual.preferredTransport() != streamTransportTCP {
+		t.Fatalf("late KCP completion restored preferred leg to %s", dual.preferredTransport())
+	}
+	kcpPayloads, _ := kcpLeg.snapshot()
+	tcpPayloads, _ := tcpLeg.snapshot()
+	if len(kcpPayloads) != 1 || len(tcpPayloads) != 1 || !bytes.Equal(kcpPayloads[0], tcpPayloads[0]) {
+		t.Fatalf("late-KCP hedge attempts mismatch: KCP=%d TCP=%d", len(kcpPayloads), len(tcpPayloads))
+	}
+	select {
+	case <-tcpLeg.closed:
+		t.Fatal("internal hedge cancellation closed the healthy TCP leg")
+	default:
 	}
 }
 

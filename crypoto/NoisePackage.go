@@ -581,6 +581,43 @@ func (t *NoiseCrypto) DecryptWithMessageIDAndAAD(record, externalAAD []byte) ([]
 	return plaintext, messageID, true, nil
 }
 
+// E2ERecordMetadata 是 Relay 无需解密即可读取的稳定记录元数据。它只解析公开头部；
+// 记录的真实性仍由通信端的 AEAD 校验和随后形成的 NAT/Relay 双签凭证共同保证。
+type E2ERecordMetadata struct {
+	MessageID      []byte
+	PlaintextBytes uint64
+	Direction      byte
+}
+
+func InspectE2ERecord(record []byte) (E2ERecordMetadata, error) {
+	if len(record) < e2eRecordHeaderSize+16 {
+		return E2ERecordMetadata{}, errors.New("noise E2E: record is too short")
+	}
+	header := record[:e2eRecordHeaderSize]
+	if !bytes.Equal(header[:8], []byte(e2eRecordMagic)) ||
+		header[8] != noiseProtocolVersion || header[9] != noiseSuiteID || header[11] != 0 {
+		return E2ERecordMetadata{}, errors.New("noise E2E: unsupported record header")
+	}
+	epoch := binary.BigEndian.Uint32(header[12:16])
+	sequence := binary.BigEndian.Uint64(header[16:24])
+	if epoch == 0 || sequence == 0 || sequence > noise.MaxNonce {
+		return E2ERecordMetadata{}, errors.New("noise E2E: invalid record epoch or sequence")
+	}
+	plaintextLength := binary.BigEndian.Uint64(header[56:64])
+	if plaintextLength > uint64(len(record)) || plaintextLength+e2eRecordHeaderSize+16 != uint64(len(record)) {
+		return E2ERecordMetadata{}, errors.New("noise E2E: record length mismatch")
+	}
+	messageID := make([]byte, e2eMessageIDSize)
+	copy(messageID[:32], header[24:56])
+	binary.BigEndian.PutUint32(messageID[32:36], epoch)
+	binary.BigEndian.PutUint64(messageID[36:44], sequence)
+	return E2ERecordMetadata{
+		MessageID:      messageID,
+		PlaintextBytes: plaintextLength,
+		Direction:      header[10],
+	}, nil
+}
+
 func (t *NoiseCrypto) newMessageIDLocked(now time.Time) []byte {
 	if t.sendEpoch == 0 {
 		t.sendEpoch = 1

@@ -1,0 +1,128 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+  createSerialHeartbeatPublisher,
+  generateEphemeralServerIdentity,
+  mixedPathNodes,
+  normalPartitionForRelay,
+  pendingTriggers,
+  publicTrigger,
+  selectRandomNormalRelay,
+} from "./mixed-path-controller.mjs";
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+test("mixed path starts with normal probe on malicious relay and malicious NAT on normal relay", () => {
+  assert.deepEqual(mixedPathNodes("malicious-relay", "relay03"), [
+    "mixed-path-probe",
+    "malicious-relay",
+    "relay03",
+    "malicious-natserver",
+  ]);
+  assert.deepEqual(mixedPathNodes("relay05", "relay05"), [
+    "mixed-path-probe",
+    "relay05",
+    "malicious-natserver",
+  ]);
+});
+
+test("random migration always chooses a different normal relay", () => {
+  assert.equal(selectRandomNormalRelay("relay03", [], () => 0), "relay04");
+  assert.equal(selectRandomNormalRelay("relay01", [], () => 4), "relay07");
+  assert.match(selectRandomNormalRelay("malicious-relay", [], () => 2), /^relay0[3-7]$/);
+  assert.equal(selectRandomNormalRelay("relay06", ["relay03"], () => 0), "relay04");
+});
+
+test("mixed-path NatServer identities rotate without exposing enrollment credentials", () => {
+  const first = generateEphemeralServerIdentity();
+  const second = generateEphemeralServerIdentity();
+  for (const identity of [first, second]) {
+    assert.match(identity.privateKey, /^[0-9a-f]{64}$/);
+    assert.match(identity.publicKey, /^04[0-9a-f]{128}$/);
+    assert.match(identity.nodeID, /^[0-9a-f]{64}$/);
+  }
+  assert.notEqual(first.nodeID, second.nodeID);
+  assert.deepEqual(Object.keys(first).sort(), ["nodeID", "privateKey", "publicKey"]);
+});
+
+test("normal Relay attachments map only to real control partitions", () => {
+  assert.equal(normalPartitionForRelay("relay03"), "control_partition_a");
+  assert.equal(normalPartitionForRelay("relay05"), "control_partition_a");
+  assert.equal(normalPartitionForRelay("relay06"), "control_partition_b");
+  assert.equal(normalPartitionForRelay("relay07"), "control_partition_b");
+  assert.equal(normalPartitionForRelay("relay01"), "");
+  assert.equal(normalPartitionForRelay("malicious-relay"), "");
+});
+
+test("mixed path trigger rejects untrusted fields and scenarios", () => {
+  assert.deepEqual(publicTrigger("relay", {
+    sequence: 9,
+    scenario: "relay_usage_inflation",
+    observedAt: "2026-07-20T12:00:00Z",
+    passed: true,
+    defense: "nat_meter_rejected_usage_inflation",
+    requestCount: 1,
+    httpStatuses: [409, 999],
+    nodeID: "secret",
+    path: "untrusted",
+  }), {
+    actor: "relay",
+    sequence: 9,
+    scenario: "relay_usage_inflation",
+    observedAt: "2026-07-20T12:00:00.000Z",
+    contained: true,
+    defense: "nat_meter_rejected_usage_inflation",
+    requestCount: 1,
+    httpStatuses: [409],
+  });
+  assert.equal(publicTrigger("natserver", { sequence: 1, scenario: "relay_usage_inflation" }), null);
+  assert.equal(publicTrigger("relay", { sequence: -1, scenario: "relay_usage_inflation" }), null);
+});
+
+test("mixed path queues every unseen random event in observation order", () => {
+  const events = {
+    natserver: [
+      { sequence: 3, scenario: "nat_signature_refusal", observedAt: "2026-07-20T12:00:03Z", passed: true },
+      { sequence: 2, scenario: "nat_same_sequence_fork", observedAt: "2026-07-20T12:00:02Z", passed: true },
+      { sequence: 1, scenario: "nat_stale_watermark", observedAt: "2026-07-20T12:00:01Z", passed: true },
+    ],
+    relay: [
+      { sequence: 2, scenario: "relay_request_replay", observedAt: "2026-07-20T12:00:04Z", passed: true },
+      { sequence: 1, scenario: "relay_usage_inflation", observedAt: "2026-07-20T12:00:00Z", passed: true },
+    ],
+  };
+  assert.deepEqual(
+    pendingTriggers(events, { natserver: 1, relay: 0 }).map(({ actor, sequence, scenario }) => ({ actor, sequence, scenario })),
+    [
+      { actor: "relay", sequence: 1, scenario: "relay_usage_inflation" },
+      { actor: "natserver", sequence: 2, scenario: "nat_same_sequence_fork" },
+      { actor: "natserver", sequence: 3, scenario: "nat_signature_refusal" },
+      { actor: "relay", sequence: 2, scenario: "relay_request_replay" },
+    ],
+  );
+});
+
+test("heartbeat publication continues independently and remains serialized", async () => {
+  const state = { heartbeatAt: "", generation: 0 };
+  const snapshots = [];
+  let active = 0;
+  let maximumActive = 0;
+  const publisher = createSerialHeartbeatPublisher(state, async (snapshot) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    await delay(12);
+    snapshots.push(snapshot);
+    active -= 1;
+  }, 5);
+
+  await publisher.publish();
+  state.generation = 1;
+  await delay(28);
+  await publisher.stop();
+
+  assert.equal(maximumActive, 1);
+  assert.ok(snapshots.length >= 3);
+  assert.equal(snapshots.at(-1).generation, 1);
+  assert.ok(snapshots.every((snapshot) => Number.isFinite(Date.parse(snapshot.heartbeatAt))));
+});

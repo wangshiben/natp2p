@@ -75,6 +75,9 @@ if (( build == 1 )); then
   printf '[local-chaos] 在宿主机构建静态测试二进制\n'
   if ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/nodeserver" "$ROOT_DIR/cmd/tunnel/nodeserver" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/caserver" "$ROOT_DIR/cmd/caserver" \
+    || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billingqueue-inspect" "$ROOT_DIR/cmd/billingqueue-inspect" \
+    || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billing-adversary-probe" "$ROOT_DIR/cmd/billing-adversary-probe" \
+    || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billing-adversary-node" "$ROOT_DIR/cmd/billing-adversary-node" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunserver" "$ROOT_DIR/cmd/tunnel/server" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunclient" "$ROOT_DIR/cmd/tunnel/client" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/httpfileserver" "$ROOT_DIR/cmd/tunnel/httpfileserver"; then

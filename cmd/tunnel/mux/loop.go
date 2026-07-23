@@ -9,7 +9,7 @@ import (
 
 // readLoop pulls frames off the P2P connection and dispatches them.
 func (s *Session) readLoop() {
-	defer s.Close()
+	defer s.shutdown(false)
 	for {
 		msg, err := s.conn.Receive(s.ctx)
 		if err != nil {
@@ -30,9 +30,7 @@ func (s *Session) readLoop() {
 			}
 			seq := binary.BigEndian.Uint64(msg.Payload[5:13])
 			data := msg.Payload[headerSeq:]
-			s.mu.Lock()
-			st := s.streams[id]
-			s.mu.Unlock()
+			st := s.inboundStream(id)
 			if st != nil {
 				st.deliver(seq, data)
 			}
@@ -41,28 +39,32 @@ func (s *Session) readLoop() {
 				continue // malformed
 			}
 			finalSeq := binary.BigEndian.Uint64(msg.Payload[5:13])
-			s.mu.Lock()
-			st := s.streams[id]
-			s.mu.Unlock()
+			st := s.inboundStream(id)
 			// 不立即从表中删除：收端可能还有 seq<finalSeq 的 DATA 在途/重排缓冲里。
 			// 由 deliverClose 在排空到 finalSeq 后再 closeLocal + removeStream。
 			if st != nil {
 				st.deliverClose(finalSeq)
 			}
+		case frameSessionClose:
+			return
 		}
 	}
 }
 
 // handleOpen registers a peer-opened stream and queues it for Accept.
 func (s *Session) handleOpen(id uint32) {
+	s.inboundStream(id)
+}
+
+func (s *Session) inboundStream(id uint32) *Stream {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return
+		return nil
 	}
-	if _, exists := s.streams[id]; exists {
+	if st := s.streams[id]; st != nil {
 		s.mu.Unlock()
-		return
+		return st
 	}
 	st := newStream(s, id)
 	s.streams[id] = st
@@ -72,6 +74,7 @@ func (s *Session) handleOpen(id uint32) {
 	case s.accept <- st:
 	case <-s.ctx.Done():
 	}
+	return st
 }
 
 // sendOpen sends an OPEN frame (no seq, no window — control frame, must precede DATA).
@@ -109,6 +112,12 @@ func (s *Session) sendClose(id uint32, finalSeq uint64) error {
 	binary.BigEndian.PutUint32(buf[1:5], id)
 	binary.BigEndian.PutUint64(buf[5:13], finalSeq)
 	return s.conn.Send(s.ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
+}
+
+func (s *Session) sendSessionClose(ctx context.Context) error {
+	buf := make([]byte, headerBase)
+	buf[0] = frameSessionClose
+	return s.conn.Send(ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
 }
 
 // removeStream drops a stream from the table.

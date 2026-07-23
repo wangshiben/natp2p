@@ -2,12 +2,16 @@ package networkFrameWork
 
 import (
 	"bnfs_p2p/logx"
+	"errors"
 	"fmt"
 	"github.com/xtaci/kcp-go/v5"
 	"net"
+	"sync"
 )
 
 const relayHandshakeConcurrency = 128
+
+var ErrRelayStarterClosed = errors.New("relay starter closed before startup completed")
 
 func dispatchRelayConnection(protocol string, connection net.Conn, slots chan struct{}, handler func(net.Conn) error) bool {
 	select {
@@ -30,14 +34,44 @@ func dispatchRelayConnection(protocol string, connection net.Conn, slots chan st
 
 // RelayStarter 中转服务启动器(公网服务器特有)
 type RelayStarter struct {
-	addr     string // 监听地址
-	netGroup *TransportCover
-	close    chan interface{}
+	addr        string // 监听地址
+	netGroup    *TransportCover
+	closeSignal chan struct{}
+	ready       chan struct{}
+	done        chan struct{}
+
+	startOnce sync.Once
+	closeOnce sync.Once
+	readyOnce sync.Once
+	doneOnce  sync.Once
+
+	lifecycleMu sync.RWMutex
+	startCalled bool
+	startErr    error
 }
 
 func (r *RelayStarter) StartListen() {
+	r.startOnce.Do(r.startListen)
+}
+
+func (r *RelayStarter) startListen() {
+	r.lifecycleMu.Lock()
+	r.startCalled = true
+	r.lifecycleMu.Unlock()
+	defer r.doneOnce.Do(func() { close(r.done) })
+
+	if r.isClosing() {
+		r.setStartError(ErrRelayStarterClosed)
+		return
+	}
 	tcpListener, err := net.Listen("tcp", r.addr)
 	if err != nil {
+		r.setStartError(fmt.Errorf("relay starter listen TCP %s: %w", r.addr, err))
+		return
+	}
+	defer tcpListener.Close()
+	if r.isClosing() {
+		r.setStartError(ErrRelayStarterClosed)
 		return
 	}
 	// 1. 通过密码和盐生成密钥
@@ -49,7 +83,12 @@ func (r *RelayStarter) StartListen() {
 	//}
 	kcplistener, err := kcp.ListenWithOptions(r.addr, nil, 1, 1)
 	if err != nil {
-		_ = tcpListener.Close()
+		r.setStartError(fmt.Errorf("relay starter listen KCP %s: %w", r.addr, err))
+		return
+	}
+	defer kcplistener.Close()
+	if r.isClosing() {
+		r.setStartError(ErrRelayStarterClosed)
 		return
 	}
 	tcpHandshakeSlots := make(chan struct{}, relayHandshakeConcurrency)
@@ -87,19 +126,60 @@ func (r *RelayStarter) StartListen() {
 			dispatchRelayConnection("KCP", kcpConn, kcpHandshakeSlots, r.netGroup.ListenTCPConnection)
 		}
 	}()
+	r.readyOnce.Do(func() { close(r.ready) })
 	fmt.Println("RelayStarter Start AT " + r.addr)
-	select {
-	case <-r.close:
-		tcpListener.Close()
-		kcplistener.Close()
-	}
-	defer func() {
-		recover()
-	}()
+	<-r.closeSignal
 }
 
 func (r *RelayStarter) Close() {
-	r.close <- struct{}{}
+	r.closeOnce.Do(func() { close(r.closeSignal) })
+
+	r.lifecycleMu.Lock()
+	startCalled := r.startCalled
+	if !startCalled && r.startErr == nil {
+		r.startErr = ErrRelayStarterClosed
+	}
+	r.lifecycleMu.Unlock()
+
+	if !startCalled {
+		r.doneOnce.Do(func() { close(r.done) })
+		return
+	}
+	<-r.done
+}
+
+func (r *RelayStarter) isClosing() bool {
+	select {
+	case <-r.closeSignal:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *RelayStarter) setStartError(err error) {
+	r.lifecycleMu.Lock()
+	if r.startErr == nil {
+		r.startErr = err
+	}
+	r.lifecycleMu.Unlock()
+}
+
+// Ready closes after both TCP and KCP listeners have bound successfully.
+func (r *RelayStarter) Ready() <-chan struct{} {
+	return r.ready
+}
+
+// Done closes after startup fails or all listeners have been released.
+func (r *RelayStarter) Done() <-chan struct{} {
+	return r.done
+}
+
+// StartError reports why startup failed. It is stable after Done closes before Ready.
+func (r *RelayStarter) StartError() error {
+	r.lifecycleMu.RLock()
+	defer r.lifecycleMu.RUnlock()
+	return r.startErr
 }
 
 // Cover 返回底层 TransportCover, 供 relayNode 安装 MissingGroupHandler / RegisterHook。
@@ -109,8 +189,10 @@ func (r *RelayStarter) Cover() *TransportCover {
 
 func NewRelayStarter(listenAddr string) *RelayStarter {
 	return &RelayStarter{
-		addr:     listenAddr,
-		netGroup: NewTransportCover(),
-		close:    make(chan interface{}),
+		addr:        listenAddr,
+		netGroup:    NewTransportCover(),
+		closeSignal: make(chan struct{}),
+		ready:       make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }

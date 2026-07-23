@@ -339,11 +339,9 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 	}
 
 	// dual 模式：所有 leg 都不自发心跳(noKeepAlive=true)，改由 DualStream 统一只在
-	// 当前 preferred leg 上发心跳（见 startKeepAlive）。原因：relay 跨中继桥接按「最近发字节的
-	// leg」决定回程 active leg；若 standby leg 也自发心跳，会把 active 翻到 standby，下一段
-	// peer→local 下行数据就被错路由到 standby，在 32KB 读边界处把一帧劈成两半 → 两条 leg 同时
-	// 解析失败 → 重连风暴。让心跳只走 preferred、standby 全程静默，active 就稳定在数据 leg 上；
-	// 主 leg 死后 failover 切换 preferred，心跳与 active 一起迁移，天然 role-swap 安全。
+	// 当前 preferred leg 上发心跳（见 startKeepAlive）。这样存活探测与业务发送使用同一
+	// 主备决策，主 leg 失败时由 SendMessage 原子重发并切换 preferred，standby 不会产生
+	// 无意义的并发探测流量。
 	tcpDialer := func(ctx context.Context) (network.Stream, error) {
 		message := cloneMessage(template)
 		markResumeLeg(message)
@@ -514,11 +512,8 @@ func tcpClientStream(FirstMessage *network.Message, tcpAddr, originalNodeId, con
 	return tcpClientStreamContext(context.Background(), FirstMessage, tcpAddr, originalNodeId, connectionId)
 }
 
-// tcpClientStreamContext 拨一条 TCP leg。可选 noKeepAlive=true 时不启动 keepLive 心跳，
-// 用于「双 TCP failover 的第二条 TCP」——它在 relay 桥接里是 silent standby:
-// 不发心跳 → relay 桥接的 active leg 不会被它的心跳往返翻动 → 下行数据不会被错路由到它、
-// 不会在 32KB 读边界处把一帧劈成两半造成两条 leg 同时损坏。主 leg 死后客户端 sendOrder
-// 自然切到它，届时它才开始发数据、成为 active。
+// tcpClientStreamContext 拨一条 TCP leg。可选 noKeepAlive=true 时不启动该物理 leg 自己的
+// keepLive；dual 模式由 DualStream 在 preferred leg 上统一探测并负责主备切换。
 func tcpClientStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAddr, originalNodeId, connectionId string, noKeepAlive ...bool) (network.Stream, error) {
 	handshakeCtx, cancel := context.WithTimeout(ctx, dialHandshakeTimeout)
 	defer cancel()

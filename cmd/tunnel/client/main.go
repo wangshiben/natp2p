@@ -20,8 +20,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"bnfs_p2p/admissioncli"
@@ -84,6 +86,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("创建节点失败: %v", err)
 	}
+	defer node.Close()
 
 	// tunnel client = client 角色：申请 client 证书并注入。-ca 为空则不启用。
 	if err := admissioncli.SetupNat(node, *caURL, admissioncli.RoleClient()); err != nil {
@@ -144,16 +147,15 @@ func main() {
 		log.Fatalf("监听 %s 失败: %v", *listen, err)
 	}
 	defer ln.Close()
+	shutdownSignals := make(chan os.Signal, 1)
+	signal.Notify(shutdownSignals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(shutdownSignals)
 
 	fmt.Printf("\n本地监听: %s\n", *listen)
 	fmt.Printf("在浏览器打开: http://%s\n", *listen)
 	fmt.Println("按 Ctrl+C 退出。")
 
-	// If the session dies, stop accepting.
-	go func() {
-		<-sess.Context().Done()
-		ln.Close()
-	}()
+	go shutdownTunnel(shutdownSignals, sess, ln)
 
 	for {
 		local, err := ln.Accept()
@@ -171,6 +173,22 @@ func main() {
 		}
 		go handleLocal(sess, local)
 	}
+}
+
+type closableTunnelSession interface {
+	Context() context.Context
+	Close() error
+}
+
+func shutdownTunnel(signals <-chan os.Signal, session closableTunnelSession, listener io.Closer) {
+	select {
+	case <-signals:
+		if err := session.Close(); err != nil {
+			log.Printf("发送隧道关闭通知失败: %v", err)
+		}
+	case <-session.Context().Done():
+	}
+	_ = listener.Close()
 }
 
 // handleLocal opens a sub-stream on the tunnel for one local TCP connection
@@ -285,6 +303,9 @@ func loadKey(path string) (*ecdh.PrivateKey, error) {
 	}
 	if _, err := os.Stat(path); err == nil {
 		return natnode.LoadPrivateKeyFromFile(path)
+	}
+	if strings.ContainsRune(path, os.PathSeparator) {
+		return natnode.LoadOrCreatePrivateKeyFile(path)
 	}
 	return natnode.LoadPrivateKeyFromHex(path)
 }

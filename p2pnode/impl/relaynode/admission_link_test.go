@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -358,11 +360,19 @@ func TestTerminateHostedConnection_NoGroup(t *testing.T) {
 	}
 }
 
-// TestConnDeposit_ReserveGatesConnection 验证连接保证金：enforce 下用 fakeCA 作 Verifier，
-// server 目标 + client/server 余额足→放行并各扣一笔；余额不足→拒绝建连；同一 connID 不重复扣。
+// TestConnDeposit_ReserveGatesConnection 保留历史测试名以兼容定向选择器，验证当前业务连接
+// 钩子只执行角色裁决：即使 Verifier 暴露旧 /reserve，server 目标也应直接放行，且不得调用
+// 旧端点或修改余额。
 func TestConnDeposit_ReserveGatesConnection(t *testing.T) {
 	ca := newFakeCA()
-	srv := httptest.NewServer(ca.handler())
+	legacyHandler := ca.handler()
+	var reserveHits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == admission.PathReserve {
+			atomic.AddInt64(&reserveHits, 1)
+		}
+		legacyHandler.ServeHTTP(w, r)
+	}))
 	defer srv.Close()
 	settler := admission.NewCAClient(srv.URL)
 
@@ -370,43 +380,30 @@ func TestConnDeposit_ReserveGatesConnection(t *testing.T) {
 	defer relay.Close()
 	relay.SetAdmission(&AdmissionConfig{Mode: AdmissionEnforce, Verifier: settler})
 
-	// 目标必须是 server 角色（否则先被角色边界拒）。
-	const clientPub = "beefbeef" // NodeID 由它派生
+	const (
+		clientPub            = "beefbeef"
+		initialClientBalance = int64(12 << 20)
+		initialServerBalance = int64(1 << 20)
+	)
 	clientID := networkFrameWork.NodeIDFromPubKeyHex(clientPub)
 	serverID := "server-target-node"
 	relay.accounts.putRole(serverID, admission.RoleServer)
-
-	// 余额不足：拒绝建连。
-	if err := relay.onBusinessConnect(serverID, clientPub, "conn-1"); err == nil {
-		t.Fatal("0 余额应拒绝建连(保证金不足)")
-	}
-
-	// 充足余额：放行并各扣一笔。
 	ca.mu.Lock()
-	ca.balances[clientID] = 12 << 20 // 12MB
-	ca.balances[serverID] = 1 << 20  // 1MB
+	ca.balances[clientID] = initialClientBalance
+	ca.balances[serverID] = initialServerBalance
 	ca.mu.Unlock()
-	if err := relay.onBusinessConnect(serverID, clientPub, "conn-2"); err != nil {
-		t.Fatalf("充足余额应放行: %v", err)
+
+	if err := relay.onBusinessConnect(serverID, clientPub, "conn-role-gate"); err != nil {
+		t.Fatalf("server 角色应通过业务边界，实际被拒绝: %v", err)
+	}
+	if hits := atomic.LoadInt64(&reserveHits); hits != 0 {
+		t.Fatalf("业务角色门不得调用已退役 /reserve，实际命中=%d", hits)
 	}
 	ca.mu.Lock()
 	cBal, sBal := ca.balances[clientID], ca.balances[serverID]
 	ca.mu.Unlock()
-	if cBal != 12<<20-connFeeClient {
-		t.Fatalf("client 应扣 %dB, 实际余 %dB", connFeeClient, cBal)
-	}
-	if sBal != 1<<20-connFeeServer {
-		t.Fatalf("server 应扣 %dB, 实际余 %dB", connFeeServer, sBal)
-	}
-
-	// 窗口内【不同 connID】的同一 (client,server) 对不重复扣（防重试风暴打空余额）。
-	if err := relay.onBusinessConnect(serverID, clientPub, "conn-DIFFERENT"); err != nil {
-		t.Fatalf("窗口内同对端应放行(不重复扣): %v", err)
-	}
-	ca.mu.Lock()
-	cBal2 := ca.balances[clientID]
-	ca.mu.Unlock()
-	if cBal2 != cBal {
-		t.Fatalf("窗口内同 (client,server) 对不应重复扣: 前 %dB 后 %dB", cBal, cBal2)
+	if cBal != initialClientBalance || sBal != initialServerBalance {
+		t.Fatalf("业务角色门不得扣款: client=%d (want %d), server=%d (want %d)",
+			cBal, initialClientBalance, sBal, initialServerBalance)
 	}
 }

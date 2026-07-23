@@ -5,10 +5,42 @@ import (
 	"bnfs_p2p/p2pnode/impl/natnode"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestRelayNodeUnregisterRemovesHostedIndexes(t *testing.T) {
+	relay, err := NewRelayNode(nil, "127.0.0.1:0", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("创建 RelayNode 失败: %v", err)
+	}
+	defer relay.Close()
+
+	nodeID := strings.Repeat("a", 64)
+	relay.onRegister(nodeID, "192.0.2.10:32000")
+	if len(relay.HostedNatNodes()) != 1 {
+		t.Fatalf("注册后托管节点数 = %d, want 1", len(relay.HostedNatNodes()))
+	}
+	relay.mu.RLock()
+	remoteAddr := relay.hostedNatAddr[nodeID]
+	relay.mu.RUnlock()
+	if remoteAddr == "" {
+		t.Fatal("注册后缺少托管来源地址")
+	}
+
+	relay.onUnregister(nodeID)
+	if len(relay.HostedNatNodes()) != 0 {
+		t.Fatalf("注销后托管节点数 = %d, want 0", len(relay.HostedNatNodes()))
+	}
+	relay.mu.RLock()
+	_, retained := relay.hostedNatAddr[nodeID]
+	relay.mu.RUnlock()
+	if retained {
+		t.Fatal("注销后仍保留托管来源地址")
+	}
+}
 
 // 端口分配：两台 relay 各监听一个本地端口。
 const (
@@ -24,8 +56,18 @@ func startRelay(t *testing.T, listen, public string) *RelayNode {
 		t.Fatalf("创建 RelayNode 失败: %v", err)
 	}
 	go rn.Start()
-	time.Sleep(300 * time.Millisecond)
-	return rn
+	select {
+	case <-rn.starter.Ready():
+		return rn
+	case <-rn.starter.Done():
+		startErr := rn.starter.StartError()
+		_ = rn.Close()
+		t.Fatalf("启动 RelayNode %s 失败: %v", listen, startErr)
+	case <-time.After(3 * time.Second):
+		_ = rn.Close()
+		t.Fatalf("等待 RelayNode %s 就绪超时", listen)
+	}
+	return nil
 }
 
 // TestRelayNode_CrossRelayBridge 验证跨中继查找 + 桥接 + 多轮端到端通信。

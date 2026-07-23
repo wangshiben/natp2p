@@ -170,6 +170,10 @@ func (s *StreamClient) SetCryptoSuite(suite network.EncrypSuite) {
 	s.stream.SetCryptoSuite(suite)
 }
 
+func (s *StreamClient) SetOutboundRecordObserver(observer network.OutboundRecordObserver) {
+	networkFrameWork.SetOutboundRecordObserver(s.stream, observer)
+}
+
 // ConnectNodeWithTargetRelay 通过指定公网 relay 连接到目标 node。
 //
 // 这是用户侧最常用的入口：设备2调用它，连到公网 relay；relay 再根据 nodeId 找到

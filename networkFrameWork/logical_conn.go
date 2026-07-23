@@ -202,8 +202,17 @@ func (lc *LogicalConn) Close() error {
 
 // --- net.Conn 其余方法：逻辑连接之上无独立地址/截止语义，安全占位 ---
 
-func (lc *LogicalConn) LocalAddr() net.Addr            { return bridgeMuxAddr{id: lc.id} }
-func (lc *LogicalConn) RemoteAddr() net.Addr           { return bridgeMuxAddr{id: lc.id} }
-func (lc *LogicalConn) SetDeadline(t time.Time) error      { return nil }
-func (lc *LogicalConn) SetReadDeadline(t time.Time) error  { return nil }
-func (lc *LogicalConn) SetWriteDeadline(t time.Time) error { return nil }
+func (lc *LogicalConn) LocalAddr() net.Addr  { return bridgeMuxAddr{id: lc.id} }
+func (lc *LogicalConn) RemoteAddr() net.Addr { return bridgeMuxAddr{id: lc.id} }
+func (lc *LogicalConn) SetDeadline(t time.Time) error {
+	return lc.SetWriteDeadline(t)
+}
+func (lc *LogicalConn) SetReadDeadline(time.Time) error { return nil }
+func (lc *LogicalConn) SetWriteDeadline(t time.Time) error {
+	for _, stream := range lc.snapshotLegs() {
+		if err := stream.SetWriteDeadline(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}

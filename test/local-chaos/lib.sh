@@ -160,6 +160,7 @@ launch_tunnel_server() {
   fi
   if [[ -n ${BNFS_CHAOS_NAT_KEY_DIR:-} ]]; then
     command+=" -key $BNFS_CHAOS_NAT_KEY_DIR/$service.key"
+    command+=" -billing-private-snapshot $BNFS_CHAOS_NAT_KEY_DIR/billing-meter.json"
   fi
   command+=" > '$inside_dir/${service}.log' 2>&1"
   dc exec -T -d "$service" sh -lc "$command"
@@ -177,7 +178,7 @@ stop_nat_process() {
   dc exec -T "$service" sh -lc "
     pkill -TERM -x '$process_name' >/dev/null 2>&1 || true
     attempt=0
-    while pgrep -x '$process_name' >/dev/null 2>&1 && [ \"\$attempt\" -lt 10 ]; do
+    while pgrep -x '$process_name' >/dev/null 2>&1 && [ \"\$attempt\" -lt 30 ]; do
       sleep 0.1
       attempt=\$((attempt + 1))
     done
@@ -261,11 +262,29 @@ large_probe_once() {
   [[ $rc -eq 0 && $sha_ok == yes ]]
 }
 
+write_transfer_record_atomic() {
+  local record_file=$1 timestamp=$2 transfer_id=$3 client=$4 ingress_relay=$5 server=$6
+  local requested_mib=$7 rc=$8 bytes=$9 seconds=${10} throughput=${11} sha_ok=${12}
+  local expected_sha=${13-} actual_sha=${14-} temporary=$1.tmp.$BASHPID
+
+  if ! printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$timestamp" "$transfer_id" "$client" "$ingress_relay" "$server" "$requested_mib" "$rc" \
+    "$bytes" "$seconds" "$throughput" "$sha_ok" "$expected_sha" "$actual_sha" > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! mv -f -- "$temporary" "$record_file"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
 random_transfer_once() {
 	local run_dir=$1 scenario=$2 server=$3 client=$4 ingress_relay=$5 listen_port=$6 transfer_id=$7 record_file=$8
 	local requested_mib_override=${9:-}
+	local attempt_deadline_epoch=${10:-}
 	local requested_mib expected_size expected_sha result actual_size=0 actual_sha= rc=0 sha_ok=no
-  local curl_seconds=
+  local curl_seconds= step_timeout
   local started_ns ended_ns elapsed throughput timestamp
   local inside_file=/tmp/bnfs-${client}-${transfer_id}.bin
   local error_file=$run_dir/transfer-errors/${client}-${transfer_id}.log
@@ -276,22 +295,41 @@ random_transfer_once() {
 	else
 		requested_mib=$(random_probe_size_mib) || return 1
 	fi
-  expected_size=$((requested_mib * 1024 * 1024))
-  expected_sha=$(dc exec -T "$server" curl -fsS --max-time 120 \
-    "http://127.0.0.1:8080/checksum?size_mb=$requested_mib" | tr -d '[:space:]') || rc=$?
-  [[ $expected_sha =~ ^[[:xdigit:]]{64}$ ]] || rc=1
-
+	if [[ -z $attempt_deadline_epoch ]]; then
+		attempt_deadline_epoch=$(( $(date +%s) + 900 ))
+	fi
+	[[ $attempt_deadline_epoch =~ ^[1-9][0-9]*$ ]] || return 1
   started_ns=$(date +%s%N)
-  if (( rc == 0 )); then
-    result=$(dc exec -T "$client" sh -lc \
-      "rm -f '$inside_file'; transfer_rc=0; transfer_seconds=\$(curl -fsS --max-time 900 -w '%{time_total}' -o '$inside_file' 'http://127.0.0.1:$listen_port/file?size_mb=$requested_mib') || transfer_rc=\$?; size=\$(stat -c %s '$inside_file' 2>/dev/null || printf 0); sha=\$(sha256sum '$inside_file' 2>/dev/null | awk '{print \$1}'); rm -f '$inside_file'; printf '%s\\t%s\\t%s\\n' \"\$size\" \"\$sha\" \"\$transfer_seconds\"; exit \"\$transfer_rc\"" \
-      2> "$error_file") || rc=$?
-    IFS=$'\t' read -r actual_size actual_sha curl_seconds <<< "$result"
-    [[ $actual_size =~ ^[0-9]+$ ]] || actual_size=0
-    if (( rc == 0 )) && [[ $actual_size == "$expected_size" && $actual_sha == "$expected_sha" ]]; then
-      sha_ok=yes
-    else
+	timestamp=$(date --iso-8601=seconds)
+	write_transfer_record_atomic "$record_file" "$timestamp" "$transfer_id" "$client" \
+		"$ingress_relay" "$server" "$requested_mib" 125 0 0.000000 0.000 not-run '' '' || return 1
+  expected_size=$((requested_mib * 1024 * 1024))
+  if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 120); then
+    expected_sha=$(dc exec -T "$server" curl -fsS --max-time "$step_timeout" \
+      "http://127.0.0.1:8080/checksum?size_mb=$requested_mib" | tr -d '[:space:]') || rc=$?
+    if (( rc == 0 )) && [[ ! $expected_sha =~ ^[[:xdigit:]]{64}$ ]]; then
       rc=1
+    fi
+  else
+    rc=28
+  fi
+
+  if (( rc == 0 )); then
+    if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 900); then
+      printf 'attempt_deadline_epoch=%s\ntransfer_timeout_seconds=%s\n' \
+        "$attempt_deadline_epoch" "$step_timeout" > "$error_file"
+      result=$(dc exec -T "$client" sh -lc \
+        "rm -f '$inside_file'; transfer_rc=0; transfer_seconds=\$(curl -fsS --max-time '$step_timeout' -w '%{time_total}' -o '$inside_file' 'http://127.0.0.1:$listen_port/file?size_mb=$requested_mib') || transfer_rc=\$?; size=\$(stat -c %s '$inside_file' 2>/dev/null || printf 0); sha=\$(sha256sum '$inside_file' 2>/dev/null | awk '{print \$1}'); rm -f '$inside_file'; printf '%s\\t%s\\t%s\\n' \"\$size\" \"\$sha\" \"\$transfer_seconds\"; exit \"\$transfer_rc\"" \
+        2>> "$error_file") || rc=$?
+      IFS=$'\t' read -r actual_size actual_sha curl_seconds <<< "$result"
+      [[ $actual_size =~ ^[0-9]+$ ]] || actual_size=0
+      if (( rc == 0 )) && [[ $actual_size == "$expected_size" && $actual_sha == "$expected_sha" ]]; then
+        sha_ok=yes
+      elif (( rc == 0 )); then
+        rc=1
+      fi
+    else
+      rc=28
     fi
   fi
   ended_ns=$(date +%s%N)
@@ -303,10 +341,14 @@ random_transfer_once() {
   throughput=$(LC_ALL=C awk -v b="${actual_size:-0}" -v s="$elapsed" \
     'BEGIN {rate = 0; if (s > 0) rate = b / 1048576 / s; printf "%.3f\n", rate}')
   timestamp=$(date --iso-8601=seconds)
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$timestamp" "$transfer_id" "$client" "$ingress_relay" "$server" "$requested_mib" "$rc" \
-    "${actual_size:-0}" "$elapsed" "$throughput" "$sha_ok" "$expected_sha" "$actual_sha" > "$record_file"
-  [[ $rc -eq 0 && $sha_ok == yes ]]
+  write_transfer_record_atomic "$record_file" "$timestamp" "$transfer_id" "$client" \
+    "$ingress_relay" "$server" "$requested_mib" "$rc" "${actual_size:-0}" "$elapsed" \
+    "$throughput" "$sha_ok" "$expected_sha" "$actual_sha" || return 1
+  if (( rc == 0 )) && [[ $sha_ok == yes ]]; then
+    return 0
+  fi
+  (( rc >= 1 && rc <= 255 )) || rc=1
+  return "$rc"
 }
 
 launch_tunnel_client() {
@@ -331,11 +373,14 @@ launch_tunnel_client() {
 
 wait_client_ready() {
   local service=$1 scenario=$2 timeout_seconds=${3:-45}
-  local client_log=$RUNTIME_DIR/$scenario/${service}.log
+  local client_log=$RUNTIME_DIR/$scenario/${service}.log deadline remaining
+  deadline=$((SECONDS + timeout_seconds))
   if ! wait_file_pattern "$client_log" '已建立隧道连接' "$timeout_seconds"; then
     return 1
   fi
-  wait_file_pattern "$client_log" '本地监听:' 10
+  remaining=$((deadline - SECONDS))
+  (( remaining > 0 )) || return 1
+  wait_file_pattern "$client_log" '本地监听:' "$remaining"
 }
 
 detect_client_entry_relay() {

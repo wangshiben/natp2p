@@ -210,6 +210,41 @@ func TestFrameRouteRegistryTombstoneTTLAndHardLimit(t *testing.T) {
 	}
 }
 
+func TestFrameRouteRegistryActivePairSurvivesLegacyTTLsAndContinues(t *testing.T) {
+	clock := time.Unix(500, 0)
+	routes := newFrameRouteRegistryWithLimits(90*time.Second, 4)
+	routes.now = func() time.Time { return clock }
+	relay := newLifecycleCarrier("relay", "")
+	client := newLifecycleCarrier("client", "conn-active")
+
+	relayEntry := bindLifecyclePairWithTotal(routes, 71, "conn-active", 81, 3, relay, client)
+	if relayEntry == nil || relayEntry.pair == nil {
+		t.Fatal("failed to bind active route pair")
+	}
+	clientEntry := relayEntry.pair.clientEntry
+	clock = clock.Add(3 * time.Minute)
+
+	if got := routes.relayGet(71); got != relayEntry {
+		t.Fatalf("active relay route expired across legacy TTLs: got=%p want=%p", got, relayEntry)
+	}
+	if got := routes.clientGet("conn-active", 81); got != clientEntry {
+		t.Fatalf("active client route expired across legacy TTLs: got=%p want=%p", got, clientEntry)
+	}
+	pair, ok := routes.bindPair(
+		71,
+		&frameRouteEntry{dest: client, dstID: 81},
+		clientRouteKey{connectionID: "conn-active", messageID: 81},
+		&frameRouteEntry{dest: relay, dstID: 71},
+		3,
+	)
+	if !ok || pair != relayEntry.pair {
+		t.Fatalf("active route could not continue after legacy TTLs: pair=%p want=%p ok=%v", pair, relayEntry.pair, ok)
+	}
+	if routes.pairCount != 1 || pair.completed {
+		t.Fatalf("active route state changed after continuation: pairs=%d completed=%v", routes.pairCount, pair.completed)
+	}
+}
+
 func TestFrameRouteRegistryRejectsOneSidedKeyCollision(t *testing.T) {
 	routes := newFrameRouteRegistryWithLimits(time.Minute, 4)
 	relay := newLifecycleCarrier("relay", "")

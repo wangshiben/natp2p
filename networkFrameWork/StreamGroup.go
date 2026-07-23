@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // StreamGroup 负责管理多个Stream。
@@ -423,6 +424,17 @@ func (s *StreamGroup) StartListen() {
 	}
 }
 
+func (s *StreamGroup) latestRelayReceiveTime() time.Time {
+	s.lock.Lock()
+	relayStream := s.relayStream
+	s.lock.Unlock()
+	activity, ok := relayStream.(interface{ LatestReceiveTime() time.Time })
+	if !ok {
+		return time.Time{}
+	}
+	return activity.LatestReceiveTime()
+}
+
 // CloseTargetConnection 强制关闭挂在本 group 上的某条 client leg。
 //
 // 参数：
@@ -468,6 +480,7 @@ func (s *StreamGroup) failBusinessConnectionInitialization(connectionId string, 
 		s.frameRoutes.purgeConnection(connectionId)
 		if s.forwardHookConfig != nil {
 			s.forwardHookConfig.ensureRetransmitCache().forgetConnection(s.nodeId, connectionId)
+			s.forwardHookConfig.forgetHeldConnection(s.nodeId, connectionId)
 		}
 	}
 	s.lock.Unlock()
@@ -500,6 +513,7 @@ func (s *StreamGroup) closeTargetConnection(connectionId string, expectedResourc
 	s.frameRoutes.purgeConnection(connectionId)
 	if s.forwardHookConfig != nil {
 		s.forwardHookConfig.ensureRetransmitCache().forgetConnection(s.nodeId, connectionId)
+		s.forwardHookConfig.forgetHeldConnection(s.nodeId, connectionId)
 	}
 	s.lock.Unlock()
 	c.Close()
@@ -657,6 +671,7 @@ func (s *StreamGroup) Close() {
 			cache := s.forwardHookConfig.ensureRetransmitCache()
 			for connectionID := range resources {
 				cache.forgetConnection(s.nodeId, connectionID)
+				s.forwardHookConfig.forgetHeldConnection(s.nodeId, connectionID)
 			}
 		}
 		relayStream := s.relayStream

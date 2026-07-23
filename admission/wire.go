@@ -18,9 +18,8 @@ type PubKeyResp struct {
 
 // IssueRequest 是 POST /issue 的请求：申请方声明自己的公钥与期望角色。
 //
-// MVP 说明：本请求本身的鉴权（谁有资格申请、按什么策略批准角色/额度）属于 CA/Web 应用的
-// 业务范畴，不在 p2p 框架内实现。最小 CA 服务默认「按申请签发」，仅用于打通端到端；
-// 生产 CA 应在此加入身份核验、付费校验、角色审批等。
+// 本地测试 CA 可在 HTTP 层为该请求配置角色隔离的 enrollment Bearer；线格式不携带凭据，
+// 避免证书申请被记录或转发时泄露认证材料。生产 CA 仍应接入正式身份核验、角色审批与吊销流程。
 type IssueRequest struct {
 	// SubjectPubKey 是申请方的 P-256 ECDH 公钥 hex。CA 据它推导 NodeID。
 	SubjectPubKey string `json:"subject_pubkey"`
@@ -60,6 +59,34 @@ type SettleResponse struct {
 	Allow bool `json:"allow"`
 	// Error 非空表示结算失败原因（如未知节点）。
 	Error string `json:"error,omitempty"`
+}
+
+// VoucherSettleRequest submits one canonical, mutually signed cumulative usage
+// voucher. []byte is represented as standard base64 by encoding/json.
+type VoucherSettleRequest struct {
+	CanonicalVoucher []byte      `json:"canonical_voucher"`
+	PayerPublicKey   string      `json:"payer_public_key"`
+	RelayPublicKey   string      `json:"relay_public_key"`
+	PayerCert        *SignedCert `json:"payer_cert"`
+	RelayCert        *SignedCert `json:"relay_cert"`
+}
+
+// VoucherSettleResponse reports the authoritative accounting decision. Delta
+// and RelayCredit are zero when no new mutation occurred. A retryable response
+// leaves the voucher and every accounting watermark untouched, so the exact
+// same voucher can be submitted again after the reported condition is fixed.
+type VoucherSettleResponse struct {
+	VoucherID   string `json:"voucher_id,omitempty"`
+	Delta       int64  `json:"delta"`
+	Balance     int64  `json:"balance"`
+	RelayCredit int64  `json:"relay_credit"`
+	Allow       bool   `json:"allow"`
+	Replayed    bool   `json:"replayed,omitempty"`
+	Stale       bool   `json:"stale,omitempty"`
+	Frozen      bool   `json:"frozen,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
+	Retryable   bool   `json:"retryable,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // ReserveRequest 是 relay 在【建立一条业务连接时】向 CA 请求「连接保证金」双扣的请求。
@@ -105,10 +132,13 @@ type CreditResponse struct {
 
 // 默认端点路径常量，CA 服务与 caclient 共用，避免拼写漂移。
 const (
-	PathPubKey  = "/pubkey"
-	PathIssue   = "/issue"
-	PathSettle  = "/settle"
-	PathCredit  = "/credit"
-	PathBalance = "/balance"
-	PathReserve = "/reserve"
+	PathPubKey        = "/pubkey"
+	PathIssue         = "/issue"
+	PathSettle        = "/settle"
+	PathCredit        = "/credit"
+	PathBalance       = "/balance"
+	PathReserve       = "/reserve"
+	PathVoucherSettle = "/v1/channel/voucher"
 )
+
+const VoucherErrorInsufficientFunds = "insufficient_funds"

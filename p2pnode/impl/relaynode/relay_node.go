@@ -17,6 +17,7 @@ package relaynode
 
 import (
 	"bnfs_p2p/DHTable"
+	"bnfs_p2p/billingcontrol"
 	"bnfs_p2p/crypoto"
 	"bnfs_p2p/interfaces"
 	"bnfs_p2p/logx"
@@ -51,6 +52,11 @@ type findAnswer struct {
 	link *peerLink
 }
 
+type inboundPeerSession struct {
+	key        string
+	generation uint64
+}
+
 // RelayNode 是公网中继节点，实现 p2pnode.Node 接口。
 type RelayNode struct {
 	identity *DHTable.Node
@@ -66,7 +72,10 @@ type RelayNode struct {
 	mu                   sync.RWMutex
 	peerLinks            map[string]*peerLink // 主动维持的控制链路, key = 对端 relay 拨号地址
 	inboundLinks         []*peerLink          // 对端拨入并被本端接管的控制链路
-	peerIDToAddr         map[string]string    // relay NodeId -> 业务地址
+	inboundByPeerID      map[string]inboundPeerSession
+	inboundSessionGens   map[string]uint64 // session tombstone 保留到 Close，阻止旧 dual leg 迟到夺权
+	inboundCounter       atomic.Uint64
+	peerIDToAddr         map[string]string // relay NodeId -> 业务地址
 	relayAddrIndex       map[p2pnode.NodeID][]string
 	relayOnlineSince     map[string]time.Time
 	relayLastControlSeen map[string]time.Time
@@ -90,7 +99,8 @@ type RelayNode struct {
 	// stripedLegs 条带化接入侧归并(F3): key = connID。
 	// 一条条带化逻辑连接的 M 条 leg 分别从 M 条物理连接的 Accept 出来，按 connID 聚齐 legCount
 	// 条后组装成一条 LogicalConn 交下游一次。
-	stripedLegs map[string]*stripedAccept
+	stripedLegs          map[string]*stripedAccept
+	stripedAcceptTimeout time.Duration
 
 	// bridgeWidth 是桥接出站默认条带化宽度（每条逻辑连接用几条物理 leg）。
 	// 0/1 = 不条带化（模式 A，默认）；>1 = 条带化（模式 B）。F4 将据流量压力动态调整；
@@ -111,9 +121,12 @@ type RelayNode struct {
 	// settleLoopOnce 保证周期结算循环只启动一次（SetAdmission 可能被多次调用）。
 	settleLoopOnce sync.Once
 
-	// reservedPairs 记录 (clientNodeID|serverNodeID) → *depositReservation。
-	// 预扣进行中时，后续同对端连接必须等待同一份 CA 裁决；只有 CA 已成功扣费的结果才能在
-	// depositWindow 内复用。这样 dual-leg 与重试不重复扣费，也不会把“正在扣费”误当作“已扣费”。
+	// billingPipeline 是 1 MiB 窗口双签凭证、durable waitSubmit 与 CA FIFO 提交流水线。
+	billingPipeline    *relayBillingPipeline
+	billingPipelineErr error
+	billingQueuePath   string
+
+	// reservedPairs 是已退役连接保证金实现的遗留内存状态；当前业务角色门和双签结算均不读取。
 	reservedPairs sync.Map // map[string]*depositReservation
 
 	// indexAddr 是本 relay 注册到的 index 地址（RegisterToIndex 设置, 可空）。
@@ -147,12 +160,17 @@ type localBridgeEntry struct {
 // stripedAccept 跟踪接入侧一条条带化逻辑连接的 leg 归并状态（F3）。
 // M 条 leg 从 M 条不同物理连接的 Accept 陆续到达，聚齐 want 条后组装成一条 LogicalConn。
 type stripedAccept struct {
-	want   int                           // 期望 leg 数（= 入口侧 legCount）
-	legs   []*networkFrameWork.MuxStream // 已到达的 leg
-	target string                        // 合成 hello 用的目标 NodeId
-	pubKey string                        // 合成 hello 用的源节点公钥
-	flags  uint8                         // 合成 hello 用的业务 leg 标志位
+	want     int
+	attempt  uint64
+	legs     map[int]*networkFrameWork.MuxStream
+	target   string
+	pubKey   string
+	flags    uint8
+	done     chan struct{}
+	doneOnce sync.Once
 }
+
+const defaultStripedAcceptTimeout = 10 * time.Second
 
 // NewRelayNode 创建一个中继节点。
 //
@@ -196,6 +214,8 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 		relayNodes:           relayNodes,
 		starter:              networkFrameWork.NewRelayStarter(listenAddr),
 		peerLinks:            make(map[string]*peerLink),
+		inboundByPeerID:      make(map[string]inboundPeerSession),
+		inboundSessionGens:   make(map[string]uint64),
 		peerIDToAddr:         make(map[string]string),
 		relayAddrIndex:       make(map[p2pnode.NodeID][]string),
 		relayOnlineSince:     make(map[string]time.Time),
@@ -216,6 +236,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 	// 安装框架回调：注册流建立时登记到 natNodes；业务连接未命中本地 group 时走跨中继逻辑。
 	cover := n.starter.Cover()
 	cover.SetRegisterHook(n.onRegister)
+	cover.SetUnregisterHook(n.onUnregister)
 	cover.SetMissingGroupHandler(n.onMissingGroup)
 
 	return n, nil
@@ -292,6 +313,18 @@ func (n *RelayNode) SetForwardHook(config *ForwardHookConfig) {
 	}
 }
 
+// SetBillingQueuePath 指定双签凭证 waitSubmit 的持久文件。必须在 SetAdmission 之前调用。
+// 生产部署应为每个稳定 Relay 身份配置独立路径，并把对应私钥一并持久化。
+func (n *RelayNode) SetBillingQueuePath(path string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.billingPipeline != nil || n.billingPipelineErr != nil {
+		return errors.New("relaynode: billing queue path must be set before admission")
+	}
+	n.billingQueuePath = path
+	return nil
+}
+
 // Start 启动内嵌 relay 服务器（阻塞）。应在独立 goroutine 中调用。
 // 服务器开始监听后, 即可接受 NAT 节点注册与其它 relay 的控制链路接入。
 func (n *RelayNode) Start() {
@@ -342,6 +375,16 @@ func (n *RelayNode) onRegister(nodeId, remoteAddr string) {
 	n.hostedNatAddr[nodeId] = remoteAddr
 	n.mu.Unlock()
 	logx.Infof("[relaynode] 本地托管的 NAT 节点登记到 natNodes: %.16s 来源=%s", nodeId, remoteAddr)
+}
+
+// onUnregister 在 TransportCover 已 compare-delete 当前注册组后清理 Relay 侧托管索引。
+// 账户与 durable 计费状态不在这里强删，避免丢失尚未结算的安全状态。
+func (n *RelayNode) onUnregister(nodeId string) {
+	n.natNodes.Remove(nodeId)
+	n.mu.Lock()
+	delete(n.hostedNatAddr, nodeId)
+	n.mu.Unlock()
+	logx.Infof("[relaynode] 已回收离线 NAT 节点托管状态: %.16s", nodeId)
 }
 
 // HostedNatInfo 描述本 relay 托管的一个 NAT 节点的状态信息。
@@ -455,6 +498,19 @@ func (n *RelayNode) onMissingGroup(stream network.Stream, firstMsg *network.Mess
 	if firstMsg.Header.RouteName == relayquery.Route {
 		return n.answerRelayQuery(stream, firstMsg)
 	}
+	if firstMsg.Header.RouteName == billingcontrol.Route {
+		n.mu.RLock()
+		pipeline := n.billingPipeline
+		pipelineErr := n.billingPipelineErr
+		n.mu.RUnlock()
+		if pipelineErr != nil {
+			return pipelineErr
+		}
+		if pipeline == nil {
+			return errors.New("relaynode: secure billing control is not enabled")
+		}
+		return pipeline.acceptControl(stream, firstMsg)
+	}
 	return n.findAndBridge(stream, firstMsg)
 }
 
@@ -538,42 +594,178 @@ func (n *RelayNode) acceptBridgeMux(stream network.Stream, firstMsg *network.Mes
 // collectStripedLeg 归并一条条带化 leg。按 connID(=StreamID) 聚齐 legCount 条后，
 // 组装成一条条带化 LogicalConn 并交下游 ListenTCPConnection 一次。
 func (n *RelayNode) collectStripedLeg(st *networkFrameWork.MuxStream) {
-	connID := st.StreamID()
-	want := st.LegCount()
-	n.mu.Lock()
-	sa := n.stripedLegs[connID]
-	if sa == nil {
-		sa = &stripedAccept{
-			want:   want,
-			target: st.TargetNodeID(),
-			pubKey: st.OriginPubKey(),
-			flags:  st.LegFlags(),
-		}
-		n.stripedLegs[connID] = sa
-	}
-	sa.legs = append(sa.legs, st)
-	ready := len(sa.legs) >= sa.want
-	if ready {
-		delete(n.stripedLegs, connID)
-	}
-	n.mu.Unlock()
-	if !ready {
+	if st == nil {
 		return
 	}
+	connID := st.StreamID()
+	want := st.LegCount()
+	attempt, legIndex, valid := decodeStripedLegIndex(st.LegIndex(), want)
+	if connID == "" || !valid {
+		logx.Warnf("[relaynode] 拒绝非法 bridge-mux 条带 leg: connID=%q legIndex=%d legCount=%d", connID, st.LegIndex(), want)
+		_ = st.Close()
+		return
+	}
+	select {
+	case <-st.Done():
+		return
+	default:
+	}
+
+	var stale *stripedAccept
+	var accepted *stripedAccept
+	var readyLegs []*networkFrameWork.MuxStream
+	created := false
+	reject := false
+
+	n.mu.Lock()
+	sa := n.stripedLegs[connID]
+	switch {
+	case sa == nil:
+		sa = newStripedAccept(st, attempt, want)
+		n.stripedLegs[connID] = sa
+		created = true
+	case attempt < sa.attempt:
+		reject = true
+	case attempt > sa.attempt:
+		delete(n.stripedLegs, connID)
+		sa.stop()
+		stale = sa
+		sa = newStripedAccept(st, attempt, want)
+		n.stripedLegs[connID] = sa
+		created = true
+	case !sa.matches(st, want):
+		delete(n.stripedLegs, connID)
+		sa.stop()
+		stale = sa
+		reject = true
+	case sa.legs[legIndex] != nil:
+		reject = true
+	}
+	if !reject {
+		sa.legs[legIndex] = st
+		accepted = sa
+	}
+	if accepted != nil && len(accepted.legs) == accepted.want {
+		delete(n.stripedLegs, connID)
+		accepted.stop()
+		readyLegs = make([]*networkFrameWork.MuxStream, accepted.want)
+		for index := range readyLegs {
+			readyLegs[index] = accepted.legs[index]
+		}
+	}
+	n.mu.Unlock()
+
+	if stale != nil {
+		stale.closeLegs()
+	}
+	if reject {
+		_ = st.Close()
+		return
+	}
+	if readyLegs == nil {
+		if created {
+			go n.expireStripedAccept(connID, accepted)
+		}
+		go n.watchStripedLeg(connID, accepted, st)
+		return
+	}
+
 	// 聚齐：组装条带化逻辑连接（接入侧用同 connID + M 条 leg）。
-	lc := networkFrameWork.NewStripedConn(connID, sa.legs)
-	conn, err := networkFrameWork.AcceptBridgeMuxLogicalConn(lc, sa.target, sa.pubKey, sa.flags)
+	lc := networkFrameWork.NewStripedConn(connID, readyLegs)
+	conn, err := networkFrameWork.AcceptBridgeMuxLogicalConn(lc, accepted.target, accepted.pubKey, accepted.flags)
 	if err != nil {
 		logx.Warnf("[relaynode] bridge-mux 条带化合成 hello 失败: %v", err)
 		_ = lc.Close()
 		return
 	}
-	logx.Infof("[relaynode] bridge-mux 条带化接入: connID=%s legs=%d", connID, sa.want)
+	logx.Infof("[relaynode] bridge-mux 条带化接入: connID=%s legs=%d attempt=%d", connID, accepted.want, accepted.attempt)
 	go func() {
 		if e := n.starter.Cover().ListenTCPConnection(conn); e != nil {
 			logx.Debugf("[relaynode] bridge-mux 条带化会话接入结束: %v", e)
 		}
 	}()
+}
+
+func decodeStripedLegIndex(encodedIndex, legCount int) (uint64, int, bool) {
+	if legCount <= 1 || legCount > poolMaxConns || encodedIndex < 0 {
+		return 0, 0, false
+	}
+	attempt := uint64(encodedIndex / poolMaxConns)
+	legIndex := encodedIndex % poolMaxConns
+	return attempt, legIndex, legIndex < legCount
+}
+
+func newStripedAccept(st *networkFrameWork.MuxStream, attempt uint64, want int) *stripedAccept {
+	return &stripedAccept{
+		want:    want,
+		attempt: attempt,
+		legs:    make(map[int]*networkFrameWork.MuxStream, want),
+		target:  st.TargetNodeID(),
+		pubKey:  st.OriginPubKey(),
+		flags:   st.LegFlags(),
+		done:    make(chan struct{}),
+	}
+}
+
+func (sa *stripedAccept) matches(st *networkFrameWork.MuxStream, want int) bool {
+	return sa.want == want && sa.target == st.TargetNodeID() && sa.pubKey == st.OriginPubKey() && sa.flags == st.LegFlags()
+}
+
+func (sa *stripedAccept) stop() {
+	sa.doneOnce.Do(func() { close(sa.done) })
+}
+
+func (sa *stripedAccept) closeLegs() {
+	sa.stop()
+	for _, leg := range sa.legs {
+		_ = leg.Close()
+	}
+}
+
+func (n *RelayNode) watchStripedLeg(connID string, sa *stripedAccept, st *networkFrameWork.MuxStream) {
+	var nodeDone <-chan struct{}
+	if n.ctx != nil {
+		nodeDone = n.ctx.Done()
+	}
+	select {
+	case <-st.Done():
+		n.discardStripedAccept(connID, sa)
+	case <-nodeDone:
+		n.discardStripedAccept(connID, sa)
+	case <-sa.done:
+	}
+}
+
+func (n *RelayNode) expireStripedAccept(connID string, sa *stripedAccept) {
+	timeout := n.stripedAcceptTimeout
+	if timeout <= 0 {
+		timeout = defaultStripedAcceptTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var nodeDone <-chan struct{}
+	if n.ctx != nil {
+		nodeDone = n.ctx.Done()
+	}
+	select {
+	case <-timer.C:
+		n.discardStripedAccept(connID, sa)
+	case <-nodeDone:
+		n.discardStripedAccept(connID, sa)
+	case <-sa.done:
+	}
+}
+
+func (n *RelayNode) discardStripedAccept(connID string, sa *stripedAccept) {
+	n.mu.Lock()
+	if n.stripedLegs[connID] != sa {
+		n.mu.Unlock()
+		return
+	}
+	delete(n.stripedLegs, connID)
+	sa.stop()
+	n.mu.Unlock()
+	sa.closeLegs()
 }
 
 // answerRelayQuery 应答 NAT 节点的「relay 列表查询」(RelayQueryRoute)。
@@ -681,7 +873,13 @@ func (n *RelayNode) acceptControlLink(stream network.Stream, firstMsg *network.M
 	}
 	sc := client.NewStreamClient(stream)
 
-	pl := &peerLink{owner: n, outbound: false, ctx: n.ctx, cancel: func() {}}
+	linkCtx, linkCancel := context.WithCancel(n.ctx)
+	sessionKey := peerNodeId + "\x00" + firstMsg.Header.ConnectionId
+	pl := &peerLink{
+		owner: n, outbound: false, expectedPeerID: peerNodeId,
+		inboundSessionKey: sessionKey,
+		ctx:               linkCtx, cancel: linkCancel,
+	}
 	// 记录对端实际连入的 IP, 供 dialHostAddr 拼出可路由的桥接地址
 	// （对端 HELLO 自报的 host 可能是 ":9000" 等不可路由占位）。
 	// TODO 此处仅仅提供查询功能，正式发布时会删除查询对端HELLO的IP和port信息
@@ -691,11 +889,115 @@ func (n *RelayNode) acceptControlLink(stream network.Stream, firstMsg *network.M
 		}
 	}
 	n.mu.Lock()
+	if n.ctx != nil && n.ctx.Err() != nil {
+		n.mu.Unlock()
+		linkCancel()
+		_ = sc.Close()
+		return errors.New("relaynode: 节点已关闭")
+	}
+	if n.inboundSessionGens == nil {
+		n.inboundSessionGens = make(map[string]uint64)
+	}
+	generation := n.inboundSessionGens[sessionKey]
+	if generation == 0 {
+		generation = n.inboundCounter.Add(1)
+		n.inboundSessionGens[sessionKey] = generation
+	}
+	pl.inboundGeneration = generation
 	n.inboundLinks = append(n.inboundLinks, pl)
 	n.mu.Unlock()
 	pl.adoptInbound(sc)
 	logx.Infof("[relaynode] 控制链路已建立(被动): peerNodeId=%.16s remoteIP=%s", peerNodeId, pl.observedRemoteIP)
 	return nil
+}
+
+// activateInboundLink 让同一 peerID 只保留接入代次最高的逻辑 dual session。
+// 同 session 的 KCP/TCP leg 共存；换 session 时在 n.mu 外关闭旧 session 的全部物理链路。
+func (n *RelayNode) activateInboundLink(link *peerLink, peerID string) bool {
+	if link == nil || link.outbound || peerID == "" {
+		return true
+	}
+
+	active := false
+	var stale []*peerLink
+	n.mu.Lock()
+	if n.ctx != nil && n.ctx.Err() != nil {
+		stale = n.detachInboundSessionLocked(link.inboundSessionKey)
+	} else {
+		if n.inboundByPeerID == nil {
+			n.inboundByPeerID = make(map[string]inboundPeerSession)
+		}
+		current, exists := n.inboundByPeerID[peerID]
+		switch {
+		case !exists:
+			n.inboundByPeerID[peerID] = inboundPeerSession{key: link.inboundSessionKey, generation: link.inboundGeneration}
+			active = true
+		case current.key == link.inboundSessionKey:
+			active = true
+		case current.generation < link.inboundGeneration:
+			stale = n.detachInboundSessionLocked(current.key)
+			n.inboundByPeerID[peerID] = inboundPeerSession{key: link.inboundSessionKey, generation: link.inboundGeneration}
+			active = true
+		default:
+			stale = n.detachInboundSessionLocked(link.inboundSessionKey)
+		}
+	}
+	n.mu.Unlock()
+
+	for _, staleLink := range stale {
+		staleLink.close()
+	}
+	return active
+}
+
+func (n *RelayNode) removeInboundLink(link *peerLink) {
+	if link == nil || link.outbound {
+		return
+	}
+	n.mu.Lock()
+	n.removeInboundLinkLocked(link)
+	n.mu.Unlock()
+}
+
+// removeInboundLinkLocked 按指针身份删除，调用方必须持有 n.mu。
+// session 代次 tombstone 不在此删除，旧 dual leg 迟到时仍会被识别为旧代。
+func (n *RelayNode) removeInboundLinkLocked(link *peerLink) {
+	if link == nil {
+		return
+	}
+	writeIndex := 0
+	for _, candidate := range n.inboundLinks {
+		if candidate == link {
+			continue
+		}
+		n.inboundLinks[writeIndex] = candidate
+		writeIndex++
+	}
+	for clearIndex := writeIndex; clearIndex < len(n.inboundLinks); clearIndex++ {
+		n.inboundLinks[clearIndex] = nil
+	}
+	n.inboundLinks = n.inboundLinks[:writeIndex]
+}
+
+func (n *RelayNode) detachInboundSessionLocked(sessionKey string) []*peerLink {
+	if sessionKey == "" {
+		return nil
+	}
+	stale := make([]*peerLink, 0, 2)
+	writeIndex := 0
+	for _, candidate := range n.inboundLinks {
+		if candidate != nil && candidate.inboundSessionKey == sessionKey {
+			stale = append(stale, candidate)
+			continue
+		}
+		n.inboundLinks[writeIndex] = candidate
+		writeIndex++
+	}
+	for clearIndex := writeIndex; clearIndex < len(n.inboundLinks); clearIndex++ {
+		n.inboundLinks[clearIndex] = nil
+	}
+	n.inboundLinks = n.inboundLinks[:writeIndex]
+	return stale
 }
 
 // findAndBridge 处理「连接本地未托管 nat 节点」的请求：
@@ -719,12 +1021,12 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 	}
 	if entry.bridged {
 		// 已建桥：把这条同 connID 的多余 leg 作为 failover leg splice 进已有桥接，
-		// 而非关闭。CrossRelayBridge 原生支持多条 local leg（localConns/active/liveLegs），
-		// 客户端 dual/双TCP failover 在某条 leg 死后切到另一条时，桥接会把回程写到新活跃 leg。
+		// 而非关闭。CrossRelayBridge 会把多条 local leg 聚合成逐帧端点，旧 leg 的半帧
+		// 不会与新 leg 的完整重传混入同一 peer 字节流。
 		// 这从根上消除「客户端给 extra leg 注册了重连器、relay 却关掉它 → 无限重连风暴」。
 		br := entry.bridge
 		n.mu.Unlock()
-		return n.spliceFailoverLeg(br, stream, target, connID)
+		return n.spliceFailoverLeg(br, stream, firstMsg, target, connID)
 	}
 
 	// relay 侧【先到先建桥】，不在此偏好 KCP。关键不对称：家庭 NAT 的 UDP 是单向的——
@@ -732,7 +1034,7 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 	// "收到 KCP 首帧" 无法区分 "KCP 双向可用" 与 "KCP 仅出方向、回程已死"；只有客户端
 	// (等到端到端 ACK 才算数) 才知道。故 "KCP 优先" 只放在客户端 (见 Dialers.go
 	// kcpPriorityWindow)：客户端 200ms 内 KCP 握手成功才 preferred=KCP。relay 这边谁先到
-	// 谁建桥，靠桥接 active-follows-data 自动跟随客户端实际在用的 leg。
+	// 谁建桥，靠桥接的 DualFrameRelayEndpoint 跟随客户端实际可用的 leg。
 	// 若在此等 KCP，家庭 NAT 下会把桥建在死 KCP leg 上 → 端到端握手 reset/EOF
 	// (见记忆 natclient-relay-kcp-preferred-bug)。
 	if entry.bridging {
@@ -745,7 +1047,7 @@ func (n *RelayNode) findAndBridge(stream network.Stream, firstMsg *network.Messa
 		bridged := entry.bridged
 		n.mu.Unlock()
 		if bridged && br != nil {
-			return n.spliceFailoverLeg(br, stream, target, connID)
+			return n.spliceFailoverLeg(br, stream, firstMsg, target, connID)
 		}
 		// 建桥失败（对端不可达等）：不在此重建（会撞 kcpReady 双关、orphan entry）。
 		// 直接关本 leg，交由客户端重试（客户端本就重试 12 次）。
@@ -788,8 +1090,8 @@ func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, e
 		return fmt.Errorf("relaynode: 无法确定托管 relay 的可路由地址 (target=%.16s)", target)
 	}
 
-	// 跨中继桥接：relay 退化成哑字节管道, 不重写 MessageId / 不组包 / 不 ACK,
-	// local1↔local2 端到端可靠性完全自洽。透传 local1 的 hello（含公钥）与原始 connID。
+	// 跨中继桥接：两侧均按完整 Frame 聚合并隔离 MessageId 命名空间，避免多 leg
+	// 故障切换时发生半帧拼接；E2E payload 仍保持透明。透传 local1 的 hello 与原始 connID。
 	//
 	// 连接池版（Phase B+）：桥接不再每会话独占一条物理 TCP, 而是从到 hostAddr 的连接池
 	// 开一条 mux 逻辑会话（多路复用到共享物理连接上）。会话结束 Close 只关该逻辑会话。
@@ -798,7 +1100,10 @@ func (n *RelayNode) doBridge(stream network.Stream, firstMsg *network.Message, e
 	br.SetDialFunc(func(addr, targetNodeId, originPubKeyHex, cid string) (net.Conn, error) {
 		return n.openBridgeStream(addr, targetNodeId, originPubKeyHex, cid, legFlags)
 	})
-	if err := br.SpliceLeg(stream); err != nil {
+	if err := br.SpliceLegWithFlags(stream,
+		firstMsg.Header.LegFlags&network.LegFlagExtra != 0,
+		firstMsg.Header.LegFlags&network.LegFlagResume != 0,
+	); err != nil {
 		cleanup()
 		return fmt.Errorf("relaynode: 建立跨中继桥接失败: %w", err)
 	}
@@ -829,12 +1134,14 @@ func (n *RelayNode) releaseLocalBridgeWhenDone(connID string, expected *localBri
 // 替代旧的「关闭多余 leg」行为：客户端 dual/双TCP failover 保留的备用 leg 不再被 relay 关闭，
 // 从而消除「客户端重连备用 leg → relay 关闭 → 无限重连」的风暴。
 // br 为 nil（极端竞态：bridged 已置但 bridge 尚未可见）或 splice 失败时，回退为关闭该 leg。
-func (n *RelayNode) spliceFailoverLeg(br *networkFrameWork.CrossRelayBridge, stream network.Stream, target, connID string) error {
+func (n *RelayNode) spliceFailoverLeg(br *networkFrameWork.CrossRelayBridge, stream network.Stream, firstMsg *network.Message, target, connID string) error {
 	if br == nil {
 		_ = stream.Close()
 		return nil
 	}
-	if err := br.SpliceLeg(stream); err != nil {
+	coexist := firstMsg != nil && firstMsg.Header != nil && firstMsg.Header.LegFlags&network.LegFlagExtra != 0
+	resume := firstMsg != nil && firstMsg.Header != nil && firstMsg.Header.LegFlags&network.LegFlagResume != 0
+	if err := br.SpliceLegWithFlags(stream, coexist, resume); err != nil {
 		logx.Warnf("[relaynode] failover leg splice 失败, 关闭该 leg: target=%.16s connId=%s err=%v",
 			target, connID, err)
 		_ = stream.Close()
@@ -849,12 +1156,33 @@ func (n *RelayNode) spliceFailoverLeg(br *networkFrameWork.CrossRelayBridge, str
 // 调用方用该链路的 dialHostAddr() 得到可路由的桥接地址（而非对端自报的可能不可路由的 Addr）。
 // 全部未命中或超时则返回错误（需求 3）。
 func (n *RelayNode) findHostRelay(target string) (*peerLink, error) {
+	baseCtx := n.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	findCtx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
+	defer cancel()
+
 	n.mu.RLock()
 	links := make([]*peerLink, 0, len(n.peerLinks)+len(n.inboundLinks))
+	seen := make(map[*peerLink]struct{}, cap(links))
 	for _, pl := range n.peerLinks {
+		if pl == nil {
+			continue
+		}
+		seen[pl] = struct{}{}
 		links = append(links, pl)
 	}
-	links = append(links, n.inboundLinks...)
+	for _, pl := range n.inboundLinks {
+		if pl == nil {
+			continue
+		}
+		if _, ok := seen[pl]; ok {
+			continue
+		}
+		seen[pl] = struct{}{}
+		links = append(links, pl)
+	}
 	n.mu.RUnlock()
 
 	if len(links) == 0 {
@@ -872,23 +1200,39 @@ func (n *RelayNode) findHostRelay(target string) (*peerLink, error) {
 		n.mu.Unlock()
 	}()
 
+	type sendResult struct {
+		link *peerLink
+		err  error
+	}
 	find := &controlMessage{Type: ctrlFind, ReqID: reqID, Target: target}
+	sendResults := make(chan sendResult, len(links))
+	unresolved := make(map[*peerLink]struct{}, len(links))
 	for _, pl := range links {
-		_ = pl.send(find)
+		unresolved[pl] = struct{}{}
+		go func(link *peerLink) {
+			sendResults <- sendResult{link: link, err: link.sendContext(findCtx, find)}
+		}(pl)
 	}
 
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	for i := 0; i < len(links); i++ {
+	for len(unresolved) > 0 {
 		select {
-		case <-n.ctx.Done():
-			return nil, errors.New("relaynode 已关闭")
-		case <-deadline.C:
+		case <-findCtx.Done():
+			if n.ctx != nil && n.ctx.Err() != nil {
+				return nil, errors.New("relaynode 已关闭")
+			}
 			return nil, errors.New("FIND 超时, 无 relay 托管目标节点")
+		case result := <-sendResults:
+			if result.err != nil {
+				delete(unresolved, result.link)
+			}
 		case ans := <-pf.respCh:
-			if ans.cm.Hosts {
+			if _, ok := unresolved[ans.link]; !ok {
+				continue
+			}
+			if ans.cm != nil && ans.cm.Hosts {
 				return ans.link, nil
 			}
+			delete(unresolved, ans.link)
 		}
 	}
 	return nil, errors.New("没有 relay 托管目标 nat 节点")
@@ -1008,6 +1352,12 @@ func (n *RelayNode) relayAddrIndexSnapshot() map[p2pnode.NodeID][]p2pnode.PeerAd
 func (n *RelayNode) Close() error {
 	n.closeOnce.Do(func() {
 		n.cancel()
+		n.mu.RLock()
+		pipeline := n.billingPipeline
+		n.mu.RUnlock()
+		if pipeline != nil {
+			_ = pipeline.close()
+		}
 		n.closePeerLinks()
 		// 关闭跨中继连接池(Phase B)：closeBridgePools 内部自取 n.mu，必须在解锁后调用。
 		n.closeBridgePools()
@@ -1025,6 +1375,8 @@ func (n *RelayNode) closePeerLinks() {
 	links = append(links, n.inboundLinks...)
 	n.peerLinks = nil
 	n.inboundLinks = nil
+	n.inboundByPeerID = nil
+	n.inboundSessionGens = nil
 	n.mu.Unlock()
 
 	// peerLink.close 会回调 relayLinkDown 并获取 n.mu，必须在释放 n.mu 后执行。

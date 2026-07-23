@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,6 +40,7 @@ func main() {
 	target := flag.String("target", "127.0.0.1:5173", "local TCP address to forward traffic to")
 	keyFile := flag.String("key", "", "optional private key file to keep a stable NodeID")
 	caURL := flag.String("ca", "", "CA/indexServer web 地址; 给了即带 server 角色 indexSign 注册(计费对象)")
+	billingPrivateSnapshot := flag.String("billing-private-snapshot", "", "私有计费快照 JSON 路径（父目录 0700、文件 0600）")
 	flag.Parse()
 
 	logx.SetLevel(logx.LevelInfo)
@@ -59,6 +61,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("创建节点失败: %v", err)
 	}
+	if err := node.SetBillingPrivateSnapshotPath(*billingPrivateSnapshot); err != nil {
+		_ = node.Close()
+		log.Fatalf("初始化私有计费快照失败: %v", err)
+	}
 
 	// tunnel server = server 角色（计费对象）：申请 server 证书并注入。-ca 为空则不启用。
 	if err := admissioncli.SetupNat(node, *caURL, admissioncli.RoleServer()); err != nil {
@@ -72,7 +78,7 @@ func main() {
 	node.OnConnection(func(conn p2pnode.Connection) {
 		peer := conn.Peer()
 		fmt.Printf("[隧道] 客户端 %s 已连接\n", peer.ID)
-		go handleTunnel(ctx, conn, *target)
+		handleTunnel(ctx, conn, *target)
 	})
 
 	fmt.Printf("=== Tunnel Server ===\n")
@@ -93,18 +99,10 @@ func main() {
 		fmt.Printf("提示: 若客户端连接失败，请让客户端用 -relay %s 固定到同一 relay\n", entryRelay)
 	}
 
-	// natnode.Listen blocks until the first inbound connection is consumed
-	// (its registration stream is reused for that connection), then returns;
-	// the connection keeps being served by the OnConnection callback. We must
-	// NOT re-call Listen while a connection is active — it would contend for
-	// the same registration stream and corrupt frames. One tunnel per server.
-	go func() {
-		if err := node.Listen(ctx, entryRelay); err != nil {
-			if ctx.Err() == nil {
-				log.Printf("Listen 退出: %v", err)
-			}
-		}
-	}()
+	// Listen consumes one registration stream per inbound connection. The
+	// callback above runs synchronously until that mux session has closed, so
+	// each new registration starts only after the previous tunnel is gone.
+	go serveTunnelSessions(ctx, node, entryRelay)
 
 	fmt.Println("\n服务端已就绪，等待客户端连接。客户端使用上面的 NodeID 连接。")
 	fmt.Println("按 Ctrl+C 退出。")
@@ -115,6 +113,40 @@ func main() {
 	fmt.Println("\n正在关闭...")
 	cancel()
 	node.Close()
+}
+
+type tunnelListener interface {
+	Listen(context.Context, string) error
+}
+
+func serveTunnelSessions(ctx context.Context, listener tunnelListener, entryRelay string) {
+	retryDelay := 250 * time.Millisecond
+	const maximumRetryDelay = 5 * time.Second
+	for ctx.Err() == nil {
+		if err := listener.Listen(ctx, entryRelay); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("Listen 退出，将重试: %v", err)
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			case <-timer.C:
+			}
+			if retryDelay < maximumRetryDelay {
+				retryDelay *= 2
+				if retryDelay > maximumRetryDelay {
+					retryDelay = maximumRetryDelay
+				}
+			}
+			continue
+		}
+		retryDelay = 250 * time.Millisecond
+	}
 }
 
 // handleTunnel runs a mux session over one inbound P2P connection. For each
@@ -242,6 +274,9 @@ func loadKey(path string) (*ecdh.PrivateKey, error) {
 	}
 	if _, err := os.Stat(path); err == nil {
 		return natnode.LoadPrivateKeyFromFile(path)
+	}
+	if strings.ContainsRune(path, os.PathSeparator) {
+		return natnode.LoadOrCreatePrivateKeyFile(path)
 	}
 	return natnode.LoadPrivateKeyFromHex(path)
 }

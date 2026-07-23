@@ -2,6 +2,7 @@ package natnode
 
 import (
 	"bnfs_p2p/DHTable"
+	"bnfs_p2p/admission"
 	"bnfs_p2p/crypoto"
 	"bnfs_p2p/interfaces"
 	"bnfs_p2p/logx"
@@ -12,6 +13,7 @@ import (
 
 	"context"
 	"crypto/ecdh"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -37,8 +39,9 @@ type NATNode struct {
 	transport p2pnode.Transport
 	handshake p2pnode.HandshakeHandler
 
-	registeredRelays map[string]*relayEntry
-	knownRelays      map[string]struct{}
+	registeredRelays  map[string]*relayEntry
+	registrationLocks map[string]*sync.Mutex
+	knownRelays       map[string]struct{}
 	// entryRelays 是本节点自己「已注册/可经其收发」的入口 relay 地址列表（含 bootstrap）。
 	// Connect 只会经这些自己的入口 relay 拨号, 由入口 relay 负责跨中继查找并连接到 target 的 relay。
 	// 绝不直接拨向 target 所在的 relay —— 在复杂网络里那条路径未经验证、可能根本不通。
@@ -47,14 +50,17 @@ type NATNode struct {
 	peerAddrIndex map[p2pnode.NodeID][]p2pnode.PeerAddr
 	conns         map[p2pnode.NodeID]*NATConnection
 
-	onConnection p2pnode.OnConnectionCallback
-	seenRequests map[uint64]struct{}
-	reqIDCounter atomic.Uint64
+	onConnection         p2pnode.OnConnectionCallback
+	seenRequests         map[uint64]struct{}
+	reqIDCounter         atomic.Uint64
+	billingMeter         *natBillingMeter
+	billingControlActive map[string]network.Stream
 
-	mu        sync.RWMutex
-	ctx       context.Context
-	cancel    context.CancelFunc
-	closeOnce sync.Once
+	mu               sync.RWMutex
+	ctx              context.Context
+	cancel           context.CancelFunc
+	closeOnce        sync.Once
+	relayManagerOnce sync.Once
 }
 
 // NewNATNode 创建一个 NAT 后节点。
@@ -88,22 +94,30 @@ func NewNATNode(privKey *ecdh.PrivateKey, bootstrapRelay string) (*NATNode, erro
 
 	relayFailover := newRelayFailoverState(bootstrapRelay)
 	n := &NATNode{
-		identity:         identity,
-		privKey:          privKey,
-		allNodes:         allNodes,
-		relayNodes:       relayNodes,
-		transport:        NewNATTransport(identity.Pubkey(), relayFailover),
-		handshake:        NewNATHandshakeHandler(privKey),
-		registeredRelays: make(map[string]*relayEntry),
-		knownRelays:      make(map[string]struct{}),
-		entryRelays:      make(map[string]struct{}),
-		relayFailover:    relayFailover,
-		peerAddrIndex:    make(map[p2pnode.NodeID][]p2pnode.PeerAddr),
-		conns:            make(map[p2pnode.NodeID]*NATConnection),
-		seenRequests:     make(map[uint64]struct{}),
-		ctx:              ctx,
-		cancel:           cancel,
+		identity:             identity,
+		privKey:              privKey,
+		allNodes:             allNodes,
+		relayNodes:           relayNodes,
+		transport:            NewNATTransport(identity.Pubkey(), relayFailover),
+		handshake:            NewNATHandshakeHandler(privKey),
+		registeredRelays:     make(map[string]*relayEntry),
+		registrationLocks:    make(map[string]*sync.Mutex),
+		knownRelays:          make(map[string]struct{}),
+		entryRelays:          make(map[string]struct{}),
+		relayFailover:        relayFailover,
+		peerAddrIndex:        make(map[p2pnode.NodeID][]p2pnode.PeerAddr),
+		conns:                make(map[p2pnode.NodeID]*NATConnection),
+		seenRequests:         make(map[uint64]struct{}),
+		billingControlActive: make(map[string]network.Stream),
+		ctx:                  ctx,
+		cancel:               cancel,
 	}
+	billingMeter, err := newNatBillingMeter(privKey)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("natnode: initialize secure billing: %w", err)
+	}
+	n.billingMeter = billingMeter
 
 	n.knownRelays[bootstrapRelay] = struct{}{}
 	// bootstrap relay 即本节点的初始入口 relay。
@@ -124,7 +138,26 @@ func (n *NATNode) relayActivated(address string) {
 		break
 	}
 	n.mu.Unlock()
+	n.startBillingControl(address)
 	logx.Infof("[natnode] 注册到 relay: %s", address)
+}
+
+func (n *NATNode) currentBillingRelay(fallback string) string {
+	if n.relayFailover != nil {
+		if target, err := n.relayFailover.currentTarget(); err == nil && target.address != "" {
+			return target.address
+		}
+	}
+	return fallback
+}
+
+func (n *NATNode) resetBillingControl(relayAddr string) {
+	n.mu.RLock()
+	stream := n.billingControlActive[relayAddr]
+	n.mu.RUnlock()
+	if stream != nil {
+		_ = stream.Close()
+	}
 }
 
 // ID 返回本节点 NodeID。
@@ -139,6 +172,26 @@ func (n *NATNode) SetIndexSign(signJSON []byte) {
 	if t, ok := n.transport.(*NATTransport); ok {
 		t.SetIndexSign(signJSON)
 	}
+	if len(signJSON) == 0 {
+		return
+	}
+	var signedCert admission.SignedCert
+	if err := json.Unmarshal(signJSON, &signedCert); err != nil {
+		logx.Warnf("[natnode] 无法解析计费准入证书: %v", err)
+		return
+	}
+	if signedCert.Cert.Role == admission.RoleServer {
+		if err := n.billingMeter.enable(&signedCert); err != nil {
+			logx.Warnf("[natnode] 无法启用双签计费: %v", err)
+		}
+	}
+}
+
+// SetBillingPrivateSnapshotPath enables a local, redacted billing-meter JSON
+// snapshot. The parent directory must be private (0700); snapshots are
+// atomically replaced with mode 0600. An empty path leaves this feature off.
+func (n *NATNode) SetBillingPrivateSnapshotPath(path string) error {
+	return n.billingMeter.setPrivateSnapshotPath(path)
 }
 
 // PubKeyHex 返回本节点公钥 hex（申请 indexSign 时作为 subject 公钥提交给 CA）。
@@ -167,16 +220,44 @@ func (n *NATNode) Listen(ctx context.Context, addr string) error {
 		}
 	}()
 
-	// 启动 relay 自动注册管理器。
-	go n.relayManager()
+	// relayManager 属于节点生命周期；同一节点可在上一条入站连接结束后再次
+	// Listen，但不能因此重复启动后台注册管理器。
+	n.relayManagerOnce.Do(func() {
+		go n.relayManager()
+	})
 
 	// 注册到初始 relay 并开始 accept 循环。
 	return n.registerAndServe(addr)
 }
 
+func (n *NATNode) registrationLock(addr string) *sync.Mutex {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	lock := n.registrationLocks[addr]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		n.registrationLocks[addr] = lock
+	}
+	return lock
+}
+
+func (n *NATNode) removeRegistrationEntry(entry *relayEntry) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for addr, current := range n.registeredRelays {
+		if current == entry {
+			delete(n.registeredRelays, addr)
+		}
+	}
+}
+
 // registerAndServe 向单个 relay 注册，并在拿到的注册流上处理入站 hello。
 // 注册流故障后返回；relay 管理器会按需创建新的注册。
 func (n *NATNode) registerAndServe(addr string) error {
+	lock := n.registrationLock(addr)
+	lock.Lock()
+	defer lock.Unlock()
+
 	stream, err := n.transport.Register(n.ctx, addr, n.identity.Pubkey())
 	if err != nil {
 		return fmt.Errorf("natnode: 向 %s 注册失败: %w", addr, err)
@@ -185,10 +266,30 @@ func (n *NATNode) registerAndServe(addr string) error {
 
 	entry := &relayEntry{addr: addr, stream: stream}
 	n.mu.Lock()
+	if err := n.ctx.Err(); err != nil || n.registeredRelays == nil {
+		n.mu.Unlock()
+		_ = stream.Close()
+		if err == nil {
+			err = context.Canceled
+		}
+		return fmt.Errorf("natnode: node closed before registration to %s completed: %w", addr, err)
+	}
 	n.registeredRelays[addr] = entry
 	// 已成功注册的 relay 即为本节点的入口 relay, 可经它发起跨中继连接。
 	n.entryRelays[addr] = struct{}{}
 	n.mu.Unlock()
+	n.startBillingControl(addr)
+	if n.billingMeter.certificate() != nil {
+		billingCtx, cancel := context.WithTimeout(n.ctx, 8*time.Second)
+		err = n.billingMeter.waitRelaySession(billingCtx, addr)
+		cancel()
+		if err != nil {
+			n.removeRegistrationEntry(entry)
+			_ = stream.Close()
+			n.resetBillingControl(addr)
+			return fmt.Errorf("natnode: 等待 Relay 安全计费会话失败: %w", err)
+		}
+	}
 
 	return n.handleInboundHello(addr, entry)
 }
@@ -203,13 +304,7 @@ func (n *NATNode) handleInboundHello(relayAddr string, entry *relayEntry) (err e
 			return
 		}
 
-		n.mu.Lock()
-		for addr, current := range n.registeredRelays {
-			if current == entry {
-				delete(n.registeredRelays, addr)
-			}
-		}
-		n.mu.Unlock()
+		n.removeRegistrationEntry(entry)
 		_ = stream.Close()
 	}()
 
@@ -261,7 +356,8 @@ func (n *NATNode) handleInboundHello(relayAddr string, entry *relayEntry) (err e
 	}
 	n.knownRelays[relayAddr] = struct{}{}
 
-	conn := newNATConnection(peerInfo, sc, func() { n.allNodes.Touch(string(peerID), time.Now()) })
+	conn := newNATConnection(peerInfo, sc, func() { n.allNodes.Touch(string(peerID), time.Now()) }, n.billingMeter,
+		func() string { return n.currentBillingRelay(relayAddr) }, n.resetBillingControl)
 	n.conns[peerID] = conn
 	// 注：不删除 registeredRelays 中的 entry。
 	// 此注册流已"消费"成 peer 连接，但保留 entry 作为「该 relay 已被占用」的标记，
@@ -404,7 +500,8 @@ func (n *NATNode) connectViaEntryRelay(ctx context.Context, relayAddr string, ta
 		n.knownRelays[r] = struct{}{}
 	}
 	n.knownRelays[relayAddr] = struct{}{}
-	conn := newNATConnection(peerInfo, sc, func() { n.allNodes.Touch(string(target), time.Now()) })
+	conn := newNATConnection(peerInfo, sc, func() { n.allNodes.Touch(string(target), time.Now()) }, n.billingMeter,
+		func() string { return n.currentBillingRelay(relayAddr) }, n.resetBillingControl)
 	n.conns[target] = conn
 	n.mu.Unlock()
 
@@ -520,6 +617,9 @@ func (n *NATNode) Close() error {
 		n.conns = nil
 		n.registeredRelays = nil
 		n.mu.Unlock()
+		if err := n.billingMeter.closePrivateSnapshot(); err != nil {
+			errs = append(errs, fmt.Errorf("natnode: close private billing snapshot: %w", err))
+		}
 	})
 	return errors.Join(errs...)
 }

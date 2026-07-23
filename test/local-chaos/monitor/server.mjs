@@ -38,6 +38,335 @@ const expectedServices = [
   ...numbered("natserver", natServerCount),
   ...numbered("natclient", natClientCount),
 ];
+const maliciousNodeCatalog = Object.freeze([
+  Object.freeze({ service: "malicious-natserver", actor: "natserver" }),
+  Object.freeze({ service: "malicious-relay", actor: "relay" }),
+]);
+const maliciousScenarioActors = new Map([
+  ["nat_stale_watermark", "natserver"],
+  ["nat_same_sequence_fork", "natserver"],
+  ["nat_signature_refusal", "natserver"],
+  ["nat_identity_forgery", "natserver"],
+  ["relay_usage_inflation", "relay"],
+  ["relay_request_replay", "relay"],
+  ["relay_fee_override", "relay"],
+  ["relay_window_overrun", "relay"],
+  ["relay_voucher_tamper", "relay"],
+]);
+const maliciousScenarioNames = new Set(maliciousScenarioActors.keys());
+const mixedPathNodes = new Set([
+  "mixed-path-probe",
+  "malicious-natserver",
+  "malicious-relay",
+  "index",
+  ...numbered("relay", relayCount),
+]);
+const mixedPathStatuses = new Set(["STARTING", "RUNNING", "MIGRATING", "DEGRADED", "FAILED", "STOPPED"]);
+const mixedPathPartitions = new Set(["control_partition_a", "control_partition_b"]);
+const mixedPathAttachmentTypes = new Set([
+  "registered_to_normal_relay",
+  "connected_to_malicious_relay",
+  "connected_to_normal_relay",
+  "control_peer_with_normal_relay",
+]);
+const mixedPathAttachmentBases = new Set(["live_relay_registration", "live_tunnel_registration", "live_control_hello"]);
+const publicRuntimeStatuses = new Set([
+  "created",
+  "dead",
+  "error",
+  "exited",
+  "healthy",
+  "missing",
+  "paused",
+  "removing",
+  "restarting",
+  "running",
+  "starting",
+  "unhealthy",
+  "unknown",
+]);
+const expectedServiceSet = new Set(expectedServices);
+const expectedNetworkSet = new Set([
+  "control_index",
+  "control_partition_a",
+  "control_partition_b",
+  "ca_host",
+  "adversary_billing",
+  "adversary_mixed_access",
+  ...numbered("access_r", relayCount),
+]);
+const billingProductionGateFailureDetails = new Set([
+  "billing_production_gate_failed",
+  "billing_production_gate_cleanup_failed",
+  "billing_production_gate_actor_missing",
+  "billing_production_gate_channel_not_fresh",
+  "billing_production_gate_relay_identity_missing",
+  "billing_production_gate_relay_registration_missing",
+  "billing_production_gate_inspector_unavailable",
+  "billing_production_gate_inspection_invalid",
+  "billing_production_gate_queue_not_empty",
+  "billing_production_gate_client_start_failed",
+  "billing_production_gate_balance_read_failed",
+  "billing_production_gate_accounting_read_failed",
+  "billing_production_gate_ca_pause_failed",
+  "billing_production_gate_ca_disconnect_not_observed",
+  "billing_production_gate_transfer_failed",
+  "billing_production_gate_producer_freeze_failed",
+  "billing_production_gate_queue_depth_not_reached",
+  "billing_production_gate_queue_digest_failed",
+  "billing_production_gate_relay_crash_failed",
+  "billing_production_gate_crash_inspection_failed",
+  "billing_production_gate_queue_persistence_changed",
+  "billing_production_gate_client_stop_failed",
+  "billing_production_gate_ca_resume_failed",
+  "billing_production_gate_relay_start_failed",
+  "billing_production_gate_queue_recovery_timeout",
+  "billing_production_gate_recovery_server_restart_failed",
+  "billing_production_gate_recovery_client_start_failed",
+  "billing_production_gate_recovery_transfer_failed",
+  "billing_production_gate_recovery_client_stop_failed",
+  "billing_production_gate_recovery_queue_timeout",
+  "billing_production_gate_balance_delta_invalid",
+  "billing_production_gate_nat_snapshot_unavailable",
+  "billing_production_gate_nat_snapshot_invalid",
+  "billing_production_gate_nat_snapshot_unstable",
+  "billing_production_gate_authorization_invalid",
+  "billing_production_gate_authorized_amount_mismatch",
+  "billing_production_gate_payer_debit_mismatch",
+  "billing_production_gate_channel_accounting_mismatch",
+  "billing_production_gate_payer_overcharged",
+  "billing_production_gate_unbilled_tail_invalid",
+  "billing_production_gate_relay_income_mismatch",
+  "billing_production_gate_split_mismatch",
+  "billing_production_gate_ca_split_mismatch",
+]);
+const billingContainerProbeCodes = new Set([
+  "",
+  "attack_rejected",
+  "baseline_invalid",
+  "baseline_signature_invalid",
+  "baseline_voucher_id_invalid",
+  "ca_idempotent_replay",
+  "ca_rejected_tampered_double_signature",
+  "candidate_identity_invalid",
+  "container_attack_not_contained",
+  "container_probe_actor_stopped",
+  "container_probe_counter_invalid",
+  "container_probe_coverage_invalid",
+  "container_probe_failed_state_invalid",
+  "container_probe_heartbeat_stale",
+  "container_probe_running_state_invalid",
+  "container_probe_runtime_failed",
+  "container_probe_snapshot_invalid",
+  "container_probe_start_timeout",
+  "container_probe_summary_invalid",
+  "duplicate_deduction_detected",
+  "forged_identity_accepted",
+  "malicious_nat_chain_accepted",
+  "malicious_nat_peer_unavailable",
+  "malicious_relay_claim_not_contained",
+  "malicious_relay_peer_unavailable",
+  "mutual_voucher_handshake_failed",
+  "nat_attack_baseline_rejected",
+  "nat_baseline_signature_failed",
+  "nat_candidate_signature_failed",
+  "nat_meter_rejected_usage_inflation",
+  "nat_peer_unavailable",
+  "nat_refusal_bypassed",
+  "nat_refusal_protocol_unavailable",
+  "nat_rejected_one_mib_window_overrun",
+  "nat_rejected_policy_override",
+  "nat_sign_protocol_unavailable",
+  "one_mib_window_overrun_not_rejected",
+  "payer_balance_unavailable",
+  "relay_attack_signature_failed",
+  "relay_chain_probe_unavailable",
+  "relay_identity_probe_unavailable",
+  "relay_never_submitted_unsigned_bill",
+  "relay_refusal_probe_unavailable",
+  "relay_rejected_forged_nat_identity",
+  "relay_rejected_invalid_nat_candidate",
+  "relay_rejected_same_sequence_fork",
+  "relay_rejected_stale_nat_watermark",
+  "relay_signature_failed",
+  "relay_signature_fixture_failed",
+  "request_invalid",
+  "rogue_identity_generation_failed",
+  "rogue_identity_signature_failed",
+  "scenario_invalid",
+  "tampered_relay_signature_failed",
+  "tampered_voucher_accepted",
+  "tampered_voucher_assembly_failed",
+  "tampered_voucher_request_failed",
+  "valid_voucher_rejected",
+  "voucher_replay_request_failed",
+  "voucher_request_build_failed",
+]);
+const publicRunOutcomes = new Set(["COMPLETED", "FAILED", "RESOURCE_LIMIT", "STOPPED"]);
+const publicRunDetails = new Set([
+  "billing_adversary_coverage_incomplete",
+  "billing_adversary_exited",
+  "billing_adversary_final_status_invalid",
+  "billing_adversary_heartbeat_stale",
+  "billing_adversary_security_violation",
+  "billing_adversary_start_failed",
+  "billing_adversary_status_invalid",
+  "billing_adversary_stop_timeout",
+  "billing_adversary_unhealthy_status",
+  "billing_container_probe_actor_stopped",
+  "billing_container_probe_coverage_incomplete",
+  "billing_container_probe_heartbeat_stale",
+  "billing_container_probe_runtime_failed",
+  "billing_container_probe_security_violation",
+  "billing_container_probe_start_timeout",
+  "billing_container_probe_status_invalid",
+  "billing_container_probe_unhealthy_status",
+  "billing_production_gate_core_unhealthy",
+  "billing_production_gate_failed",
+  "build_failed",
+  "ca_port_busy",
+  "cluster_start_failed",
+  "container_adversary_provision_failed",
+  "core_identity_capture_failed",
+  "core_identity_recapture_failed",
+  "core_service_recreated_or_restarted",
+  "core_service_unhealthy",
+  "dashboard_exited",
+  "dashboard_port_busy",
+  "dashboard_start_failed",
+  "dashboard_status_api_http_invalid",
+  "dashboard_status_api_json_invalid",
+  "dashboard_status_api_malicious_nodes_invalid",
+  "dashboard_status_api_mixed_path_invalid",
+  "dashboard_status_api_phase_invalid",
+  "dashboard_status_api_transport_failed",
+  "duration_complete",
+  "failure_watcher_degraded",
+  "failure_watcher_exited",
+  "failure_watcher_failed",
+  "failure_watcher_heartbeat_stale",
+  "failure_watcher_source_lag",
+  "failure_watcher_source_lag_timeout",
+  "failure_watcher_source_unavailable",
+  "failure_watcher_start_failed",
+  "failure_watcher_status_invalid",
+  "failure_watcher_status_missing",
+  "failure_watcher_unhealthy_status",
+  "initializing",
+  "mixed_path_controller_exited",
+  "mixed_path_containment_unverified",
+  "mixed_path_heartbeat_stale",
+  "mixed_path_migration_incomplete",
+  "mixed_path_network_containment_violation",
+  "mixed_path_network_coverage_incomplete",
+  "mixed_path_network_evidence_invalid",
+  "mixed_path_normal_partition_attachment_invalid",
+  "mixed_path_probe_failed",
+  "mixed_path_start_failed",
+  "mixed_path_status_invalid",
+  "mixed_path_stop_timeout",
+  "post_gate_server_pool_recovery_failed",
+  "profile_setup_failed",
+  "random_client_worker_failed",
+  "random_transfer_reconciliation_failed",
+  "random_worker_drain_timeout",
+  "random_worker_group_leaked",
+  "random_worker_group_stop_failed",
+  "random_worker_identity_invalid",
+  "random_worker_start_failed",
+  "random_workload_coverage_failed",
+  "project_cleanup_incomplete",
+  "project_cleanup_inspection_failed",
+  "resource_guard_cleanup_failed",
+  "resource_guard_deadline_exceeded",
+  "resource_guard_exited",
+  "resource_guard_identity_invalid",
+  "resource_guard_sample_invalid",
+  "resource_guard_sample_missing",
+  "resource_guard_sample_stale",
+  "resource_guard_start_failed",
+  "resource_guard_status_invalid",
+  "resource_guard_stop_failed",
+  "resource_guard_stop_timeout",
+  "resource_threshold_exceeded",
+  "runner_exited_unexpectedly",
+  "signal_requested",
+  "signal_requested_during_profile",
+  "three_consecutive_large_probe_failures",
+  "transfer_failure_detected",
+  "worker_group_stop_failed",
+  "worker_identity_invalid",
+  "worker_registry_invalid",
+  "worker_registry_lock_failed",
+  ...billingProductionGateFailureDetails,
+]);
+const failureWatcherErrorCodes = new Set([
+  "invalid_run_dir",
+  "invalid_transfer_header",
+  "invalid_watch_pid",
+  "watcher_already_running",
+  "watcher_error",
+  "watcher_lock_failed",
+]);
+const billingAdversaryErrorCodes = new Set([
+  "adversary_already_running",
+  "adversary_lock_failed",
+  "billing_adversary_error",
+  "ca_credential_invalid",
+  "ca_credential_path_invalid",
+  "ca_credentials_incomplete",
+  "container_probe_mode_invalid",
+  "container_probe_state_root_invalid",
+  "invalid_run_dir",
+  "invalid_watch_pid",
+  "missing_ca_base_url",
+]);
+const billingAdversaryEventCodes = new Set([
+  "attack_probe_error",
+  "backlog_replay_changed_balance",
+  "balance_probe_unavailable",
+  "channel_frozen_on_fork",
+  "component_probe_malicious_variant_accepted",
+  "component_probe_missing",
+  "component_probe_output_invalid",
+  "disconnect_fixture_not_isolated",
+  "fee_and_legacy_api_rejection",
+  "fifo_recovered_exactly_once",
+  "fixed_policy_and_legacy_endpoints_rejected",
+  "fixed_policy_rejected",
+  "fork_changed_balance",
+  "idempotent_replay",
+  "legacy_billing_endpoint_not_retired",
+  "malicious_voucher_accepted",
+  "one_mib_window_enforced",
+  "payer_signature_required",
+  "recovered_tail_not_idempotent",
+  "rejected_voucher_changed_balance",
+  "replay_changed_balance",
+  "same_sequence_fork_not_frozen",
+  "signed_record_root_protected",
+  "stale_watermark_rejected",
+  "unauthorized_balance_change",
+  "usage_inflation_rejected",
+  "voucher_api_unavailable",
+  "voucher_replay_not_idempotent",
+  "waitsubmit_balance_mismatch",
+  "waitsubmit_delete_persistence_failed",
+  "waitsubmit_fifo_recovery_failed",
+  "waitsubmit_path_missing",
+  "waitsubmit_previous_recovery_failed",
+  "waitsubmit_restart_restore_failed",
+]);
+const billingAdversaryDepths = new Set([
+  "production_go_component_probe",
+  "voucher_api",
+  "voucher_api_rejection",
+  "voucher_api_replay",
+  "voucher_chain_validation",
+  "voucher_fork_freeze",
+  "waitsubmit_fifo_recovery",
+]);
+const resourceSampleStates = new Set(["LIMIT_EXCEEDED", "OK"]);
 
 let cachedStatus = null;
 let cachedAt = 0;
@@ -56,12 +385,10 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, {
         ok: true,
         timestamp: new Date().toISOString(),
-        runDir,
-        composeProject,
       });
     }
     if (url.pathname === "/api/status") {
-      const status = await statusSnapshot();
+      const status = await statusSnapshot(url.searchParams.get("fresh") === "1");
       return json(response, 200, status, { "Cache-Control": "no-store" });
     }
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -76,8 +403,8 @@ const server = http.createServer(async (request, response) => {
       return response.end(body);
     }
     return json(response, 404, { error: "not_found" });
-  } catch (error) {
-    return json(response, 500, { error: "dashboard_error", detail: String(error?.message ?? error) });
+  } catch {
+    return json(response, 500, { error: "dashboard_error" });
   }
 });
 
@@ -89,10 +416,13 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => server.close(() => process.exit(0)));
 }
 
-async function statusSnapshot() {
+async function statusSnapshot(forceRefresh = false) {
   const now = Date.now();
-  if (cachedStatus && now - cachedAt < 1800) return cachedStatus;
-  if (refreshPromise) return refreshPromise;
+  if (!forceRefresh && cachedStatus && now - cachedAt < 1800) return cachedStatus;
+  if (refreshPromise) {
+    if (!forceRefresh) return refreshPromise;
+    await refreshPromise.catch(() => {});
+  }
   refreshPromise = buildStatus()
     .then((value) => {
       cachedStatus = value;
@@ -106,7 +436,7 @@ async function statusSnapshot() {
 }
 
 async function buildStatus() {
-  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, clientTransfers, workers, workload, compose, containers, ca, serverPool, failureWatcher] = await Promise.all([
+  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, clientTransfers, workers, workload, compose, containers, finalContainers, ca, serverPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath] = await Promise.all([
     readEnv(path.join(runDir, "metadata.env")),
     readEnv(path.join(runDir, "status.env")),
     readText(path.join(runDir, "phase")),
@@ -119,9 +449,13 @@ async function buildStatus() {
     readEnv(path.join(runDir, "workload.env")),
     readJson(composeFile),
     inspectProjectContainers(),
+    readTsv(path.join(runDir, "containers-final.tsv"), 100),
     probeCA(),
     readTsv(path.join(runDir, "server-pool.tsv"), 100),
     readFailureWatcher(path.join(runDir, "failure-watcher.json")),
+    readBillingAdversary(path.join(runDir, "billing-adversary.json")),
+    readBillingProductionGate(path.join(runDir, "billing-production-gate.json")),
+    readMixedAdversaryPath(path.join(runDir, "mixed-adversary-path.json")),
   ]);
 
   const containerMap = new Map(containers.map((item) => [item.service, item]));
@@ -131,22 +465,28 @@ async function buildStatus() {
   }
 
   const nowEpoch = Math.floor(Date.now() / 1000);
-  const startedEpoch = integer(metadata.started_epoch, 0);
   const deadlineEpoch = integer(metadata.deadline_epoch, 0);
   const durationSeconds = integer(metadata.duration_seconds, 0);
   const remainingSeconds = deadlineEpoch > 0
     ? Math.max(0, deadlineEpoch - nowEpoch)
     : durationSeconds;
-  const core = nodes.filter((item) => item.role === "ca" || item.role === "index" || item.role === "relay");
-  const nat = nodes.filter((item) => item.role === "natserver" || item.role === "natclient");
-  const activeNatServices = [workload.server, workload.client].filter(Boolean);
+  const core = nodes.filter((item) => expectedServiceSet.has(item.service)
+    && (item.role === "ca" || item.role === "index" || item.role === "relay"));
+  const nat = nodes.filter((item) => expectedServiceSet.has(item.service)
+    && (item.role === "natserver" || item.role === "natclient"));
+  const topologyWorkload = {
+    server: knownService(workload.server, "natserver"),
+    client: knownService(workload.client, "natclient"),
+  };
+  const activeNatServices = [topologyWorkload.server, topologyWorkload.client].filter(Boolean);
   const firewalls = await inspectNatFirewalls(activeNatServices, containerMap);
   const topology = await buildTopology({
     compose,
     metadata,
-    workload,
+    workload: topologyWorkload,
     nodes,
     firewalls,
+    mixedPath,
   });
   const failureAnalysis = await buildFailureAnalysis({
     failures: transferLogCache.failures,
@@ -157,21 +497,29 @@ async function buildStatus() {
     serverPool,
     compose,
   });
-  const publicNodes = nodes.map(({ networkAddresses: _networkAddresses, ...node }) => node);
+  const publicNodes = nodes.map(publicRuntimeNode);
+  const publicPhaseValue = publicPhase(phase);
+  const maliciousRuntimeMap = publicRunOutcomes.has(publicPhaseValue)
+    ? finalMaliciousRuntimeMap(finalContainers)
+    : containerMap;
+  const maliciousNodes = publicMaliciousNodes(maliciousRuntimeMap, billingAdversary.containerProbe);
 
   return {
     generatedAt: new Date().toISOString(),
-    phase: phase.trim() || "UNKNOWN",
-    metadata,
-    status,
-    timing: { nowEpoch, startedEpoch, deadlineEpoch, durationSeconds, remainingSeconds },
+    phase: publicPhaseValue,
+    metadata: publicMetadata(metadata),
+    status: publicRunStatus(status),
+    timing: { durationSeconds, remainingSeconds },
     thresholds: {
       cpu: number(metadata.cpu_limit_pct, 55),
       memory: number(metadata.memory_limit_pct, 40),
       disk: number(metadata.disk_limit_pct, 40),
     },
-    resourceGuard: guardStatus.trim(),
-    resources: { latest: resources.at(-1) ?? null, history: resources },
+    resourceGuard: publicResourceGuard(guardStatus),
+    resources: {
+      latest: publicResourceSample(resources.at(-1)),
+      history: resources.map(publicResourceSample),
+    },
     probes: {
       latest: publicProbe(probes.at(-1)),
       history: probes.map(publicProbe),
@@ -184,6 +532,9 @@ async function buildStatus() {
     workers,
     failureAnalysis,
     failureWatcher,
+    billingAdversary,
+    billingProductionGate,
+    mixedPath,
     ca,
     summary: {
       coreExpected: core.length,
@@ -195,6 +546,7 @@ async function buildStatus() {
       totalRestarts: nodes.reduce((sum, item) => sum + (item.restartCount ?? 0), 0),
     },
     nodes: publicNodes,
+    maliciousNodes,
     topology,
   };
 }
@@ -334,7 +686,7 @@ function parseFirewallRules(output) {
   return rules;
 }
 
-async function buildTopology({ compose, metadata, workload, nodes, firewalls }) {
+async function buildTopology({ compose, metadata, workload, nodes, firewalls, mixedPath }) {
   const serviceSpecs = compose?.services && typeof compose.services === "object" ? compose.services : {};
   const networkSpecs = compose?.networks && typeof compose.networks === "object" ? compose.networks : {};
   const nodeMap = new Map(nodes.map((node) => [node.service, node]));
@@ -359,17 +711,19 @@ async function buildTopology({ compose, metadata, workload, nodes, firewalls }) 
       service,
       role: roleOf(service),
       running: runtime.running,
-      health: runtime.health,
+      health: publicRuntimeStatus(runtime.health),
       networks: memberships.get(service) ?? [],
       active: activeServices.has(service),
     };
   });
 
-  const topologyNetworks = Object.entries(networkSpecs).map(([id, specification]) => ({
-    id,
-    internal: Boolean(specification?.internal),
-    members: serviceNames.filter((service) => memberships.get(service)?.includes(id)),
-  })).sort((left, right) => left.id.localeCompare(right.id, "en", { numeric: true }));
+  const topologyNetworks = Object.entries(networkSpecs)
+    .filter(([id]) => expectedNetworkSet.has(id))
+    .map(([id, specification]) => ({
+      id,
+      internal: Boolean(specification?.internal),
+      members: serviceNames.filter((service) => memberships.get(service)?.includes(id)),
+    })).sort((left, right) => left.id.localeCompare(right.id, "en", { numeric: true }));
 
   const reachabilityMatrix = [];
   for (const nat of nats) {
@@ -391,7 +745,8 @@ async function buildTopology({ compose, metadata, workload, nodes, firewalls }) 
   const relayControlLinks = relays.map((relay) => {
     const target = commandOption(serviceSpecs[relay]?.command, "-index");
     if (!target) return null;
-    const upstream = normalizeRelayReference(target);
+    const upstream = knownServiceReference(normalizeRelayReference(target), ["index", "relay"]);
+    if (!upstream) return null;
     const sharedNetworks = intersection(memberships.get(relay), memberships.get(upstream));
     const runtimeReady = Boolean(nodeMap.get(relay)?.running && nodeMap.get(upstream)?.running);
     return {
@@ -467,7 +822,8 @@ async function buildTopology({ compose, metadata, workload, nodes, firewalls }) 
     nodeMap,
   });
   const activePairs = new Set(activePath.links.map((link) => pairKey(link.source, link.target)));
-  const links = [...caLinks, ...relayControlLinks, ...natRelayLinks].map((link) => ({
+  const mixedLinks = buildMixedPathLinks(mixedPath, nodeMap);
+  const links = [...caLinks, ...relayControlLinks, ...natRelayLinks, ...mixedLinks].map((link) => ({
     ...link,
     active: activePairs.has(pairKey(link.source, link.target)),
   }));
@@ -476,7 +832,7 @@ async function buildTopology({ compose, metadata, workload, nodes, firewalls }) 
     schemaVersion: 1,
     observedAt: new Date().toISOString(),
     basis: "Compose 网络关系 + 当前业务 NAT 的 iptables 规则（推导，非逐链路主动探测）",
-    scenario: String(metadata.scenario ?? ""),
+    scenario: publicScenario(metadata.scenario),
     nodes: topologyNodes,
     networks: topologyNetworks,
     links,
@@ -488,15 +844,59 @@ async function buildTopology({ compose, metadata, workload, nodes, firewalls }) 
       byNat: reachabilityByNat,
     },
     activePath,
+    mixedPath: mixedPath.path,
     diagnostics: {
       composeLoaded: Object.keys(serviceSpecs).length > 0,
       firewallInspection: Object.fromEntries([...firewalls].map(([service, snapshot]) => [service, {
         available: snapshot.available,
-        error: snapshot.error,
         ruleCount: snapshot.rules.length,
       }])),
     },
   };
+}
+
+function buildMixedPathLinks(mixedPath, nodeMap) {
+  if (!mixedPath?.available || !Array.isArray(mixedPath.path?.nodes)) return [];
+  const nodes = mixedPath.path.nodes.filter((node) => mixedPathNodes.has(node));
+  const probePassed = mixedPath.probe?.status === "PASS" && mixedPath.probe?.sha256Verified === true;
+  const state = probePassed ? "attack-contained" : "attack-violation";
+  const links = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    const normalRelay = [nodes[index - 1], nodes[index]].find((node) => /^relay0[3-7]$/.test(node));
+    const normalPartition = publicMixedPartitionForRelay(normalRelay);
+    links.push({
+      id: `mixed:${nodes[index - 1]}:${nodes[index]}`,
+      source: nodes[index - 1],
+      target: nodes[index],
+      kind: "mixed-attack",
+      directional: true,
+      state,
+      stateLabel: probePassed ? "real P2P payload verified" : "real P2P payload unavailable",
+      protocol: "real_p2p_tunnel_http_payload",
+      reason: mixedPath.lastTrigger?.scenario ?? "mixed_path_baseline",
+      sharedNetworks: normalPartition ? [normalPartition] : [],
+      evidence: "live_process_attachment_and_sha256_payload_probe",
+      active: probePassed,
+    });
+  }
+  const normalRelayPeer = mixedPath.attachments?.maliciousRelay?.currentRelay;
+  if (mixedPath.attachments?.maliciousRelay?.running && normalRelayPeer) {
+    const normalRelayRunning = nodeMap.get(normalRelayPeer)?.running !== false;
+    links.push({
+      id: `mixed:${normalRelayPeer}:malicious-relay`,
+      source: normalRelayPeer,
+      target: "malicious-relay",
+      kind: "mixed-relay-control",
+      directional: true,
+      state: normalRelayRunning ? "dual" : "blocked",
+      stateLabel: normalRelayRunning ? "control-hello verified" : "normal relay unavailable",
+      protocol: "P2P relay control",
+      reason: "normal_relay_registered_to_malicious_relay",
+      sharedNetworks: [publicMixedPartitionForRelay(normalRelayPeer)].filter(Boolean),
+      evidence: "live_control_hello",
+    });
+  }
+  return links;
 }
 
 function reachabilityCell({ nat, relay, memberships, nodeMap, firewalls }) {
@@ -510,7 +910,7 @@ function reachabilityCell({ nat, relay, memberships, nodeMap, firewalls }) {
       tcp: false,
       udp: false,
       sharedNetworks,
-      blockedByRules: [],
+      blockedRuleCount: 0,
       reason: "no_shared_network",
       evidence: "compose_network",
     };
@@ -527,7 +927,7 @@ function reachabilityCell({ nat, relay, memberships, nodeMap, firewalls }) {
       tcp: false,
       udp: false,
       sharedNetworks,
-      blockedByRules: [],
+      blockedRuleCount: 0,
       reason: !natRuntime?.running ? "nat_not_running" : "relay_not_running",
       evidence: "container_runtime",
     };
@@ -544,7 +944,7 @@ function reachabilityCell({ nat, relay, memberships, nodeMap, firewalls }) {
       tcp: null,
       udp: null,
       sharedNetworks,
-      blockedByRules: [],
+      blockedRuleCount: 0,
       reason: "firewall_inspection_unavailable",
       evidence: "runtime_firewall",
     };
@@ -560,7 +960,7 @@ function reachabilityCell({ nat, relay, memberships, nodeMap, firewalls }) {
     tcp: tcpResult.allowed,
     udp: udpResult.allowed,
     sharedNetworks,
-    blockedByRules: [...tcpResult.blockedByRules, ...udpResult.blockedByRules],
+    blockedRuleCount: tcpResult.blockedByRules.length + udpResult.blockedByRules.length,
     reason: state === "blocked" ? "firewall" : "shared_network",
     evidence: firewall ? "runtime_firewall" : "compose_network",
   };
@@ -715,31 +1115,12 @@ function buildActivePath({ workload, clientRelay, serverRelay, relayControlLinks
 function shortestRelayRoute(start, target, relayControlLinks) {
   if (!start || !target) return [];
   if (start === target) return [start];
-  const neighbors = new Map();
-  for (const link of relayControlLinks) {
-    if (roleOf(link.source) !== "relay" || roleOf(link.target) !== "relay") continue;
-    addNeighbor(neighbors, link.source, link.target);
-    addNeighbor(neighbors, link.target, link.source);
-  }
-  const queue = [[start]];
-  const visited = new Set([start]);
-  while (queue.length > 0) {
-    const route = queue.shift();
-    const current = route.at(-1);
-    for (const next of neighbors.get(current) ?? []) {
-      if (visited.has(next)) continue;
-      const candidate = [...route, next];
-      if (next === target) return candidate;
-      visited.add(next);
-      queue.push(candidate);
-    }
-  }
-  return [];
-}
-
-function addNeighbor(neighbors, source, target) {
-  if (!neighbors.has(source)) neighbors.set(source, []);
-  neighbors.get(source).push(target);
+  const directLink = relayControlLinks.find((link) => (
+    roleOf(link.source) === "relay"
+      && roleOf(link.target) === "relay"
+      && pairKey(link.source, link.target) === pairKey(start, target)
+  ));
+  return directLink ? [start, target] : [];
 }
 
 function commandOption(command, option) {
@@ -750,9 +1131,12 @@ function commandOption(command, option) {
 
 function serviceNetworks(service) {
   const networks = service?.networks;
-  if (Array.isArray(networks)) return [...networks];
-  if (networks && typeof networks === "object") return Object.keys(networks);
-  return [];
+  const values = Array.isArray(networks)
+    ? networks
+    : networks && typeof networks === "object"
+      ? Object.keys(networks)
+      : [];
+  return values.filter((network) => expectedNetworkSet.has(network));
 }
 
 function intersection(left = [], right = []) {
@@ -814,7 +1198,7 @@ async function probeCA() {
       reachable: false,
       statusCode: 0,
       latencyMs: elapsedMs(started),
-      error: String(error.message ?? error),
+      error: "probe_failed",
     }));
   });
 }
@@ -1056,7 +1440,7 @@ function publicTransferStats(stats) {
     totalRequestedMiB: stats.totalRequestedMiB,
     totalSeconds: stats.totalSeconds,
     averageMiBPerSecond: stats.throughputSamples > 0 ? stats.throughputSum / stats.throughputSamples : 0,
-    latestTimestamp: stats.latestTimestamp,
+    latestTimestamp: publicTimestamp(stats.latestTimestamp),
   };
 }
 
@@ -1072,35 +1456,52 @@ function transferLogSnapshot(cache) {
   summary.clientCount = transferClients.length;
   summary.activeClients = transferClients.filter((client) => cache.clients.get(client).summary.totalTransfers > 0).length;
   return {
-    source: "transfers.tsv",
+    source: "transfer_records",
     available: cache.available,
-    updatedAt: cache.updatedAt,
+    updatedAt: publicTimestamp(cache.updatedAt),
     summary,
     byClient,
   };
 }
 
 function publicRecentTransfer(transfer) {
-  const {
-    transfer_id: _transferId,
-    expected_sha: _expectedSha,
-    actual_sha: _actualSha,
-    ...publicTransfer
-  } = transfer;
-  return publicTransfer;
+  const sha256State = transferSha256State(transfer.sha256_ok);
+  return {
+    timestamp: publicTimestamp(transfer.timestamp),
+    client: publicService(transfer.client, "natclient"),
+    ingress_relay: publicService(transfer.ingress_relay, "relay"),
+    server: publicService(transfer.server, "natserver"),
+    requested_mib: Math.max(0, number(transfer.requested_mib, 0)),
+    rc: integer(transfer.rc, -1),
+    bytes: Math.max(0, integer(transfer.bytes, 0)),
+    seconds: Math.max(0, number(transfer.seconds, 0)),
+    mib_per_second: Math.max(0, number(transfer.mib_per_second, 0)),
+    sha256_ok: sha256State === true ? "yes" : sha256State === false ? "no" : "unknown",
+  };
 }
 
 function publicProbe(probe) {
   if (!probe) return null;
-  const {
-    expected_sha: _expectedSha,
-    actual_sha: _actualSha,
-    ...publicValue
-  } = probe;
-  if (/^\d{16,}-natclient\d{2}$/.test(String(publicValue.label ?? ""))) {
-    publicValue.label = "random-transfer";
-  }
-  return publicValue;
+  const rawLabel = String(probe.label ?? "");
+  const label = rawLabel === "profile3_kcp_to_tcp_inflight"
+    ? rawLabel
+    : rawLabel.startsWith("profile3-tcp-cold-")
+      ? "profile-validation"
+      : /^\d{16,}-natclient\d{2}$/.test(rawLabel)
+        ? "random-transfer"
+        : "probe";
+  const sha256State = transferSha256State(probe.sha256_ok);
+  return {
+    timestamp: publicTimestamp(probe.timestamp),
+    label,
+    requested_mib: Math.max(0, number(probe.requested_mib, 0)),
+    rc: String(integer(probe.rc, -1)),
+    bytes: Math.max(0, integer(probe.bytes, 0)),
+    seconds: Math.max(0, number(probe.seconds, 0)),
+    mib_per_second: Math.max(0, number(probe.mib_per_second, 0)),
+    sha256_ok: sha256State === true ? "yes" : sha256State === false ? "no" : "unknown",
+    client: publicService(probe.client, "natclient"),
+  };
 }
 
 async function readFailureWatcher(file) {
@@ -1115,7 +1516,7 @@ async function readFailureWatcher(file) {
       monitoringSince: "",
       heartbeatAt: "",
       lastScanAt: "",
-      source: { name: "transfers.tsv", available: false, lagBytes: 0 },
+      source: { name: "transfer_records", available: false, lagBytes: 0 },
       baseline: { transferRecords: 0, failureRecords: 0 },
       observed: { transferRecords: 0, failureRecords: 0, newFailureRecords: 0 },
       alerts: { limit: 0, total: 0, retained: 0, lastAlertAt: "", recent: [] },
@@ -1127,7 +1528,10 @@ async function readFailureWatcher(file) {
   const heartbeatEpoch = Date.parse(heartbeatAt);
   const status = ["STARTING", "RUNNING", "WAITING_FOR_SOURCE", "DEGRADED", "STOPPED", "FAILED"]
     .includes(value.status) ? value.status : "UNKNOWN";
-  const heartbeatFresh = Number.isFinite(heartbeatEpoch) && Date.now() - heartbeatEpoch <= 15000;
+  const now = Date.now();
+  const heartbeatFresh = Number.isFinite(heartbeatEpoch)
+    && heartbeatEpoch <= now + 5000
+    && now - heartbeatEpoch <= 15000;
   const recent = Array.isArray(value.alerts?.recent)
     ? value.alerts.recent.map(publicWatcherAlert).filter(Boolean).slice(0, 100)
     : [];
@@ -1136,7 +1540,7 @@ async function readFailureWatcher(file) {
   const sourceAvailable = Boolean(value.source?.available);
   const sourceCursorValid = sourceOffset <= sourceSize;
   const sourceLagBytes = Math.max(0, sourceSize - sourceOffset);
-  const lastErrorCode = safeDiagnosticLabel(value.lastError?.code);
+  const lastErrorCode = publicEnum(value.lastError?.code, failureWatcherErrorCodes, "watcher_error");
 
   return {
     schemaVersion: 1,
@@ -1149,7 +1553,7 @@ async function readFailureWatcher(file) {
     heartbeatAt,
     lastScanAt: publicTimestamp(value.lastScanAt),
     source: {
-      name: "transfers.tsv",
+      name: "transfer_records",
       available: sourceAvailable,
       lagBytes: sourceLagBytes,
     },
@@ -1172,6 +1576,678 @@ async function readFailureWatcher(file) {
     lastError: lastErrorCode
       ? { at: publicTimestamp(value.lastError?.at), code: lastErrorCode }
       : null,
+  };
+}
+
+async function readBillingAdversary(file) {
+  const scenarios = [
+    ["relay_usage_inflation", "relay"],
+    ["relay_request_replay", "relay"],
+    ["relay_fee_override", "relay"],
+    ["relay_window_overrun", "relay"],
+    ["nat_stale_watermark", "natserver"],
+    ["nat_same_sequence_fork", "natserver"],
+    ["nat_signature_refusal", "natserver"],
+    ["relay_voucher_tamper", "relay"],
+    ["index_disconnect_backlog_recovery", "network"],
+  ];
+  const value = await readJson(file);
+  if (value.schemaVersion !== 1) return emptyBillingAdversary(scenarios);
+
+  const allowedStatuses = new Set(["STARTING", "RUNNING", "FAILED", "DEGRADED", "STOPPED"]);
+  const allowedVerdicts = new Set(["CONTAINED", "VIOLATION", "HARNESS_ERROR"]);
+  const status = allowedStatuses.has(value.status) ? value.status : "UNKNOWN";
+  const heartbeatAt = publicTimestamp(value.heartbeatAt);
+  const heartbeatEpoch = Date.parse(heartbeatAt);
+  const now = Date.now();
+  const heartbeatFresh = Number.isFinite(heartbeatEpoch)
+    && heartbeatEpoch <= now + 5000
+    && now - heartbeatEpoch <= 20000;
+  const coverage = scenarios.map(([scenario, actor]) => {
+    const source = value.coverage?.[scenario] ?? {};
+    return {
+      scenario,
+      actor,
+      executed: Math.max(0, integer(source.executed, 0)),
+      contained: Math.max(0, integer(source.contained, 0)),
+      violations: Math.max(0, integer(source.violations, 0)),
+    };
+  });
+  const actorNames = ["natserver", "relay", "network"];
+  const actors = Object.fromEntries(actorNames.map((actor) => {
+    const actorCoverage = coverage.filter((item) => item.actor === actor);
+    return [actor, {
+      executed: actorCoverage.reduce((sum, item) => sum + item.executed, 0),
+      contained: actorCoverage.reduce((sum, item) => sum + item.contained, 0),
+      violations: actorCoverage.reduce((sum, item) => sum + item.violations, 0),
+    }];
+  }));
+  const executedChecks = coverage.reduce((sum, item) => sum + item.executed, 0);
+  const containedChecks = coverage.reduce((sum, item) => sum + item.contained, 0);
+  const failedChecks = coverage.reduce((sum, item) => sum + item.violations, 0);
+  const coveredScenarios = coverage.filter((item) => item.executed > 0).length;
+  const componentProbe = publicBillingComponentProbe(value.componentProbe, scenarios.length);
+  const componentProbeHealthy = componentProbe.status === "RUNNING"
+    && componentProbe.failed === 0
+    && componentProbe.required === scenarios.length
+    && componentProbe.covered === componentProbe.required;
+  const containerProbe = publicBillingContainerProbe(value.containerProbe);
+  const containerProbeHealthy = containerProbe.status === "DISABLED" || (
+    containerProbe.status === "RUNNING"
+    && containerProbe.failed === 0
+    && containerProbe.covered === containerProbe.required
+  );
+  const recent = Array.isArray(value.recent)
+    ? value.recent.map((event) => publicAdversaryEvent(event, scenarios, allowedVerdicts)).filter(Boolean).slice(0, 24)
+    : [];
+  const lastErrorCode = publicEnum(value.lastError?.code, billingAdversaryErrorCodes, "billing_adversary_error");
+
+  return {
+    schemaVersion: 1,
+    available: true,
+    status,
+    healthy: status === "RUNNING" && heartbeatFresh && failedChecks === 0
+      && coveredScenarios === scenarios.length && componentProbeHealthy && containerProbeHealthy,
+    mode: value.mode === "active_local_api" ? value.mode : "isolated_probe",
+    heartbeatAt,
+    summary: {
+      executedChecks,
+      preventedChecks: containedChecks,
+      missedChecks: failedChecks,
+      preventionRatePct: executedChecks > 0 ? round(containedChecks / executedChecks * 100, 2) : 0,
+      stateChanges: Math.max(0, integer(value.summary?.stateChanges, 0)),
+      coveredScenarios,
+      requiredScenarioCount: scenarios.length,
+    },
+    actors,
+    coverage,
+    componentProbe,
+    containerProbe,
+    recent,
+    lastError: lastErrorCode
+      ? { at: publicTimestamp(value.lastError?.at), code: lastErrorCode }
+      : null,
+  };
+}
+
+async function readMixedAdversaryPath(file) {
+  const value = await readJson(file);
+  if (!value || value.schemaVersion !== 1 || !mixedPathStatuses.has(value.status)) return emptyMixedAdversaryPath();
+  const heartbeatAt = publicTimestamp(value.heartbeatAt);
+  const heartbeatEpoch = Date.parse(heartbeatAt);
+  const heartbeatFresh = Number.isFinite(heartbeatEpoch)
+    && heartbeatEpoch <= Date.now() + 5000
+    && Date.now() - heartbeatEpoch <= 20000;
+  const attachmentDefinitions = [
+    ["maliciousNatserver", "malicious-natserver", "malicious-natserver"],
+    ["normalProbe", "mixed-path-probe", "natclient"],
+    ["maliciousRelay", "malicious-relay", "malicious-relay"],
+  ];
+  const attachments = Object.fromEntries(attachmentDefinitions.map(([key, node, role]) => {
+    const source = value.attachments?.[key] ?? {};
+    return [key, {
+      node,
+      role,
+      currentRelay: publicMixedPathNode(source.currentRelay),
+      previousRelay: publicMixedPathNode(source.previousRelay),
+      attachmentType: publicEnum(source.attachmentType, mixedPathAttachmentTypes, ""),
+      normalPartition: publicEnum(source.normalPartition, mixedPathPartitions, ""),
+      basis: publicEnum(source.basis, mixedPathAttachmentBases, ""),
+      peerDirection: source.peerDirection === "normal_relay_to_malicious_relay"
+        ? source.peerDirection
+        : "",
+      generation: Math.max(0, integer(source.generation, 0)),
+      running: source.running === true,
+      switchedAt: publicTimestamp(source.switchedAt),
+      lastScenario: publicEnum(source.lastScenario, maliciousScenarioNames, ""),
+    }];
+  }));
+  const pathNodes = Array.isArray(value.path?.nodes)
+    ? value.path.nodes.map(publicMixedPathNode).filter(Boolean).slice(0, 8)
+    : [];
+  const pathState = new Set(["starting", "active", "migrating", "blocked"]).has(value.path?.state)
+    ? value.path.state
+    : "blocked";
+  const probeStatus = new Set(["PENDING", "PASS", "FAIL"]).has(value.probe?.status) ? value.probe.status : "FAIL";
+  const migrations = Array.isArray(value.migrations)
+    ? value.migrations.map(publicMixedMigration).filter(Boolean).slice(0, 20)
+    : [];
+  const networkCoverage = publicMixedNetworkCoverage(value.networkCoverage);
+  const networkSummary = {
+    executed: networkCoverage.reduce((sum, item) => sum + item.executed, 0),
+    contained: networkCoverage.reduce((sum, item) => sum + item.contained, 0),
+    violations: networkCoverage.reduce((sum, item) => sum + item.violations, 0),
+    covered: networkCoverage.filter((item) => item.executed > 0 && item.violations === 0).length,
+    required: maliciousScenarioActors.size,
+  };
+  const lastTrigger = publicMixedTrigger(value.lastTrigger);
+  const normalRelays = [...new Set([
+    ...pathNodes.filter((node) => /^relay0[3-7]$/.test(node)),
+    attachments.maliciousNatserver.currentRelay,
+    attachments.maliciousRelay.currentRelay,
+  ].filter((relay) => publicMixedPartitionForRelay(relay)))];
+  const normalPartitions = [...new Set(normalRelays.map(publicMixedPartitionForRelay).filter(Boolean))];
+  const pathContainsMaliciousNode = pathNodes.includes("malicious-natserver") || pathNodes.includes("malicious-relay");
+  const pathContainsNormalPartition = normalPartitions.length > 0;
+  const attachmentEvidenceValid = mixedAttachmentEvidenceValid(attachments);
+  const requiredAttachmentsRunning = attachments.maliciousNatserver.running
+    && attachments.normalProbe.running
+    && attachments.maliciousRelay.running;
+  const attachmentLifecycleReady = value.status === "MIGRATING" || requiredAttachmentsRunning;
+  const containmentStatus = new Set(["PENDING", "VERIFIED", "FAILED"]).has(value.containment?.status)
+    ? value.containment.status
+    : "PENDING";
+  return {
+    schemaVersion: 1,
+    available: true,
+    status: value.status,
+    healthy: ["RUNNING", "MIGRATING"].includes(value.status) && heartbeatFresh
+      && probeStatus === "PASS" && integer(value.probe?.consecutiveFailures, 0) === 0
+      && attachmentLifecycleReady && attachmentEvidenceValid
+      && pathContainsNormalPartition && pathContainsMaliciousNode,
+    heartbeatAt,
+    generation: Math.max(0, integer(value.generation, 0)),
+    observedTriggers: Math.max(0, integer(value.observedTriggers, 0)),
+    normalPartitions: {
+      control_partition_a: ["relay03", "relay04", "relay05"],
+      control_partition_b: ["relay06", "relay07"],
+    },
+    attachments,
+    path: {
+      state: pathState,
+      nodes: pathNodes,
+      transport: value.path?.transport === "real_p2p_tunnel_http_payload" ? value.path.transport : "unknown",
+      basis: value.path?.basis === "live_process_attachment_and_sha256_payload_probe" ? value.path.basis : "unknown",
+      kind: value.path?.kind === "normal_partition_mixed_adversary" ? value.path.kind : "unknown",
+      normalRelays,
+      normalPartitions,
+      containsNormalPartition: pathContainsNormalPartition,
+      containsMaliciousNode: pathContainsMaliciousNode,
+    },
+    probe: {
+      status: probeStatus,
+      observedAt: publicTimestamp(value.probe?.observedAt),
+      successes: Math.max(0, integer(value.probe?.successes, 0)),
+      failures: Math.max(0, integer(value.probe?.failures, 0)),
+      consecutiveFailures: Math.max(0, integer(value.probe?.consecutiveFailures, 0)),
+      bytes: Math.max(0, integer(value.probe?.bytes, 0)),
+      sha256Verified: value.probe?.sha256Verified === true,
+      errorCode: publicMixedError(value.probe?.errorCode),
+    },
+    lastTrigger,
+    migrations,
+    networkCoverage,
+    networkSummary,
+    containment: {
+      status: containmentStatus,
+      verifiedMigrations: Math.max(0, integer(value.containment?.verifiedMigrations, 0)),
+      lastScenario: publicEnum(value.containment?.lastScenario, maliciousScenarioNames, ""),
+      lastActor: value.containment?.lastActor === "natserver" || value.containment?.lastActor === "relay"
+        ? value.containment.lastActor
+        : "",
+      lastAction: publicMixedContainmentAction(value.containment?.lastAction),
+      verifiedAt: publicTimestamp(value.containment?.verifiedAt),
+    },
+    diagnostics: {
+      heartbeatFresh,
+      requiredAttachmentsRunning,
+      attachmentLifecycleReady,
+      attachmentEvidenceValid,
+      pathContainsNormalPartition,
+      pathContainsMaliciousNode,
+    },
+  };
+}
+
+function publicMixedMigration(value) {
+  const trigger = publicMixedTrigger(value?.trigger);
+  const endpoint = value?.endpoint === "malicious-natserver" || value?.endpoint === "malicious-relay"
+    || value?.endpoint === "mixed-path-probe"
+    ? value.endpoint
+    : "";
+  const previousRelay = publicMixedPathNode(value?.previousRelay);
+  const currentRelay = publicMixedPathNode(value?.currentRelay);
+  if (!trigger || !endpoint || !previousRelay || !currentRelay) return null;
+  return {
+    generation: Math.max(0, integer(value.generation, 0)),
+    trigger,
+    endpoint,
+    previousRelay,
+    currentRelay,
+    normalPartition: publicMixedPartitionForRelay(currentRelay),
+    failureInjected: value.failureInjected === true,
+    isolationVerified: value.isolationVerified === true,
+    triggerContained: value.triggerContained === true && trigger.contained === true,
+    containmentVerified: value.containmentVerified === true,
+    probePassed: value.probePassed === true,
+    postContainmentPath: Array.isArray(value.postContainmentPath)
+      ? value.postContainmentPath.map(publicMixedPathNode).filter(Boolean).slice(0, 8)
+      : [],
+    switchedAt: publicTimestamp(value.switchedAt),
+  };
+}
+
+function mixedAttachmentEvidenceValid(attachments) {
+  const maliciousNatserver = attachments.maliciousNatserver;
+  const maliciousRelay = attachments.maliciousRelay;
+  const normalProbe = attachments.normalProbe;
+  const natserverValid = publicMixedPartitionForRelay(maliciousNatserver.currentRelay) === maliciousNatserver.normalPartition
+    && maliciousNatserver.attachmentType === "registered_to_normal_relay"
+    && maliciousNatserver.basis === "live_relay_registration";
+  const relayValid = publicMixedPartitionForRelay(maliciousRelay.currentRelay) === maliciousRelay.normalPartition
+    && maliciousRelay.attachmentType === "control_peer_with_normal_relay"
+    && maliciousRelay.basis === "live_control_hello"
+    && maliciousRelay.peerDirection === "normal_relay_to_malicious_relay";
+  const probePartition = publicMixedPartitionForRelay(normalProbe.currentRelay);
+  const probeValid = normalProbe.currentRelay === "malicious-relay"
+    ? normalProbe.attachmentType === "connected_to_malicious_relay"
+      && normalProbe.normalPartition === ""
+      && normalProbe.basis === "live_tunnel_registration"
+    : Boolean(probePartition)
+      && normalProbe.normalPartition === probePartition
+      && normalProbe.attachmentType === "connected_to_normal_relay"
+      && normalProbe.basis === "live_tunnel_registration";
+  return natserverValid && relayValid && probeValid;
+}
+
+function publicMixedPartitionForRelay(relay) {
+  if (["relay03", "relay04", "relay05"].includes(relay)) return "control_partition_a";
+  if (["relay06", "relay07"].includes(relay)) return "control_partition_b";
+  return "";
+}
+
+function publicMixedContainmentAction(value) {
+  const actions = new Set([
+    "isolate_malicious_natserver_and_migrate_to_random_normal_relay",
+    "isolate_malicious_relay_and_migrate_to_random_normal_relay",
+  ]);
+  return actions.has(value) ? value : "";
+}
+
+function publicMixedTrigger(value) {
+  const actor = value?.actor === "natserver" || value?.actor === "relay" ? value.actor : "";
+  const scenario = publicEnum(value?.scenario, maliciousScenarioNames, "");
+  if (!actor || !scenario || maliciousScenarioActors.get(scenario) !== actor
+    || !Number.isSafeInteger(value?.sequence) || value.sequence < 1) return null;
+  return {
+    actor,
+    scenario,
+    sequence: value.sequence,
+    observedAt: publicTimestamp(value.observedAt),
+    contained: value.contained === true,
+    defense: publicBillingContainerProbeCode(value.defense),
+    requestCount: Math.max(0, integer(value.requestCount, 0)),
+    httpStatuses: Array.isArray(value.httpStatuses)
+      ? value.httpStatuses.map((status) => integer(status, 0)).filter((status) => status >= 100 && status <= 599).slice(0, 8)
+      : [],
+  };
+}
+
+function publicMixedNetworkCoverage(value) {
+  const sourceByScenario = new Map();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const expectedActor = maliciousScenarioActors.get(item?.scenario);
+      if (!expectedActor || item.actor !== expectedActor) continue;
+      const counters = [item.executed, item.contained, item.violations];
+      if (counters.some((counter) => !Number.isSafeInteger(counter) || counter < 0)
+        || item.executed !== item.contained + item.violations) continue;
+      sourceByScenario.set(item.scenario, item);
+    }
+  }
+  return [...maliciousScenarioActors].map(([scenario, actor]) => {
+    const source = sourceByScenario.get(scenario);
+    return {
+      scenario,
+      actor,
+      executed: source?.executed ?? 0,
+      contained: source?.contained ?? 0,
+      violations: source?.violations ?? 0,
+    };
+  });
+}
+
+function publicMixedPathNode(value) {
+  const node = String(value ?? "");
+  return mixedPathNodes.has(node) ? node : "";
+}
+
+function publicMixedError(value) {
+  const code = String(value ?? "");
+  return /^mixed_path_[a-z0-9_]{1,52}$/.test(code) ? code : code ? "mixed_path_probe_failed" : "";
+}
+
+function emptyMixedAdversaryPath() {
+  return {
+    schemaVersion: 1,
+    available: false,
+    status: "NOT_STARTED",
+    healthy: false,
+    heartbeatAt: "",
+    generation: 0,
+    observedTriggers: 0,
+    normalPartitions: {
+      control_partition_a: ["relay03", "relay04", "relay05"],
+      control_partition_b: ["relay06", "relay07"],
+    },
+    attachments: {
+      maliciousNatserver: { node: "malicious-natserver", role: "malicious-natserver", currentRelay: "", previousRelay: "", attachmentType: "", normalPartition: "", basis: "", peerDirection: "", generation: 0, running: false, switchedAt: "", lastScenario: "" },
+      normalProbe: { node: "mixed-path-probe", role: "natclient", currentRelay: "", previousRelay: "", attachmentType: "", normalPartition: "", basis: "", peerDirection: "", generation: 0, running: false, switchedAt: "", lastScenario: "" },
+      maliciousRelay: { node: "malicious-relay", role: "malicious-relay", currentRelay: "", previousRelay: "", attachmentType: "", normalPartition: "", basis: "", peerDirection: "", generation: 0, running: false, switchedAt: "", lastScenario: "" },
+    },
+    path: { state: "starting", nodes: [], transport: "unknown", basis: "unknown", kind: "unknown", normalRelays: [], normalPartitions: [], containsNormalPartition: false, containsMaliciousNode: false },
+    probe: { status: "PENDING", observedAt: "", successes: 0, failures: 0, consecutiveFailures: 0, bytes: 0, sha256Verified: false, errorCode: "" },
+    lastTrigger: null,
+    migrations: [],
+    networkCoverage: [...maliciousScenarioActors].map(([scenario, actor]) => ({ scenario, actor, executed: 0, contained: 0, violations: 0 })),
+    networkSummary: { executed: 0, contained: 0, violations: 0, covered: 0, required: maliciousScenarioActors.size },
+    containment: { status: "PENDING", verifiedMigrations: 0, lastScenario: "", lastActor: "", lastAction: "", verifiedAt: "" },
+    diagnostics: { heartbeatFresh: false, requiredAttachmentsRunning: false, attachmentLifecycleReady: false, attachmentEvidenceValid: false, pathContainsNormalPartition: false, pathContainsMaliciousNode: false },
+  };
+}
+
+function publicBillingContainerProbe(value) {
+  const expected = [
+    ["nat_stale_watermark", "natserver"],
+    ["nat_same_sequence_fork", "natserver"],
+    ["nat_signature_refusal", "natserver"],
+    ["nat_identity_forgery", "natserver"],
+    ["relay_usage_inflation", "relay"],
+    ["relay_request_replay", "relay"],
+    ["relay_fee_override", "relay"],
+    ["relay_window_overrun", "relay"],
+    ["relay_voucher_tamper", "relay"],
+  ];
+  const failed = () => emptyBillingContainerProbe(expected, "FAILED", 1);
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== 1) return failed();
+  const allowedStatuses = new Set(["DISABLED", "STARTING", "RUNNING", "FAILED", "STOPPED"]);
+  if (!allowedStatuses.has(value.status)) return failed();
+  const counters = [value.executed, value.failed, value.covered, value.required];
+  if (counters.some((count) => !Number.isSafeInteger(count) || count < 0)
+    || value.required !== expected.length || value.covered > value.required) return failed();
+  if (value.status === "DISABLED") {
+    if (value.executed !== 0 || value.failed !== 0 || value.covered !== 0) return failed();
+    return emptyBillingContainerProbe(expected, "DISABLED", 0);
+  }
+  if (!Array.isArray(value.coverage) || value.coverage.length !== expected.length) return failed();
+  const sourceByScenario = new Map();
+  for (const source of value.coverage) {
+    if (!source || typeof source !== "object" || sourceByScenario.has(source.scenario)) return failed();
+    sourceByScenario.set(source.scenario, source);
+  }
+  const coverage = [];
+  for (const [scenario, actor] of expected) {
+    const source = sourceByScenario.get(scenario);
+    const itemCounters = [source?.executed, source?.contained, source?.violations];
+    if (!source || source.actor !== actor
+      || itemCounters.some((count) => !Number.isSafeInteger(count) || count < 0)
+      || source.contained + source.violations !== source.executed) return failed();
+    coverage.push({
+      scenario,
+      actor,
+      executed: source.executed,
+      contained: source.contained,
+      violations: source.violations,
+    });
+  }
+  const executed = coverage.reduce((sum, item) => sum + item.executed, 0);
+  const violations = coverage.reduce((sum, item) => sum + item.violations, 0);
+  const covered = coverage.filter((item) => item.executed > 0).length;
+  const errorCode = publicBillingContainerProbeCode(value.errorCode);
+  const infrastructureFailure = errorCode.startsWith("container_probe_");
+  if (value.executed !== executed || value.covered !== covered
+    || value.failed > violations + 2
+    || (value.failed !== violations && !(infrastructureFailure && value.failed >= 1))
+    || (value.status === "RUNNING" && (value.failed !== 0 || covered !== expected.length || errorCode !== ""))
+    || (value.status === "FAILED" && value.failed === 0)) return failed();
+  const actorStatuses = value.actors && typeof value.actors === "object" && !Array.isArray(value.actors)
+    ? value.actors
+    : {};
+  const actors = {};
+  for (const actor of ["natserver", "relay"]) {
+    const actorCoverage = coverage.filter((item) => item.actor === actor);
+    const actorSource = actorStatuses[actor];
+    const required = actorCoverage.length;
+    const actorExecuted = actorCoverage.reduce((sum, item) => sum + item.executed, 0);
+    const actorFailed = actorCoverage.reduce((sum, item) => sum + item.violations, 0);
+    const actorCovered = actorCoverage.filter((item) => item.executed > 0).length;
+    if (!actorSource || !allowedStatuses.has(actorSource.status)
+      || actorSource.required !== required || actorSource.executed !== actorExecuted
+      || actorSource.covered !== actorCovered || !Number.isSafeInteger(actorSource.failed)
+      || actorSource.failed < actorFailed || actorSource.failed > actorFailed + 1) return failed();
+    actors[actor] = {
+      status: actorSource.status,
+      executed: actorExecuted,
+      failed: actorSource.failed,
+      covered: actorCovered,
+      required,
+    };
+  }
+  if (value.status === "RUNNING" && Object.values(actors).some((actor) => actor.status !== "RUNNING")) return failed();
+  const recent = Array.isArray(value.recent)
+    ? value.recent.map((event) => publicBillingContainerEvent(event, expected)).filter(Boolean).slice(0, 16)
+    : [];
+  return {
+    schemaVersion: 1,
+    status: value.status,
+    executed,
+    failed: value.failed,
+    covered,
+    required: expected.length,
+    actors,
+    coverage,
+    recent,
+    scope: "isolated_container_http_ca_fixture",
+    transport: ["container_http_peer", "container_http_ca"],
+    limitations: ["does_not_instantiate_full_p2p_payload_socket"],
+    errorCode,
+  };
+}
+
+function emptyBillingContainerProbe(expected, status, failed) {
+  const coverage = expected.map(([scenario, actor]) => ({ scenario, actor, executed: 0, contained: 0, violations: 0 }));
+  return {
+    schemaVersion: 1,
+    status,
+    executed: 0,
+    failed,
+    covered: 0,
+    required: expected.length,
+    actors: {
+      natserver: { status, executed: 0, failed, covered: 0, required: expected.filter(([, actor]) => actor === "natserver").length },
+      relay: { status, executed: 0, failed, covered: 0, required: expected.filter(([, actor]) => actor === "relay").length },
+    },
+    coverage,
+    recent: [],
+    scope: "isolated_container_http_ca_fixture",
+    transport: ["container_http_peer", "container_http_ca"],
+    limitations: ["does_not_instantiate_full_p2p_payload_socket"],
+    errorCode: failed > 0 ? "container_probe_snapshot_invalid" : "",
+  };
+}
+
+function publicBillingContainerEvent(value, expected) {
+  const actor = new Map(expected).get(value?.scenario);
+  const observedAt = publicTimestamp(value?.observedAt);
+  if (!actor || value.actor !== actor || !observedAt
+    || !Number.isSafeInteger(value.sequence) || value.sequence < 1) return null;
+  const allowedPaths = new Set([
+    "container_peer_protocol",
+    "malicious-relay->malicious-natserver",
+    "malicious-relay->malicious-natserver->ca",
+    "malicious-natserver->malicious-relay",
+    "malicious-natserver->malicious-relay->ca",
+    "malicious-natserver->malicious-relay->malicious-natserver",
+  ]);
+  return {
+    sequence: value.sequence,
+    observedAt,
+    scenario: value.scenario,
+    actor,
+    passed: value.passed === true,
+    verdict: value.passed === true ? "CONTAINED" : "VIOLATION",
+    failureCode: publicBillingContainerProbeCode(value.failureCode),
+    defense: publicBillingContainerProbeCode(value.defense),
+    requestCount: Math.max(0, integer(value.requestCount, 0)),
+    httpStatuses: Array.isArray(value.httpStatuses)
+      ? value.httpStatuses.map((status) => integer(status, 0)).filter((status) => status >= 100 && status <= 599).slice(0, 8)
+      : [],
+    balanceDelta: Number.isSafeInteger(value.balanceDelta) ? value.balanceDelta : 0,
+    stateChanged: value.stateChanged === true,
+    path: allowedPaths.has(value.path) ? value.path : "container_peer_protocol",
+  };
+}
+
+function publicBillingContainerProbeCode(value) {
+  const code = String(value ?? "");
+  return billingContainerProbeCodes.has(code) ? code : code ? "container_probe_failed" : "";
+}
+
+function publicBillingComponentProbe(value, expectedScenarios) {
+  const failed = {
+    schemaVersion: 1,
+    status: "FAILED",
+    executed: 0,
+    failed: 1,
+    required: expectedScenarios,
+    covered: 0,
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return failed;
+  const allowedStatuses = new Set(["STARTING", "RUNNING", "FAILED", "DEGRADED", "STOPPED"]);
+  const counters = [value.executed, value.failed, value.required, value.covered];
+  if (value.schemaVersion !== 1 || !allowedStatuses.has(value.status)
+    || counters.some((count) => !Number.isSafeInteger(count) || count < 0)
+    || value.required !== expectedScenarios || value.failed > value.executed
+    || value.covered > value.required || value.covered > value.executed
+    || (value.status === "STARTING" && (value.executed !== 0 || value.failed !== 0 || value.covered !== 0))
+    || (["RUNNING", "DEGRADED", "STOPPED"].includes(value.status) && value.failed !== 0)
+    || (value.status === "FAILED" && value.failed === 0)) {
+    return failed;
+  }
+  return {
+    schemaVersion: 1,
+    status: value.status,
+    executed: value.executed,
+    failed: value.failed,
+    required: value.required,
+    covered: value.covered,
+  };
+}
+
+async function readBillingProductionGate(file) {
+  const value = await readJson(file);
+  const source = value && typeof value === "object" && !Array.isArray(value) && value.schemaVersion === 2
+    ? value
+    : {};
+  const allowedStatuses = new Set(["STARTING", "PASSED", "FAILED"]);
+  const status = allowedStatuses.has(source.status) ? source.status : "UNKNOWN";
+  return {
+    schemaVersion: 2,
+    status,
+    detail: publicBillingProductionGateDetail(status, source.detail),
+    queueDepthBefore: publicNonNegativeInteger(source.queueDepthBefore),
+    queueDepthAfterRestart: publicNonNegativeInteger(source.queueDepthAfterRestart),
+    queueDepthAfterRecovery: publicNonNegativeInteger(source.queueDepthAfterRecovery),
+    transferBytes: publicNonNegativeInteger(source.transferBytes),
+    observedBillableBytes: publicNonNegativeInteger(source.observedBillableBytes),
+    authorizedBillableBytes: publicNonNegativeInteger(source.authorizedBillableBytes),
+    payerDebit: publicNonNegativeInteger(source.payerDebit),
+    unsettledTailBytes: publicNonNegativeInteger(source.unsettledTailBytes),
+    relayCredit: publicNonNegativeInteger(source.relayCredit),
+    caCredit: publicNonNegativeInteger(source.caCredit),
+    amountVerified: source.amountVerified === true,
+    splitVerified: source.splitVerified === true,
+    observedAt: publicTimestamp(source.observedAt),
+  };
+}
+
+function publicBillingProductionGateDetail(status, value) {
+  if (status === "STARTING") return "initializing";
+  if (status === "PASSED") return "verified";
+  if (status !== "FAILED") return "";
+  return billingProductionGateFailureDetails.has(value) ? value : "billing_production_gate_failed";
+}
+
+function publicNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function emptyBillingAdversary(scenarios) {
+  return {
+    schemaVersion: 1,
+    available: false,
+    status: "NOT_STARTED",
+    healthy: false,
+    mode: "isolated_probe",
+    heartbeatAt: "",
+    summary: {
+      executedChecks: 0,
+      preventedChecks: 0,
+      missedChecks: 0,
+      preventionRatePct: 0,
+      stateChanges: 0,
+      coveredScenarios: 0,
+      requiredScenarioCount: scenarios.length,
+    },
+    actors: {
+      natserver: { executed: 0, contained: 0, violations: 0 },
+      relay: { executed: 0, contained: 0, violations: 0 },
+      network: { executed: 0, contained: 0, violations: 0 },
+    },
+    coverage: scenarios.map(([scenario, actor]) => ({ scenario, actor, executed: 0, contained: 0, violations: 0 })),
+    componentProbe: {
+      schemaVersion: 1,
+      status: "NOT_STARTED",
+      executed: 0,
+      failed: 0,
+      required: scenarios.length,
+      covered: 0,
+    },
+    containerProbe: emptyBillingContainerProbe([
+      ["nat_stale_watermark", "natserver"],
+      ["nat_same_sequence_fork", "natserver"],
+      ["nat_signature_refusal", "natserver"],
+      ["nat_identity_forgery", "natserver"],
+      ["relay_usage_inflation", "relay"],
+      ["relay_request_replay", "relay"],
+      ["relay_fee_override", "relay"],
+      ["relay_window_overrun", "relay"],
+      ["relay_voucher_tamper", "relay"],
+    ], "NOT_STARTED", 0),
+    recent: [],
+    lastError: null,
+  };
+}
+
+function publicAdversaryEvent(value, scenarios, allowedVerdicts) {
+  if (!value || typeof value !== "object") return null;
+  const actorByScenario = new Map(scenarios);
+  const actor = actorByScenario.get(value.scenario);
+  if (!actor) return null;
+  const verdict = allowedVerdicts.has(value.verdict) ? value.verdict : "HARNESS_ERROR";
+  const failureCode = publicEnum(value.failureCode, billingAdversaryEventCodes, "adversary_event_failed");
+  const defense = publicEnum(value.defense, billingAdversaryEventCodes, "defense_applied");
+  return {
+    sequence: Math.max(0, integer(value.sequence, 0)),
+    observedAt: publicTimestamp(value.observedAt),
+    scenario: value.scenario,
+    actor,
+    actorInstance: actor === "relay"
+      ? "simulated-malicious-relay"
+      : actor === "natserver"
+        ? "simulated-malicious-natserver"
+        : "simulated-index-link",
+    passed: value.passed === true,
+    verdict,
+    failureCode,
+    defense,
+    requestCount: Math.max(0, integer(value.requestCount, 0)),
+    httpStatuses: Array.isArray(value.httpStatuses)
+      ? value.httpStatuses.map((status) => integer(status, 0)).filter((status) => status >= 0 && status <= 599).slice(0, 10)
+      : [],
+    balanceDelta: integer(value.balanceDelta, 0),
+    stateChanged: value.stateChanged === true,
+    depth: publicEnum(value.depth, billingAdversaryDepths, "isolated_probe"),
   };
 }
 
@@ -1222,9 +2298,10 @@ function publicWatcherAlert(value) {
   };
 }
 
-function safeDiagnosticLabel(value) {
+function publicEnum(value, allowed, fallback = "") {
   const label = String(value ?? "");
-  return /^[a-z][a-z0-9_]{0,63}$/.test(label) ? label : "";
+  if (!label) return "";
+  return allowed.has(label) ? label : fallback;
 }
 
 function transferFailureMetrics(transfer) {
@@ -1354,7 +2431,7 @@ async function buildFailureAnalysis({ failures, failureStats, ingressStats, avai
     updatedAt,
     generatedAt: new Date().toISOString(),
     metadata: {
-      source: "transfers.tsv + server-pool.tsv + transfer-logs/ + transfer-errors/",
+      source: "redacted_local_evidence",
       totalFailureRecords: failureStats.total,
       retainedFailureRecords: analyzed.length,
       retentionLimit: failureRetentionLimit,
@@ -1580,16 +2657,193 @@ function sortedServices(services) {
 
 function validService(value, role) {
   const service = String(value ?? "");
-  const patterns = {
-    relay: /^relay\d{2}$/,
-    natserver: /^natserver\d{2}$/,
-    natclient: /^natclient\d{2}$/,
-  };
-  return Boolean(patterns[role]?.test(service));
+  return expectedServiceSet.has(service) && roleOf(service) === role;
 }
 
 function publicService(value, role) {
   return validService(value, role) ? String(value) : "unknown";
+}
+
+function knownService(value, role) {
+  return validService(value, role) ? String(value) : "";
+}
+
+function knownServiceReference(value, roles) {
+  const service = String(value ?? "");
+  return expectedServiceSet.has(service) && roles.includes(roleOf(service)) ? service : "";
+}
+
+function publicMetadata(value) {
+  const result = {};
+  const scenario = publicScenario(value.scenario);
+  if (scenario) {
+    result.scenario = scenario;
+    result.scenario_name = {
+      1: "partition_bridge",
+      2: "nat_path_failover",
+      3: "kcp_tcp_fallback",
+    }[scenario];
+  }
+  const numericKeys = [
+    "duration_seconds",
+    "cpu_limit_pct",
+    "memory_limit_pct",
+    "disk_limit_pct",
+    "sample_seconds",
+    "probe_seconds",
+    "max_inflight",
+    "workload_limit_mibps",
+    "per_transfer_limit_mibps",
+  ];
+  for (const key of numericKeys) {
+    if (!Object.hasOwn(value, key)) continue;
+    const parsed = number(value[key], Number.NaN);
+    if (Number.isFinite(parsed) && parsed >= 0) result[key] = String(parsed);
+  }
+  if (["enforce", "report", "off"].includes(value.billing_adversary_mode)) {
+    result.billing_adversary_mode = value.billing_adversary_mode;
+  }
+  return result;
+}
+
+function publicRunStatus(value) {
+  return {
+    outcome: publicEnum(value.outcome, publicRunOutcomes),
+    detail: publicEnum(value.detail, publicRunDetails, "status_detail_redacted"),
+  };
+}
+
+function publicRuntimeNode(value) {
+  const service = String(value.service ?? "");
+  const role = roleOf(service);
+  return {
+    service: role === "diagnostic" ? "diagnostic" : service,
+    role,
+    state: publicRuntimeStatus(value.state),
+    running: value.running === true,
+    health: publicRuntimeStatus(value.health),
+    restartCount: Math.max(0, integer(value.restartCount, 0)),
+  };
+}
+
+function finalMaliciousRuntimeMap(rows) {
+  const expected = new Set(maliciousNodeCatalog.map(({ service }) => service));
+  const runtimes = new Map();
+  for (const row of rows) {
+    const service = String(row?.service ?? "");
+    if (!expected.has(service) || runtimes.has(service)) continue;
+    runtimes.set(service, {
+      service,
+      running: row.status === "running",
+      health: publicRuntimeStatus(row.health),
+      restartCount: Math.max(0, integer(row.restart_count, 0)),
+    });
+  }
+  return runtimes;
+}
+
+function publicMaliciousNodes(containerMap, containerProbe) {
+  const actors = containerProbe?.actors && typeof containerProbe.actors === "object"
+    ? containerProbe.actors
+    : {};
+  const recent = Array.isArray(containerProbe?.recent) ? containerProbe.recent : [];
+  return maliciousNodeCatalog.map(({ service, actor }) => {
+    const runtime = containerMap.get(service) ?? missingContainer(service);
+    const probe = actors[actor] ?? {};
+    return {
+      service,
+      actor,
+      running: runtime.running === true,
+      health: publicRuntimeStatus(runtime.health),
+      restartCount: Math.max(0, integer(runtime.restartCount, 0)),
+      probe: {
+        status: ["DISABLED", "STARTING", "RUNNING", "FAILED", "STOPPED", "NOT_STARTED"].includes(probe.status)
+          ? probe.status
+          : "UNKNOWN",
+        executed: Math.max(0, integer(probe.executed, 0)),
+        failed: Math.max(0, integer(probe.failed, 0)),
+        covered: Math.max(0, integer(probe.covered, 0)),
+        required: Math.max(0, integer(probe.required, 0)),
+      },
+      latestActivity: publicMaliciousNodeActivity(latestActorActivity(recent, actor)),
+    };
+  });
+}
+
+function publicRuntimeStatus(value) {
+  const status = String(value ?? "");
+  return publicRuntimeStatuses.has(status) ? status : "unknown";
+}
+
+function latestActorActivity(events, actor) {
+  return events.filter((event) => event?.actor === actor).sort((left, right) => (
+    Date.parse(right.observedAt) - Date.parse(left.observedAt)
+      || integer(right.sequence, 0) - integer(left.sequence, 0)
+  ))[0];
+}
+
+function publicMaliciousNodeActivity(value) {
+  if (!value) return null;
+  return {
+    observedAt: publicTimestamp(value.observedAt),
+    scenario: publicEnum(value.scenario, maliciousScenarioNames, "unknown"),
+    passed: value.passed === true,
+    verdict: value.passed === true ? "CONTAINED" : "VIOLATION",
+    defense: publicBillingContainerProbeCode(value.defense),
+    failureCode: publicBillingContainerProbeCode(value.failureCode),
+  };
+}
+
+function publicPhase(value) {
+  const phase = String(value ?? "").trim();
+  const allowed = new Set([
+    "LAUNCHING",
+    "BUILDING",
+    "STARTING_CLUSTER",
+    "CONFIGURING_PROFILE",
+    "VERIFYING_BILLING",
+    "RUNNING",
+    "COMPLETED",
+    "FAILED",
+    "RESOURCE_LIMIT",
+    "STOPPED",
+  ]);
+  return allowed.has(phase) ? phase : "UNKNOWN";
+}
+
+function publicScenario(value) {
+  const scenario = String(value ?? "");
+  return ["1", "2", "3"].includes(scenario) ? scenario : "";
+}
+
+function publicResourceGuard(value) {
+  const status = String(value ?? "").trim().split(/\s+/, 1)[0];
+  return ["RUNNING", "TERMINATED", "COMPLETED", "STOPPED_BY_SIGNAL", "RUNNER_EXITED"].includes(status)
+    ? status
+    : "UNKNOWN";
+}
+
+function publicResourceSample(value) {
+  if (!value || typeof value !== "object") return null;
+  const sample = {
+    timestamp: publicTimestamp(value.timestamp),
+    epoch: Math.max(0, integer(value.epoch, 0)),
+    containers: Math.max(0, integer(value.containers, 0)),
+    state: publicEnum(value.state, resourceSampleStates, "UNKNOWN") || "UNKNOWN",
+  };
+  for (const key of [
+    "project_cpu_raw_pct",
+    "project_cpu_host_pct",
+    "host_cpu_pct",
+    "project_memory_host_pct",
+    "host_memory_pct",
+    "docker_disk_pct",
+    "artifact_disk_pct",
+    "guard_disk_pct",
+  ]) {
+    sample[key] = Math.max(0, number(value[key], 0));
+  }
+  return sample;
 }
 
 function safeFileComponent(value) {
@@ -1686,6 +2940,9 @@ function missingContainer(service) {
 }
 
 function roleOf(service) {
+  if (service === "malicious-natserver" || service === "malicious-relay") return service;
+  if (service === "mixed-path-probe") return "natclient";
+  if (!expectedServiceSet.has(service)) return "diagnostic";
   if (service === "ca" || service === "index") return service;
   if (service.startsWith("relay")) return "relay";
   if (service.startsWith("natserver")) return "natserver";

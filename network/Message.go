@@ -22,6 +22,11 @@ type Header struct {
 	// LegSessionId 标识一次逻辑拨号代次。初始 KCP/TCP/extra leg 与后续 Resume leg
 	// 共享同一个 UUID；新的逻辑拨号使用新 UUID，Relay 据此隔离同身份的冷重启代次。
 	LegSessionId string `json:"leg_session_id"`
+	// BillingSessionID、BillingSequence 与 BillingBytes 标识一条可计费的端到端记录。
+	// 三者作为 E2E AAD 的一部分由通信端认证，Relay 只能观察，不能无痕改写。
+	BillingSessionID [32]byte `json:"billing_session_id"`
+	BillingSequence  uint64   `json:"billing_sequence"`
+	BillingBytes     uint64   `json:"billing_bytes"`
 }
 type Message struct {
 	Header  *Header `json:"header"`
@@ -127,14 +132,28 @@ func ParseHeader(headerBytes []byte) (*Header, error) {
 		index += LegSessionIdLength
 	}
 
+	var billingSessionID [32]byte
+	var billingSequence uint64
+	var billingBytes uint64
+	if index+len(billingSessionID)+16 <= len(headerBytes) && index+len(billingSessionID)+16 <= HeaderLength {
+		copy(billingSessionID[:], headerBytes[index:index+len(billingSessionID)])
+		index += len(billingSessionID)
+		billingSequence = binary.BigEndian.Uint64(headerBytes[index : index+8])
+		index += 8
+		billingBytes = binary.BigEndian.Uint64(headerBytes[index : index+8])
+	}
+
 	return &Header{
-		RouteName:     RouteName,
-		NodeId:        nodeId,
-		NodeIdVersion: nodeIdVersion,
-		PayLoadLength: payloadLength,
-		ConnectionId:  connectionId,
-		LegFlags:      legFlags,
-		LegSessionId:  legSessionId,
+		RouteName:        RouteName,
+		NodeId:           nodeId,
+		NodeIdVersion:    nodeIdVersion,
+		PayLoadLength:    payloadLength,
+		ConnectionId:     connectionId,
+		LegFlags:         legFlags,
+		LegSessionId:     legSessionId,
+		BillingSessionID: billingSessionID,
+		BillingSequence:  billingSequence,
+		BillingBytes:     billingBytes,
 		//OriginData:    headerBytes[:],
 	}, nil
 }
@@ -216,17 +235,30 @@ func (h *Header) ParseToBytes() ([]byte, error) {
 
 	// 10. 非空时写入逻辑拨号代次 ID。注册/业务常用的短 RouteName 均有充足 padding；
 	// 若调用方同时使用超长 RouteName，则明确报错，不能静默丢失代次边界。
-	if h.LegSessionId != "" {
-		if len(h.LegSessionId) > LegSessionIdLength {
-			return nil, errors.New("leg session id too long")
-		}
-		if currentIndex+LegSessionIdLength > HeaderLength {
-			return nil, errors.New("header size overflow while writing leg session id")
-		}
+	if len(h.LegSessionId) > LegSessionIdLength {
+		return nil, errors.New("leg session id too long")
+	}
+	if currentIndex+LegSessionIdLength <= HeaderLength {
 		legSessionIdBytes := make([]byte, LegSessionIdLength)
 		copy(legSessionIdBytes, []byte(h.LegSessionId))
 		copy(headerBytes[currentIndex:], legSessionIdBytes)
 		currentIndex += LegSessionIdLength
+	} else if h.LegSessionId != "" || h.BillingSequence != 0 {
+		return nil, errors.New("header size overflow while writing leg session id")
+	}
+	if h.BillingSequence != 0 || h.BillingBytes != 0 || h.BillingSessionID != ([32]byte{}) {
+		if h.BillingSequence == 0 || h.BillingBytes == 0 || h.BillingSessionID == ([32]byte{}) {
+			return nil, errors.New("incomplete billing record header")
+		}
+		if currentIndex+len(h.BillingSessionID)+16 > HeaderLength {
+			return nil, errors.New("header size overflow while writing billing record")
+		}
+		copy(headerBytes[currentIndex:], h.BillingSessionID[:])
+		currentIndex += len(h.BillingSessionID)
+		binary.BigEndian.PutUint64(headerBytes[currentIndex:currentIndex+8], h.BillingSequence)
+		currentIndex += 8
+		binary.BigEndian.PutUint64(headerBytes[currentIndex:currentIndex+8], h.BillingBytes)
+		currentIndex += 8
 	}
 	// 剩余部分默认为 0，无需额外操作
 

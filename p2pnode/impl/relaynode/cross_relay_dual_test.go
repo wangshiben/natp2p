@@ -155,7 +155,7 @@ func TestCrossRelay_DualTCPColdRestartAfterKCPRegistration(t *testing.T) {
 }
 
 // TestCrossRelay_DualLeg_LargeTransfer 验证 dual(KCP+TCP) 拨号下跨中继桥接能否
-// 完整传输大流量数据。这是路线 B 的可行性前提：KCP leg 经裸字节 peerConn 跨中继是否走通。
+// 完整传输大流量数据。这是路线 B 的可行性前提：KCP leg 经逐帧跨中继桥接是否走通。
 //
 // 拓扑：local1 → relay1, local2 → relay2, relay1<->relay2 控制链路。
 // local1 dual 拨号连 local2（跨中继）。双向各传 N 条大消息，校验 SHA256 完整性。

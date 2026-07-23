@@ -110,6 +110,7 @@ func main() {
 	logLevel := flag.String("log", "", "日志等级: debug|info|warn|error (默认: index 模式为 error 静音监控信息, 其余为 info)")
 	caURL := flag.String("ca", "", "独立 CA/indexServer Web 服务地址(如 http://IP:9000); 给了即启用网络准入+计费")
 	admissionMode := flag.String("admission", "", "准入强制级别: off|warn|enforce (默认: 给了 -ca 则 enforce, 否则 off)")
+	billingQueue := flag.String("billing-queue", "", "双签凭证 waitSubmit 持久文件(index/relay 模式)")
 	flag.Usage = printUsage
 	flag.Parse()
 
@@ -120,9 +121,9 @@ func main() {
 	switch *mode {
 	case "index":
 		// index 本质 = 无上级(无 -peer)的 RelayNode。
-		runRelay(*listen, *public, "", "", *keyFile, *caURL, *admissionMode)
+		runRelay(*listen, *public, "", "", *keyFile, *caURL, *admissionMode, *billingQueue)
 	case "relay":
-		runRelay(*listen, *public, *peer, *index, *keyFile, *caURL, *admissionMode)
+		runRelay(*listen, *public, *peer, *index, *keyFile, *caURL, *admissionMode, *billingQueue)
 	case "listen":
 		runListen(*relayAddr, *index, *keyFile, *caURL)
 	case "connect":
@@ -177,12 +178,15 @@ func loadKey(path string) (*ecdh.PrivateKey, error) {
 	if _, statErr := os.Stat(path); statErr == nil {
 		return natnode.LoadPrivateKeyFromFile(path)
 	}
-	return natnode.LoadPrivateKeyFromHex(path)
+	if privateKey, err := natnode.LoadPrivateKeyFromHex(path); err == nil {
+		return privateKey, nil
+	}
+	return natnode.LoadOrCreatePrivateKeyFile(path)
 }
 
 // runRelay 启动一个公网中继节点并维持到各对端 relay 的控制链路（阻塞）。
 // index 非空时, 启动后向 index 注册成为其邻居（建可重试控制链路）。
-func runRelay(listen, public, peer, index, keyFile, caURL, admissionMode string) {
+func runRelay(listen, public, peer, index, keyFile, caURL, admissionMode, billingQueue string) {
 	privKey, err := loadKey(keyFile)
 	if err != nil {
 		fmt.Printf("加载私钥失败: %v\n", err)
@@ -191,6 +195,10 @@ func runRelay(listen, public, peer, index, keyFile, caURL, admissionMode string)
 	rn, err := relaynode.NewRelayNode(privKey, listen, public)
 	if err != nil {
 		fmt.Printf("创建 relay 节点失败: %v\n", err)
+		os.Exit(1)
+	}
+	if err := rn.SetBillingQueuePath(billingQueue); err != nil {
+		fmt.Printf("配置 waitSubmit 持久文件失败: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("RelayNode ID: %s\n", rn.ID())
@@ -463,7 +471,7 @@ func runInteractive() {
 			if len(fields) > 2 {
 				peer = fields[2]
 			}
-			runRelay(listen, "", peer, "", "", "", "")
+			runRelay(listen, "", peer, "", "", "", "", "")
 		case "node":
 			addr := "127.0.0.1:9000"
 			if len(fields) > 1 {

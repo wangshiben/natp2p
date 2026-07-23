@@ -23,9 +23,13 @@ const relayQueryRouteHint = "/relay/query"
 
 // relayBridgeMuxRouteHint 与 relaynode.RelayBridgeMuxRoute 取值一致（避免循环依赖, 常量副本,
 // 由注释保持同步）。relay↔relay 多路复用桥接物理连接的握手 RouteName。
-// 它必须像裸字节桥接一样【不启动读写循环】(否则 readLoop 会偷走后续 mux 帧),
+// 它必须在握手分支保持【不启动读写循环】（否则 readLoop 会偷走后续 mux 帧），
 // 由 onMissingGroup → acceptBridgeMux 直接接管底层裸连接跑 MuxSession。
 const relayBridgeMuxRouteHint = "/relay/bridge-mux"
+
+// billingControlRouteHint 是 NAT 与其入口 Relay 的链路本地双签控制流。
+// 即使目标 NodeID 已有托管 StreamGroup，也必须由 MissingGroupHandler 直接接管，不能送进业务流。
+const billingControlRouteHint = "/billing/control/v1"
 
 const (
 	retiredRegistrationSessionTTL   = 10 * time.Minute
@@ -33,6 +37,8 @@ const (
 	retiredBusinessConnectionTTL    = 10 * time.Minute
 	retiredBusinessConnectionLimit  = 4096
 	dormantRegistrationSessionLimit = 4096
+	defaultRegistrationIdleTimeout  = 90 * time.Second
+	defaultRegistrationSweepPeriod  = 5 * time.Second
 )
 
 var ErrStaleRegistrationSession = errors.New("stale registration session")
@@ -70,6 +76,11 @@ type TransportCover struct {
 	// relayNode 用它把本地托管的 nat 节点登记进 natNodes DHT 并记录来源地址。
 	onRegister func(nodeId, remoteAddr string)
 
+	// onUnregister 只在当前 StreamGroup 被 compare-delete 确认退出后调用。
+	// 回调在 TransportCover 锁内执行，不得回调 TransportCover；这样新注册无法夹在
+	// map 删除与 Relay 托管状态删除之间，旧代次也不会清掉新代次的 DHT 条目。
+	onUnregister func(nodeId string)
+
 	// onRegisterVerify 是可选的「注册准入校验」钩子，在【建 StreamGroup 之前】被调用。
 	// 参数：被托管节点 NodeId、注册消息里携带的 indexSign(admission.SignedCert JSON, 可空)、
 	// 底层远端地址。返回非 nil error 表示拒绝该注册（框架关闭流、不建 group）。
@@ -98,6 +109,10 @@ type TransportCover struct {
 	retiredRegistrationSessions map[string]map[string]time.Time
 	retiredBusinessConnections  map[string]map[string]retiredBusinessConnection
 	dormantRegistrationSessions map[string]dormantRegistrationSession
+
+	registrationIdleTimeout time.Duration
+	registrationSweepPeriod time.Duration
+	idleSweeperRunning      bool
 }
 
 // SetBusinessConnectHook 安装「业务连接接入校验」钩子（StreamOn 前调用，返回 error 则拒绝接入）。传 nil 卸载。
@@ -126,6 +141,29 @@ func (t *TransportCover) SetMissingGroupHandler(h func(stream network.Stream, fi
 func (t *TransportCover) SetRegisterHook(h func(nodeId, remoteAddr string)) {
 	t.lock.Lock()
 	t.onRegister = h
+	t.lock.Unlock()
+}
+
+// SetUnregisterHook 安装当前注册组退出后的回调。传 nil 卸载。
+// 回调不得调用同一个 TransportCover 的方法。
+func (t *TransportCover) SetUnregisterHook(h func(nodeId string)) {
+	t.lock.Lock()
+	t.onUnregister = h
+	t.lock.Unlock()
+}
+
+// SetRegistrationIdlePolicy 配置注册组的被动静默回收策略。
+// 应在接收连接前调用；idleTimeout <= 0 表示禁用，sweepPeriod <= 0 使用默认扫描周期。
+func (t *TransportCover) SetRegistrationIdlePolicy(idleTimeout, sweepPeriod time.Duration) {
+	t.lock.Lock()
+	t.registrationIdleTimeout = idleTimeout
+	if sweepPeriod <= 0 {
+		sweepPeriod = defaultRegistrationSweepPeriod
+	}
+	t.registrationSweepPeriod = sweepPeriod
+	if idleTimeout > 0 && len(t.StreamGroup) > 0 {
+		t.ensureIdleSweeperLocked()
+	}
 	t.lock.Unlock()
 }
 
@@ -222,9 +260,10 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		isBridge := len(message.Header.ConnectionId) != 0 && !hasGroupPeek &&
 			missingHandlerPeek != nil && message.Header.RouteName != relayControlRouteHint &&
 			message.Header.RouteName != relayQueryRouteHint &&
-			message.Header.RouteName != relayBridgeMuxRouteHint
+			message.Header.RouteName != relayBridgeMuxRouteHint &&
+			message.Header.RouteName != billingControlRouteHint
 
-		// bridge-mux 物理连接握手：与裸字节桥接一样【不启动读写循环】，
+		// bridge-mux 物理连接握手：【不启动读写循环】，
 		// 直接把底层裸连接交给 handler(acceptBridgeMux) 跑 MuxSession。
 		if message.Header.RouteName == relayBridgeMuxRouteHint && missingHandlerPeek != nil {
 			_ = stream.AckFirstMessage()
@@ -239,18 +278,30 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			return
 		}
 
+		if message.Header.RouteName == billingControlRouteHint && missingHandlerPeek != nil {
+			if err := stream.AckFirstMessage(); err != nil {
+				_ = stream.Close()
+				errChan <- err
+				return
+			}
+			stream.StartLoops()
+			go runBillingControlHandler(stream, message, missingHandlerPeek)
+			errChan <- nil
+			return
+		}
+
 		if isBridge {
-			// 裸字节级跨中继桥接：不启动 readLoop（否则会偷走后续裸字节）。
+			// 逐帧跨中继桥接：先由 handler 安装 pure-forwarder/frame tap，再启动 readLoop。
 			//
 			// 但**必须**在本地补发首包 ACK：本入口 relay 已经把客户端的首帧（routing-hello,
 			// 含公钥）同步读走用于路由, 并改发自己合成的 hello 给对端 relay —— 客户端的这条
 			// 首帧根本不会到达真正的 nat 节点, 故端到端 ACK 永远回不来。若不在此本地 ACK,
-			// 客户端 recvAckTimer 超时后会重传该首帧, 重传帧经裸字节 splice 透传到 callee,
-			// 使 callee 在 TLS 握手里收到**两份公钥**, 错位成 "wrong Salt format"。
+			// 客户端 recvAckTimer 超时后会重传该首帧；若把这份路由 hello 当业务帧继续转发，
+			// callee 会在 TLS 握手里收到**两份公钥**，错位成 "wrong Salt format"。
 			// 跨公网高延迟下必现, 进程内测试因 <1s 完成握手而侥幸不触发。
 			// 首帧之后的真实 TLS 负载仍由对端 nat 节点端到端 ACK, 不受影响。
 			_ = stream.AckFirstMessage()
-			// 直接把 (stream, 首条消息) 交给 handler, handler 会用 stream.RawConn() 做 io.Copy。
+			// 把 (stream, 首条消息) 交给 handler；handler 会先完成逐帧桥接配置再启动循环。
 			if err := missingHandlerPeek(stream, message); err != nil {
 				logx.Errorf("[relay] MissingGroupHandler(桥接) 处理失败: targetNodeId=%.16s connId=%s err=%v",
 					message.Header.NodeId, message.Header.ConnectionId, err)
@@ -366,6 +417,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 					group.SetForwardHook(t.forwardHookConfig)
 				}
 				t.StreamGroup[stream.NodeId()] = group
+				t.ensureIdleSweeperLocked()
 				registerHook = t.onRegister
 				registeredNodeId = stream.NodeId()
 				t.lock.Unlock()
@@ -484,14 +536,86 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 	}
 }
 
+func runBillingControlHandler(
+	stream network.Stream,
+	firstMessage *network.Message,
+	handler func(network.Stream, *network.Message) error,
+) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			logx.Errorf("[relay] MissingGroupHandler(billing-control) panic: peer=%.16s panic=%v",
+				stream.NodeId(), recovered)
+			_ = stream.Close()
+		}
+	}()
+	if err := handler(stream, firstMessage); err != nil {
+		logx.Errorf("[relay] MissingGroupHandler(billing-control) 处理失败: peer=%.16s err=%v",
+			stream.NodeId(), err)
+		_ = stream.Close()
+	}
+}
+
 func (t *TransportCover) listenGroup(nodeID string, group *StreamGroup) {
+	t.lock.Lock()
+	t.ensureIdleSweeperLocked()
+	t.lock.Unlock()
 	group.StartListen()
 	t.lock.Lock()
 	if t.StreamGroup[nodeID] == group {
 		delete(t.StreamGroup, nodeID)
 		t.rememberDormantRegistrationSessionLocked(nodeID, group, time.Now())
+		if t.onUnregister != nil {
+			t.onUnregister(nodeID)
+		}
 	}
 	t.lock.Unlock()
+}
+
+func (t *TransportCover) ensureIdleSweeperLocked() {
+	if t.idleSweeperRunning || t.registrationIdleTimeout <= 0 || len(t.StreamGroup) == 0 {
+		return
+	}
+	t.idleSweeperRunning = true
+	period := t.registrationSweepPeriod
+	if period <= 0 {
+		period = defaultRegistrationSweepPeriod
+	}
+	go t.runIdleSweeper(period)
+}
+
+func (t *TransportCover) runIdleSweeper(period time.Duration) {
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	for now := range ticker.C {
+		t.lock.Lock()
+		if len(t.StreamGroup) == 0 || t.registrationIdleTimeout <= 0 {
+			t.idleSweeperRunning = false
+			t.lock.Unlock()
+			return
+		}
+		timeout := t.registrationIdleTimeout
+		groups := make(map[string]*StreamGroup, len(t.StreamGroup))
+		for nodeID, group := range t.StreamGroup {
+			groups[nodeID] = group
+		}
+		t.lock.Unlock()
+
+		cutoff := now.Add(-timeout)
+		for nodeID, group := range groups {
+			lastReceive := group.latestRelayReceiveTime()
+			if lastReceive.IsZero() || lastReceive.After(cutoff) {
+				continue
+			}
+			// 在真正关闭前重新读取，避免扫描快照之后刚附加或刚恢复活跃的 leg 被误杀。
+			lastReceive = group.latestRelayReceiveTime()
+			if lastReceive.IsZero() || lastReceive.After(time.Now().Add(-timeout)) {
+				continue
+			}
+			logx.Warnf("[relay] 回收持续静默的注册 StreamGroup: nodeId=%.16s idle=%s timeout=%s",
+				nodeID, time.Since(lastReceive).Round(time.Second), timeout)
+			group.Close()
+		}
+	}
 }
 
 func registrationSessionChanged(currentSessionID, incomingSessionID string) bool {
@@ -664,5 +788,7 @@ func NewTransportCover() *TransportCover {
 		retiredRegistrationSessions: make(map[string]map[string]time.Time),
 		retiredBusinessConnections:  make(map[string]map[string]retiredBusinessConnection),
 		dormantRegistrationSessions: make(map[string]dormantRegistrationSession),
+		registrationIdleTimeout:     defaultRegistrationIdleTimeout,
+		registrationSweepPeriod:     defaultRegistrationSweepPeriod,
 	}
 }

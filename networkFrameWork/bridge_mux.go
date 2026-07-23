@@ -24,7 +24,7 @@ import (
 //       * 外层 Frame.ConnectionId = mux streamID（= 跨中继业务 connID）
 //       * 外层 Frame.FrameType    = mux 控制类型（OPEN / DATA / CLOSE，专用值）
 //       * 外层 Frame.Payload      = 内层 E2E 原始字节（对 mux 层完全透明）
-//   - MuxStream 实现 net.Conn，使桥接两端现有逻辑（裸字节泵 / ListenTCPConnection）
+//   - MuxStream 实现 net.Conn，使桥接两端现有逻辑（逐帧桥接 / ListenTCPConnection）
 //     几乎零改动即可接入。
 //
 // relay↔relay 物理链路上只跑 mux 帧，因此这里的 FrameType 取值与业务 FrameType
@@ -39,6 +39,8 @@ const (
 	muxFrameData uint8 = 201
 	// muxFrameClose：会话结束。ConnectionId = streamID。
 	muxFrameClose uint8 = 202
+
+	muxStreamCloseWriteTimeout = 250 * time.Millisecond
 )
 
 var (
@@ -167,7 +169,10 @@ type MuxSession struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	writeMu sync.Mutex // 串行化对底层 conn 的写
+	writeGate      chan struct{}
+	activeWriteMu  sync.Mutex
+	activeWriter   *MuxStream
+	activeDeadline bool
 
 	mu       sync.Mutex
 	streams  map[string]*MuxStream
@@ -187,15 +192,22 @@ type MuxSession struct {
 func NewMuxSession(parent context.Context, conn net.Conn, isClient bool) *MuxSession {
 	ctx, cancel := context.WithCancel(parent)
 	s := &MuxSession{
-		conn:     conn,
-		ctx:      ctx,
-		cancel:   cancel,
-		streams:  make(map[string]*MuxStream),
-		accept:   make(chan *MuxStream, 32),
-		isClient: isClient,
+		conn:      conn,
+		ctx:       ctx,
+		cancel:    cancel,
+		writeGate: make(chan struct{}, 1),
+		streams:   make(map[string]*MuxStream),
+		accept:    make(chan *MuxStream, 32),
+		isClient:  isClient,
 	}
+	go s.closeOnContextDone()
 	go s.readLoop()
 	return s
+}
+
+func (s *MuxSession) closeOnContextDone() {
+	<-s.ctx.Done()
+	_ = s.Close()
 }
 
 // Context 暴露会话上下文（连接池可据此感知会话死亡）。
@@ -243,8 +255,8 @@ func (s *MuxSession) OpenStreamLeg(streamID, targetNodeID, originPubKey string, 
 	}
 	st := newMuxStream(s, streamID)
 	s.streams[streamID] = st
-	s.mu.Unlock()
 	atomic.AddInt64(&s.activeStreams, 1)
+	s.mu.Unlock()
 
 	if err := s.writeFrame(muxFrameOpen, streamID, encodeMuxOpenLeg(targetNodeID, originPubKey, legIndex, legCount, legFlags...)); err != nil {
 		s.dropStream(streamID)
@@ -256,9 +268,22 @@ func (s *MuxSession) OpenStreamLeg(streamID, targetNodeID, originPubKey string, 
 // Accept 取对端开的下一条会话（对端侧），会话关闭返回 errMuxClosed。
 func (s *MuxSession) Accept() (*MuxStream, error) {
 	select {
-	case st, ok := <-s.accept:
-		if !ok {
+	case <-s.ctx.Done():
+		return nil, errMuxClosed
+	default:
+	}
+	select {
+	case st := <-s.accept:
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
 			return nil, errMuxClosed
+		}
+		select {
+		case <-s.ctx.Done():
+			return nil, errMuxClosed
+		default:
 		}
 		return st, nil
 	case <-s.ctx.Done():
@@ -279,10 +304,10 @@ func (s *MuxSession) Close() error {
 		streams = append(streams, st)
 	}
 	s.streams = make(map[string]*MuxStream)
-	close(s.accept)
+	atomic.StoreInt64(&s.activeStreams, 0)
+	s.cancel()
 	s.mu.Unlock()
 
-	s.cancel()
 	for _, st := range streams {
 		st.closeLocal()
 	}
@@ -333,8 +358,8 @@ func (s *MuxSession) handleOpen(streamID string, openPayload []byte) {
 	st := newMuxStream(s, streamID)
 	st.openInfo = decodeMuxOpen(openPayload)
 	s.streams[streamID] = st
-	s.mu.Unlock()
 	atomic.AddInt64(&s.activeStreams, 1)
+	s.mu.Unlock()
 
 	select {
 	case s.accept <- st:
@@ -348,10 +373,10 @@ func (s *MuxSession) dropStream(streamID string) {
 	st := s.streams[streamID]
 	if st != nil {
 		delete(s.streams, streamID)
+		atomic.AddInt64(&s.activeStreams, -1)
 	}
 	s.mu.Unlock()
 	if st != nil {
-		atomic.AddInt64(&s.activeStreams, -1)
 		st.closeLocal()
 	}
 }
@@ -365,6 +390,18 @@ func (s *MuxSession) writeFrame(typ uint8, streamID string, payload []byte) erro
 // 条带化（F3）下，单条逻辑连接的字节被拆到多条物理 leg 发送，接收端据 seq 按序重组。
 // 非条带化路径 seq=0，对端忽略无害（老对端同样忽略 MessageId，向后兼容）。
 func (s *MuxSession) writeFrameSeq(typ uint8, streamID string, seq uint64, payload []byte) error {
+	return s.writeFrameSeqDeadline(typ, streamID, seq, payload, time.Time{})
+}
+
+func (s *MuxSession) writeFrameSeqDeadline(typ uint8, streamID string, seq uint64, payload []byte, deadline time.Time) error {
+	return s.writeFrameForStream(nil, typ, streamID, seq, payload, deadline)
+}
+
+func (s *MuxSession) writeStreamFrameSeq(stream *MuxStream, typ uint8, seq uint64, payload []byte) error {
+	return s.writeFrameForStream(stream, typ, stream.id, seq, payload, time.Time{})
+}
+
+func (s *MuxSession) writeFrameForStream(stream *MuxStream, typ uint8, streamID string, seq uint64, payload []byte, deadline time.Time) error {
 	frame := &network.Frame{
 		MessageId:    seq,
 		FrameType:    typ,
@@ -375,24 +412,167 @@ func (s *MuxSession) writeFrameSeq(typ uint8, streamID string, seq uint64, paylo
 	if err != nil {
 		return err
 	}
+	closeAfterWriteFailure := false
+	defer func() {
+		if closeAfterWriteFailure {
+			_ = s.Close()
+		}
+	}()
 	atomic.AddInt64(&s.pendingFrames, 1)
 	atomic.AddInt64(&s.pendingBytes, int64(len(bs)))
-	s.writeMu.Lock()
 	defer func() {
-		s.writeMu.Unlock()
 		atomic.AddInt64(&s.pendingFrames, -1)
 		atomic.AddInt64(&s.pendingBytes, -int64(len(bs)))
 	}()
+	if err := s.acquireWriteGate(stream, deadline); err != nil {
+		return err
+	}
+	defer func() { <-s.writeGate }()
+	if err := s.beginPhysicalWrite(stream, deadline); err != nil {
+		return err
+	}
+	defer s.finishPhysicalWrite()
+	written, err := s.conn.Write(bs)
+	if err == nil && written != len(bs) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		closeAfterWriteFailure = true
+		return err
+	}
+	atomic.AddInt64(&s.wroteBytes, int64(len(bs)))
+	return nil
+}
+
+func (s *MuxSession) acquireWriteGate(stream *MuxStream, deadline time.Time) error {
+	for {
+		currentDeadline := deadline
+		var deadlineChanged <-chan struct{}
+		var streamClosed <-chan struct{}
+		if stream != nil {
+			var closed bool
+			currentDeadline, deadlineChanged, closed = stream.writeDeadlineState()
+			if closed {
+				return errMuxStreamGone
+			}
+			streamClosed = stream.closedCh
+		}
+		if !currentDeadline.IsZero() && !time.Now().Before(currentDeadline) {
+			return os.ErrDeadlineExceeded
+		}
+
+		var timer *time.Timer
+		var timeout <-chan time.Time
+		if !currentDeadline.IsZero() {
+			timer = time.NewTimer(time.Until(currentDeadline))
+			timeout = timer.C
+		}
+		select {
+		case s.writeGate <- struct{}{}:
+			stopMuxWriteTimer(timer)
+			return nil
+		case <-s.ctx.Done():
+			stopMuxWriteTimer(timer)
+			return errMuxClosed
+		case <-streamClosed:
+			stopMuxWriteTimer(timer)
+			return errMuxStreamGone
+		case <-deadlineChanged:
+			stopMuxWriteTimer(timer)
+			continue
+		case <-timeout:
+			if stream != nil {
+				_, latestChanged, closed := stream.writeDeadlineState()
+				if closed {
+					return errMuxStreamGone
+				}
+				if latestChanged != deadlineChanged {
+					continue
+				}
+			}
+			return os.ErrDeadlineExceeded
+		}
+	}
+}
+
+func stopMuxWriteTimer(timer *time.Timer) {
+	if timer == nil || timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
+	}
+}
+
+func (s *MuxSession) beginPhysicalWrite(stream *MuxStream, deadline time.Time) error {
+	s.activeWriteMu.Lock()
+	defer s.activeWriteMu.Unlock()
 	select {
 	case <-s.ctx.Done():
 		return errMuxClosed
 	default:
 	}
-	if _, err := s.conn.Write(bs); err != nil {
+	if stream != nil {
+		var closed bool
+		deadline, _, closed = stream.writeDeadlineState()
+		if closed {
+			return errMuxStreamGone
+		}
+	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return os.ErrDeadlineExceeded
+	}
+	if !deadline.IsZero() {
+		if err := s.conn.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
+	}
+	s.activeWriter = stream
+	s.activeDeadline = !deadline.IsZero()
+	return nil
+}
+
+func (s *MuxSession) finishPhysicalWrite() {
+	s.activeWriteMu.Lock()
+	s.activeWriter = nil
+	if s.activeDeadline {
+		_ = s.conn.SetWriteDeadline(time.Time{})
+		s.activeDeadline = false
+	}
+	s.activeWriteMu.Unlock()
+}
+
+func (s *MuxSession) setStreamWriteDeadline(stream *MuxStream, deadline time.Time) error {
+	s.activeWriteMu.Lock()
+	defer s.activeWriteMu.Unlock()
+	stream.mu.Lock()
+	stream.writeDeadline = deadline
+	deadlineChanged := stream.writeDeadlineChanged
+	stream.writeDeadlineChanged = make(chan struct{})
+	if deadlineChanged != nil {
+		close(deadlineChanged)
+	}
+	stream.mu.Unlock()
+	if s.activeWriter != stream {
+		return nil
+	}
+	if err := s.conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	atomic.AddInt64(&s.wroteBytes, int64(len(bs)))
+	s.activeDeadline = !deadline.IsZero()
 	return nil
+}
+
+func (s *MuxSession) interruptStreamWrite(stream *MuxStream) {
+	s.activeWriteMu.Lock()
+	defer s.activeWriteMu.Unlock()
+	if s.activeWriter != stream {
+		return
+	}
+	if err := s.conn.SetWriteDeadline(time.Now()); err == nil {
+		s.activeDeadline = true
+	}
 }
 
 // =============================================================================
@@ -405,12 +585,14 @@ type MuxStream struct {
 	id       string
 	openInfo muxOpenInfo // 仅对端 Accept 出的 stream 有意义
 
-	mu       sync.Mutex
-	buf      []byte
-	dataCh   chan struct{}
-	closed   bool
-	closedCh chan struct{}
-	once     sync.Once
+	mu                   sync.Mutex
+	buf                  []byte
+	dataCh               chan struct{}
+	closed               bool
+	closedCh             chan struct{}
+	once                 sync.Once
+	writeDeadline        time.Time
+	writeDeadlineChanged chan struct{}
 	// deliverHook 非 nil 时，入站字节交给它（条带化 LogicalConn 的重排器）而非本地 buf。
 	deliverHook func(seq uint64, data []byte)
 	// hookPending 暂存「hook 设置之前」就到达的条带化分片(seq,data)。
@@ -428,10 +610,11 @@ type pendingSeqChunk struct {
 
 func newMuxStream(sess *MuxSession, id string) *MuxStream {
 	return &MuxStream{
-		sess:     sess,
-		id:       id,
-		dataCh:   make(chan struct{}, 1),
-		closedCh: make(chan struct{}),
+		sess:                 sess,
+		id:                   id,
+		dataCh:               make(chan struct{}, 1),
+		closedCh:             make(chan struct{}),
+		writeDeadlineChanged: make(chan struct{}),
 	}
 }
 
@@ -457,6 +640,9 @@ func (st *MuxStream) LegFlags() uint8 { return st.openInfo.legFlags }
 
 // StreamID 返回该逻辑会话 ID（= 业务 connID）。
 func (st *MuxStream) StreamID() string { return st.id }
+
+// Done 在 stream 本地或远端关闭时关闭。
+func (st *MuxStream) Done() <-chan struct{} { return st.closedCh }
 
 // deliver 追加入站字节并唤醒阻塞的 Read（无序号路径）。
 func (st *MuxStream) deliver(data []byte) {
@@ -557,7 +743,7 @@ func (st *MuxStream) Write(p []byte) (int, error) {
 		if len(chunk) > maxChunk {
 			chunk = chunk[:maxChunk]
 		}
-		if err := st.sess.writeFrame(muxFrameData, st.id, chunk); err != nil {
+		if err := st.sess.writeStreamFrameSeq(st, muxFrameData, 0, chunk); err != nil {
 			return total, err
 		}
 		total += len(chunk)
@@ -575,25 +761,25 @@ func (st *MuxStream) writeChunkSeq(seq uint64, chunk []byte) error {
 	if closed {
 		return errMuxStreamGone
 	}
-	return st.sess.writeFrameSeq(muxFrameData, st.id, seq, chunk)
+	return st.sess.writeStreamFrameSeq(st, muxFrameData, seq, chunk)
 }
 
 // Close 发 CLOSE 帧并本地拆除 stream。
 func (st *MuxStream) Close() error {
-	st.mu.Lock()
-	already := st.closed
-	st.mu.Unlock()
-	if !already {
-		_ = st.sess.writeFrame(muxFrameClose, st.id, nil)
+	if !st.closeLocal() {
+		return nil
 	}
 	st.sess.dropStream(st.id)
-	st.closeLocal()
+	deadline := time.Now().Add(muxStreamCloseWriteTimeout)
+	_ = st.sess.writeFrameSeqDeadline(muxFrameClose, st.id, 0, nil, deadline)
 	return nil
 }
 
 // closeLocal 不发帧地标记关闭（对端 CLOSE 或会话死亡时用）。
-func (st *MuxStream) closeLocal() {
+func (st *MuxStream) closeLocal() bool {
+	closedNow := false
 	st.once.Do(func() {
+		closedNow = true
 		st.mu.Lock()
 		st.closed = true
 		st.mu.Unlock()
@@ -603,9 +789,13 @@ func (st *MuxStream) closeLocal() {
 		default:
 		}
 	})
+	if closedNow && st.sess != nil {
+		st.sess.interruptStreamWrite(st)
+	}
+	return closedNow
 }
 
-// --- net.Conn 其余方法：mux stream 之上无独立地址/截止时间语义，给出安全占位 ---
+// --- net.Conn 其余方法 ---
 
 type bridgeMuxAddr struct{ id string }
 
@@ -615,12 +805,21 @@ func (a bridgeMuxAddr) String() string  { return "bridge-mux:" + a.id }
 func (st *MuxStream) LocalAddr() net.Addr  { return bridgeMuxAddr{id: st.id} }
 func (st *MuxStream) RemoteAddr() net.Addr { return bridgeMuxAddr{id: st.id} }
 
-// SetDeadline / SetReadDeadline / SetWriteDeadline：mux stream 由 Read/Write 内部
-// 通过会话 ctx 与 closedCh 控制生命周期，不支持独立 deadline，返回 nil 不报错以兼容
-// 调用 net.Conn 通用接口的代码路径。
-func (st *MuxStream) SetDeadline(t time.Time) error      { return nil }
-func (st *MuxStream) SetReadDeadline(t time.Time) error  { return nil }
-func (st *MuxStream) SetWriteDeadline(t time.Time) error { return nil }
+// 写截止时间会在持有会话写锁时临时下推到底层物理连接；读侧仍由会话 ctx 与
+// closedCh 控制，不提供独立 deadline。
+func (st *MuxStream) SetDeadline(t time.Time) error {
+	return st.SetWriteDeadline(t)
+}
+func (st *MuxStream) SetReadDeadline(time.Time) error { return nil }
+func (st *MuxStream) SetWriteDeadline(t time.Time) error {
+	return st.sess.setStreamWriteDeadline(st, t)
+}
+
+func (st *MuxStream) writeDeadlineState() (time.Time, <-chan struct{}, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.writeDeadline, st.writeDeadlineChanged, st.closed
+}
 
 // =============================================================================
 // 物理连接级握手 + 两端接入辅助
@@ -721,6 +920,8 @@ func AcceptBridgeMuxLogicalConn(lc *LogicalConn, targetNodeID, originPubKey stri
 	return &prefixConn{Conn: lc, prefix: prefix}, nil
 }
 
+const bridgeMuxSyntheticHelloMessageID uint64 = 1
+
 // buildHelloPrefix 构造对端下游接入所需的合成 hello 首帧字节。
 func buildHelloPrefix(info muxOpenInfo, connID string) ([]byte, error) {
 	header := &network.Header{
@@ -731,7 +932,7 @@ func buildHelloPrefix(info muxOpenInfo, connID string) ([]byte, error) {
 		LegFlags:      info.legFlags,
 	}
 	msg := &network.Message{Header: header, Payload: []byte(info.originPubKey)}
-	frames, err := msg.ToFrames(1)
+	frames, err := msg.ToFrames(bridgeMuxSyntheticHelloMessageID)
 	if err != nil {
 		return nil, err
 	}

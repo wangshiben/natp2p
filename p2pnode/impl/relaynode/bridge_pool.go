@@ -42,6 +42,7 @@ type relayPeerPool struct {
 	// F4 吞吐驱动的条带化宽度推荐：
 	lastWroteBytes int64 // 上轮采样的累计写出字节（算增量用）
 	recWidth       int   // 当前推荐的新逻辑连接宽度（吞吐档位）
+	stripedAttempt uint64
 }
 
 // physConn 是一条 relay↔relay 的物理 mux 连接（含重连）。
@@ -523,28 +524,48 @@ func (p *relayPeerPool) OpenLogicalConn(connID, targetNodeID, originPubKey strin
 		return nil, errNoHealthyConn
 	}
 	legCount := len(targets)
+	attempt := p.nextStripedAttempt()
 	legs := make([]*networkFrameWork.MuxStream, 0, legCount)
 	for idx, pc := range targets {
 		pc.mu.Lock()
 		sess := pc.sess
 		pc.mu.Unlock()
 		if sess == nil || sess.IsClosed() {
-			continue
+			closeMuxLegs(legs)
+			return nil, errNoHealthyConn
 		}
 		// 每条 leg 用同 connID + (legIndex, legCount)，对端据此归并为一条条带化逻辑连接。
-		st, err := sess.OpenStreamLeg(connID, targetNodeID, originPubKey, idx, legCount, legFlags...)
+		// legIndex 高位编码本次尝试代次，避免失败重试的迟到 leg 与新一代混合。
+		encodedIndex := int(attempt*poolMaxConns) + idx
+		st, err := sess.OpenStreamLeg(connID, targetNodeID, originPubKey, encodedIndex, legCount, legFlags...)
 		if err != nil {
-			continue
+			closeMuxLegs(legs)
+			return nil, err
 		}
 		legs = append(legs, st)
-	}
-	if len(legs) == 0 {
-		return nil, errNoHealthyConn
 	}
 	if len(legs) == 1 {
 		return networkFrameWork.NewSingleLegConn(legs[0]), nil
 	}
 	return networkFrameWork.NewStripedConn(connID, legs), nil
+}
+
+func (p *relayPeerPool) nextStripedAttempt() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	maxAttempt := uint64(int(^uint(0)>>1) / poolMaxConns)
+	if p.stripedAttempt > maxAttempt {
+		p.stripedAttempt = 0
+	}
+	attempt := p.stripedAttempt
+	p.stripedAttempt++
+	return attempt
+}
+
+func closeMuxLegs(legs []*networkFrameWork.MuxStream) {
+	for _, leg := range legs {
+		_ = leg.Close()
+	}
 }
 
 // pickLeastLoadedExcluding 返回负载最小的健康物理连接，排除 used 中已选的。

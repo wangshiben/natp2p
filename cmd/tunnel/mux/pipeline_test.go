@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"time"
 
 	"bnfs_p2p/network"
 	"bnfs_p2p/p2pnode"
@@ -15,8 +16,7 @@ import (
 // pipeConn 是一对方向相连的内存 Connection：a.Send -> b.Receive。
 // reorder>0 时，在投递侧对【连续的 DATA 帧】做乱序(小窗口内打乱顺序),模拟流水线下
 // 一次 Write 的 W 个并发 chunk 因不同 ACK 时序/重传而乱序到达。OPEN/CLOSE 作为顺序屏障
-// (先 flush 缓冲再透传)——这与生产一致:OpenStream 阻塞到 OPEN 被 ACK(FIFO inbox 保证
-// handleOpen 先于 DATA),Write 等齐本批 DATA 才返回(CLOSE 不会越过 DATA)。
+// (先 flush 缓冲再透传)。生产 DualStream 跨 leg 合流时控制帧仍可能晚于 DATA，另有测试覆盖。
 type pipeConn struct {
 	out     chan *p2pnode.Message // 本端发出 -> 投递管道
 	in      chan *p2pnode.Message // 重排后 -> 本端收
@@ -88,6 +88,31 @@ func (c *pipeConn) Receive(ctx context.Context) (*p2pnode.Message, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+type delayedOpenConnection struct {
+	p2pnode.Connection
+	mu       sync.Mutex
+	heldOpen *p2pnode.Message
+}
+
+func (c *delayedOpenConnection) Send(ctx context.Context, msg *p2pnode.Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(msg.Payload) > 0 && msg.Payload[0] == frameOpen {
+		payload := append([]byte(nil), msg.Payload...)
+		c.heldOpen = &p2pnode.Message{Type: msg.Type, Payload: payload}
+		return nil
+	}
+	if c.heldOpen == nil {
+		return c.Connection.Send(ctx, msg)
+	}
+	if err := c.Connection.Send(ctx, msg); err != nil {
+		return err
+	}
+	heldOpen := c.heldOpen
+	c.heldOpen = nil
+	return c.Connection.Send(ctx, heldOpen)
 }
 
 // transferOnce: client 开一条 stream 写 payload 并关闭；server accept 后读到 EOF，
@@ -199,4 +224,55 @@ func TestMux_EmptyStream(t *testing.T) {
 		t.Fatalf("空流应收 0 字节, 得 %d", len(got))
 	}
 	t.Log("✔ 空流 finalSeq=0 正常关闭")
+}
+
+func TestMux_DataBeforeOpenMaterializesStream(t *testing.T) {
+	clientConnection, serverConnection := newPipePair(0)
+	clientCarrier := &delayedOpenConnection{Connection: clientConnection}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	clientSession := NewSession(ctx, clientCarrier, true)
+	serverSession := NewSession(ctx, serverConnection, false)
+	defer clientSession.Close()
+	defer serverSession.Close()
+
+	payload := make([]byte, 256*1024)
+	rand.Read(payload)
+	received := make(chan []byte, 1)
+	go func() {
+		stream, err := serverSession.Accept()
+		if err != nil {
+			received <- nil
+			return
+		}
+		var output []byte
+		buffer := make([]byte, 32*1024)
+		for {
+			count, readErr := stream.Read(buffer)
+			output = append(output, buffer[:count]...)
+			if readErr != nil {
+				received <- output
+				return
+			}
+		}
+	}()
+
+	stream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := stream.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case output := <-received:
+		if !bytes.Equal(output, payload) {
+			t.Fatalf("DATA 先于 OPEN 到达后数据不一致: got %d bytes, want %d", len(output), len(payload))
+		}
+	case <-ctx.Done():
+		t.Fatal("DATA 先于 OPEN 到达后 stream 未完成")
+	}
 }

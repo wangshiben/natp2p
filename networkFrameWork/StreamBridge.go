@@ -18,23 +18,12 @@ func logBridge(format string, args ...interface{}) {
 
 var errInvalidBridgeLeg = errors.New("relaynode bridge: leg 非 TcpStream")
 
-// CrossRelayBridge 实现 relay→relay 的「裸 TCP 字节级」跨中继桥接。
+// CrossRelayBridge 实现 relay→relay 的逐帧跨中继桥接。
 //
-// 设计定论（见 relaynode-crossrelay-design 记忆）：relay1 退化成一根「哑字节管道」。
-// 它既不重写 MessageId、不组包、不发 ACK, 只把 local1 某条底层 TCP 连接上的原始字节
-// 与「拨向对端 relay 的一条 TCP 连接」之间双向 io.Copy。
-//
-// 因此 local1↔local2 之间的 MessageId / ACK / 分帧 / E2E 去重全部端到端,
-// relay1 完全透明, 不会出现帧级方案里的 MessageId 命名空间撞车 / ACK 错配。
-//
-// 多条 leg：local1 经 dual 拨号会有 KCP+TCP 两条 leg, 都在 relay1 触发接入。
-// 本桥接只维持「一条」到对端 relay 的连接(peerConn)：
-//   - 每条 local leg 读到的字节都写到同一个 peerConn（DualStream 每条逻辑消息只在一条 leg 上发,
-//     不会两条 leg 同时发同一消息, 故不会交叉）；
-//   - peerConn 读到的对端字节写到「最近活跃的」local leg（local1 的 DualStream 会从所有 leg 读取,
-//     写任一条它都能收到）。
-//
-// 这样既容忍 local1 的 dual leg / failover, 又对对端 relay 表现为单条普通客户端连接。
+// local 侧可能同时存在 KCP/TCP 或双 TCP 多条 leg。每条 leg 先独立解析完整 Frame，
+// 再由 DualFrameRelayEndpoint 汇聚、去重和重放，避免旧 leg 的半帧与新 leg 的重传
+// 在 peer 字节流中拼接。peer 侧也必须经过独立的 DualFrameRelayEndpoint：它隔离远端
+// 入站 MessageId 与本端分配的出站 MessageId，frameRouteRegistry 再负责两侧命名空间映射。
 type CrossRelayBridge struct {
 	connID         string
 	hostAddr       string
@@ -44,12 +33,15 @@ type CrossRelayBridge struct {
 	cancel         context.CancelFunc
 	dialBridgeConn func(addr, targetNodeId, originPubKeyHex, connID string) (net.Conn, error)
 
-	mu         sync.Mutex
-	peerConn   net.Conn
-	localConns []net.Conn
-	active     net.Conn // 最近活跃的 local leg, peer→local 往它写
-	started    bool
-	liveLegs   int // 仍在运行的 local leg 数；归零时关闭 peerConn(释放池中逻辑会话)
+	mu          sync.Mutex
+	peerConn    net.Conn
+	peerDual    *DualStream
+	peerFrame   *DualFrameRelayEndpoint
+	localDual   *DualStream
+	localFrame  *DualFrameRelayEndpoint
+	frameRoutes *frameRouteRegistry
+	localConns  []net.Conn
+	started     bool
 }
 
 // newCrossRelayBridge 由 relaynode 通过 NewCrossRelayBridge 构造。
@@ -66,7 +58,7 @@ func newCrossRelayBridge(parent context.Context, hostAddr, targetNodeID, originP
 	}
 }
 
-// NewCrossRelayBridge 创建一个裸字节级跨中继桥接。
+// NewCrossRelayBridge 创建一个逐帧跨中继桥接。
 //
 //	hostAddr      托管目标 nat 节点的对端 relay 地址。
 //	targetNodeID  目标 nat 节点 NodeId。
@@ -88,9 +80,17 @@ func (b *CrossRelayBridge) SetDialFunc(dial func(addr, targetNodeId, originPubKe
 }
 
 // SpliceLeg 把源节点的一条底层流接入桥接。第一次调用时建立到对端 relay 的唯一连接并启动
-// peer→local 泵；每次调用都为这条 local leg 启动 local→peer 泵。
+// 双向 frame pump；后续调用把额外 local leg 接入同一个逻辑 frame endpoint。
 // stream 必须是 AcceptTcpStreamSync 得到、尚未启动 readLoop 的 *TcpStream。
 func (b *CrossRelayBridge) SpliceLeg(stream network.Stream) error {
+	return b.SpliceLegWithFlags(stream, false, false)
+}
+
+func (b *CrossRelayBridge) SpliceLegCoexist(stream network.Stream, coexist bool) error {
+	return b.SpliceLegWithFlags(stream, coexist, false)
+}
+
+func (b *CrossRelayBridge) SpliceLegWithFlags(stream network.Stream, coexist, resume bool) error {
 	tcp := TCPStreamOf(stream)
 	if tcp == nil {
 		return errInvalidBridgeLeg
@@ -105,117 +105,125 @@ func (b *CrossRelayBridge) SpliceLeg(stream network.Stream) error {
 	default:
 	}
 	if !b.started {
+		b.mu.Unlock()
 		peerConn, err := b.dialBridgeConn(b.hostAddr, b.targetNodeID, b.originPubKey, b.connID)
 		if err != nil {
-			b.mu.Unlock()
 			return err
 		}
+		b.mu.Lock()
+		select {
+		case <-b.ctx.Done():
+			b.mu.Unlock()
+			_ = peerConn.Close()
+			return errors.New("relaynode bridge: bridge closed")
+		default:
+		}
+		if b.started {
+			b.mu.Unlock()
+			_ = peerConn.Close()
+			return b.SpliceLegWithFlags(stream, coexist, resume)
+		}
+		localDual := newDualStreamWithPump(b.targetNodeID, b.connID, false)
+		if err := localDual.attachStreamCoexist(stream, coexist, resume); err != nil {
+			b.mu.Unlock()
+			_ = peerConn.Close()
+			return err
+		}
+		localFrame := localDual.EnableFrameRelay()
+		peerStream := newTcpStream(b.targetNodeID, b.connID, peerConn)
+		// 对端 prefixConn 会先注入固定 MessageId=1 的合成 hello，并把它记录成
+		// firstMsgID。peer carrier 必须跳过这个 ID，否则第一条真实业务帧也用 1，
+		// 会被对端 pure-forwarder 当作 hello 重传 ACK 后丢弃。
+		_ = peerStream.AllocMessageId()
+		peerDual := newDualStreamWithPump(b.targetNodeID, b.connID, false)
+		if err := peerDual.attachStreamCoexist(peerStream, false, false); err != nil {
+			b.mu.Unlock()
+			_ = localDual.Close()
+			_ = peerConn.Close()
+			return err
+		}
+		peerFrame := peerDual.EnableFrameRelay()
+		if localFrame == nil || peerFrame == nil {
+			b.mu.Unlock()
+			_ = localDual.Close()
+			_ = peerDual.Close()
+			return errors.New("relaynode bridge: frame relay unavailable")
+		}
 		b.peerConn = peerConn
+		b.peerDual = peerDual
+		b.peerFrame = peerFrame
+		b.localDual = localDual
+		b.localFrame = localFrame
+		b.frameRoutes = newFrameRouteRegistry()
 		b.started = true
-		go b.pumpPeerToLocal()
-	}
-	b.localConns = append(b.localConns, localConn)
-	// 只有第一条 leg 设为 active；后续 splice 进来的 failover/standby leg 不抢 active。
-	// 否则静默 standby 会成为 active，回程(含握手响应)被写到它而非客户端正在收发的数据 leg，
-	// 把帧流劈到两条各自独立组帧的 leg 上 → 握手/数据损坏。standby 真正开始发数据时，
-	// pumpLocalToPeer 的 Read 会把 active 切到它（见下方 b.active = localConn）。
-	if b.active == nil {
-		b.active = localConn
-	}
-	b.liveLegs++
-	peerConn := b.peerConn
-	b.mu.Unlock()
+		b.localConns = append(b.localConns, localConn)
+		frameRoutes := b.frameRoutes
+		b.mu.Unlock()
 
-	if bridgeDebug {
-		logBridge("splice leg connID=%s local=%s -> peer=%s", b.connID, localConn.RemoteAddr(), peerConn.RemoteAddr())
+		go b.pumpLocalFrames(localFrame, peerFrame, frameRoutes)
+		go b.pumpPeerFrames(peerFrame, localFrame, frameRoutes)
+		peerStream.StartLoops()
+		go peerStream.keepLive()
+		// NAT 侧由端节点的 DualStream 统一发送经 E2E 封装的逻辑心跳。
+		// Relay 不得在这条腿注入 TcpStream 的明文 /ping，否则会破坏已建立的 Noise 会话。
+		tcp.StartLoops()
+		return nil
 	}
-	go b.pumpLocalToPeer(localConn)
+	localDual := b.localDual
+	if localDual == nil {
+		b.mu.Unlock()
+		return errors.New("relaynode bridge: local frame relay unavailable")
+	}
+	b.mu.Unlock()
+	if err := localDual.attachStreamCoexist(stream, coexist, resume); err != nil {
+		return err
+	}
+	if detectStreamTransport(stream) == streamTransportTCP {
+		localDual.retireStaleKCPWhenDualTCPReady()
+	}
+	b.mu.Lock()
+	b.localConns = append(b.localConns, localConn)
+	b.mu.Unlock()
+	// 后续 NAT 腿同样只接收端节点的 E2E 逻辑心跳，不启动物理层明文心跳。
+	tcp.StartLoops()
 	return nil
 }
 
-// pumpLocalToPeer 把一条 local leg 的字节写到唯一的 peerConn, 并把它标记为当前活跃 leg。
-func (b *CrossRelayBridge) pumpLocalToPeer(localConn net.Conn) {
-	buf := make([]byte, 32*1024)
-	for {
-		select {
-		case <-b.ctx.Done():
-			return
-		default:
-		}
-		n, err := localConn.Read(buf)
-		if n > 0 {
-			b.mu.Lock()
-			b.active = localConn
-			peer := b.peerConn
-			b.mu.Unlock()
-			if bridgeDebug {
-				logBridge("L->P %d bytes (connID=%s)", n, b.connID)
-			}
-			if _, werr := peer.Write(buf[:n]); werr != nil {
-				b.cancel()
-				return
-			}
-		}
-		if err != nil {
-			// 一条 local leg 结束（含 client 异常断开的 EOF/RST）。仅当所有 leg 都结束时,
-			// 才关闭对端 mux stream, 让 CLOSE 帧传播、对端 activeStreams 递减,
-			// 池中该逻辑会话得以释放（否则会把仍存活的 failover leg 一起切断）。
-			// 池化下 peerConn 是一条 *MuxStream, Close 只关该逻辑会话, 不影响共享物理连接。
-			b.mu.Lock()
-			b.liveLegs--
-			last := b.liveLegs <= 0
-			peer := b.peerConn
-			b.mu.Unlock()
-			if last && peer != nil {
-				_ = peer.Close()
-			}
-			return
-		}
-	}
+func (b *CrossRelayBridge) pumpLocalFrames(local, peer FrameRelayEndpoint, routes *frameRouteRegistry) {
+	pumpClientToRelay(b.ctx, local, peer, routes, nil, b.targetNodeID)
+	b.cancel()
 }
 
-// pumpPeerToLocal 把对端 relay 的字节写到「最近活跃的」local leg。
-// local1 的 DualStream 每条逻辑消息只在一条 leg 上收发, 把回程写到它最近发数据的那条 leg
-// 即可被正确读到; 不向多条 leg 重复写, 避免非 E2E 帧（如握手明文）被重复投递。
-func (b *CrossRelayBridge) pumpPeerToLocal() {
-	buf := make([]byte, 32*1024)
-	for {
-		select {
-		case <-b.ctx.Done():
-			return
-		default:
+func (b *CrossRelayBridge) pumpPeerFrames(peer, local FrameRelayEndpoint, routes *frameRouteRegistry) {
+	pumpRelayToClients(b.ctx, peer, func(connectionID string) FrameRelayEndpoint {
+		if connectionID != b.connID {
+			return nil
 		}
-		n, err := b.peerConn.Read(buf)
-		if n > 0 {
-			b.mu.Lock()
-			dst := b.active
-			b.mu.Unlock()
-			if bridgeDebug {
-				logBridge("P->L %d bytes (connID=%s active=%v)", n, b.connID, dst != nil)
-			}
-			if dst != nil {
-				if _, werr := dst.Write(buf[:n]); werr != nil {
-					b.cancel()
-					return
-				}
-			}
-		}
-		if err != nil {
-			b.cancel()
-			return
-		}
-	}
+		return local
+	}, routes, nil, b.targetNodeID, func(string, FrameRelayEndpoint) {
+		b.cancel()
+	})
+	b.cancel()
 }
 
 // Close 关闭桥接的所有连接。
 func (b *CrossRelayBridge) Close() {
 	b.cancel()
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.peerConn != nil {
-		_ = b.peerConn.Close()
+	peerDual := b.peerDual
+	peerConn := b.peerConn
+	localDual := b.localDual
+	localConns := append([]net.Conn(nil), b.localConns...)
+	b.mu.Unlock()
+	if localDual != nil {
+		_ = localDual.Close()
 	}
-	for _, c := range b.localConns {
+	if peerDual != nil {
+		_ = peerDual.Close()
+	} else if peerConn != nil {
+		_ = peerConn.Close()
+	}
+	for _, c := range localConns {
 		_ = c.Close()
 	}
 }

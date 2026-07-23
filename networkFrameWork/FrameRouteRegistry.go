@@ -1,6 +1,7 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"container/list"
 	"context"
@@ -209,6 +210,11 @@ func (r *frameRouteRegistry) touchLocked(pair *frameRoutePair, now time.Time) {
 	}
 	if pair.expiryItem != nil {
 		r.expiry.Remove(pair.expiryItem)
+		pair.expiryItem = nil
+	}
+	pair.expiresAt = time.Time{}
+	if !pair.completed {
+		return
 	}
 	pair.expiresAt = now.Add(r.tombstoneTTL)
 	pair.expiryItem = r.expiry.PushBack(pair)
@@ -221,6 +227,12 @@ func (r *frameRouteRegistry) expireLocked(now time.Time) {
 			return
 		}
 		pair := front.Value.(*frameRoutePair)
+		if !pair.completed {
+			r.expiry.Remove(front)
+			pair.expiryItem = nil
+			pair.expiresAt = time.Time{}
+			continue
+		}
 		if pair.expiresAt.After(now) {
 			return
 		}
@@ -353,6 +365,7 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 			}
 			if hookConfig != nil {
 				hookConfig.ensureRetransmitCache().forgetConnection(nodeID, connectionID)
+				hookConfig.forgetHeldConnection(nodeID, connectionID)
 			}
 			if onClientFailure != nil {
 				onClientFailure(connectionID, entry.dest)
@@ -369,6 +382,32 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 		}
 		batch.reset()
 	}
+	rejectConnection := func(frame *network.Frame, err error) {
+		flush()
+		logx.Warnf("[billing-holdback] 拒绝并关闭业务连接: nodeId=%.16q direction=relay_to_clients err=%q", nodeID, err)
+		hookState.rejectRecord(ctx, frame, "relay_to_clients", err)
+		connectionID := ""
+		if frame != nil {
+			connectionID = frame.ConnectionId
+		}
+		if connectionID == "" {
+			return
+		}
+		destination := lookup(connectionID)
+		routes.purgeConnection(connectionID)
+		if hookConfig != nil {
+			hookConfig.ensureRetransmitCache().forgetConnection(nodeID, connectionID)
+			hookConfig.forgetHeldConnection(nodeID, connectionID)
+		}
+		if destination == nil {
+			return
+		}
+		if onClientFailure != nil {
+			onClientFailure(connectionID, destination)
+			return
+		}
+		_ = destination.Close()
+	}
 
 	for {
 		frames, err := nextEndpointFrameBatch(ctx, relay)
@@ -376,62 +415,71 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 			flush()
 			return
 		}
-		for _, f := range frames {
-			if f == nil {
+		for _, incoming := range frames {
+			if incoming == nil {
 				continue
 			}
-			billingBoundary := hookState.wouldInvokeHook(f)
-			if !batch.empty() && (!canBatchRelayFrames(batch.source[0], f) || billingBoundary) {
-				flush()
+			if hookState.billableRecordRequired("relay_to_clients") && isRelayBatchDataFrame(incoming) && lookup(incoming.ConnectionId) == nil {
+				continue
 			}
-
-			// hook 仍按原始 FIFO 每帧执行；可能触发外部计费的帧保持单帧写边界。
-			beforeBytes, beforeFrames := hookState.pendingAccounting()
-			if !hookState.onFrame(ctx, f, "relay_to_clients") {
-				flush()
-				return
-			}
-			afterBytes, afterFrames := hookState.pendingAccounting()
-
-			entry := routes.relayGet(f.MessageId)
-			if entry == nil {
-				// 每帧自带 ConnectionId，不依赖首帧 payload 可解析或有序到达。
-				connID := f.ConnectionId
-				if connID == "" {
-					continue
+			authorized, authorizeErr := hookState.framesForForward(ctx, incoming, "relay_to_clients")
+			for _, f := range authorized {
+				billingBoundary := hookState.wouldInvokeHook(f)
+				if !batch.empty() && (!canBatchRelayFrames(batch.source[0], f) || billingBoundary) {
+					flush()
 				}
-				dst := lookup(connID)
-				if dst == nil {
-					continue
-				}
-				newEntry := newFrameRouteEntry(dst)
-				pair, ok := routes.bindPair(
-					f.MessageId,
-					newEntry,
-					clientRouteKey{connectionID: dst.ConnectionId(), messageID: newEntry.dstID},
-					&frameRouteEntry{dest: relay, dstID: f.MessageId},
-					f.TotalFrames,
-				)
-				if !ok {
-					continue
-				}
-				entry = pair.relayEntry
-			}
 
-			if !batch.empty() && batch.entry != entry {
-				flush()
+				// hook 仍按原始 FIFO 每帧执行；可能触发外部计费的帧保持单帧写边界。
+				beforeBytes, beforeFrames := hookState.pendingAccounting()
+				if !hookState.onFrame(ctx, f, "relay_to_clients") {
+					flush()
+					return
+				}
+				afterBytes, afterFrames := hookState.pendingAccounting()
+
+				entry := routes.relayGet(f.MessageId)
+				if entry == nil {
+					// 每帧自带 ConnectionId，不依赖首帧 payload 可解析或有序到达。
+					connID := f.ConnectionId
+					if connID == "" {
+						continue
+					}
+					dst := lookup(connID)
+					if dst == nil {
+						continue
+					}
+					newEntry := newFrameRouteEntry(dst)
+					pair, ok := routes.bindPair(
+						f.MessageId,
+						newEntry,
+						clientRouteKey{connectionID: dst.ConnectionId(), messageID: newEntry.dstID},
+						&frameRouteEntry{dest: relay, dstID: f.MessageId},
+						f.TotalFrames,
+					)
+					if !ok {
+						continue
+					}
+					entry = pair.relayEntry
+				}
+
+				if !batch.empty() && batch.entry != entry {
+					flush()
+				}
+				out := *f
+				out.MessageId = entry.dstID
+				batch.entry = entry
+				batch.source = append(batch.source, f)
+				batch.forwarded = append(batch.forwarded, &out)
+				if !billingBoundary {
+					batch.accountedBytes += afterBytes - beforeBytes
+					batch.accountedFrames += afterFrames - beforeFrames
+				}
+				if !isRelayBatchDataFrame(f) || billingBoundary {
+					flush()
+				}
 			}
-			out := *f
-			out.MessageId = entry.dstID
-			batch.entry = entry
-			batch.source = append(batch.source, f)
-			batch.forwarded = append(batch.forwarded, &out)
-			if !billingBoundary {
-				batch.accountedBytes += afterBytes - beforeBytes
-				batch.accountedFrames += afterFrames - beforeFrames
-			}
-			if !isRelayBatchDataFrame(f) || billingBoundary {
-				flush()
+			if authorizeErr != nil {
+				rejectConnection(incoming, authorizeErr)
 			}
 		}
 		flush()
@@ -477,6 +525,7 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 				}
 			}
 			if entry.pair != nil && isFullFrameAck(source, entry.pair.totalFrames) {
+				hookState.acknowledgeHeldMessage(client.ConnectionId(), entry.dstID)
 				routes.complete(entry)
 			}
 		}

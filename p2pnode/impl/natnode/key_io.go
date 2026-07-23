@@ -3,8 +3,10 @@ package natnode
 import (
 	"bnfs_p2p/crypoto"
 	"crypto/ecdh"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -51,5 +53,79 @@ func LoadPrivateKeyFromFile(path string) (*ecdh.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("natnode: 读取私钥文件 %s 失败: %w", path, err)
 	}
+	if len(data) == 32 {
+		privateKey, rawErr := ecdh.P256().NewPrivateKey(data)
+		if rawErr != nil {
+			return nil, fmt.Errorf("natnode: 解析私钥原始字节失败: %w", rawErr)
+		}
+		return privateKey, nil
+	}
 	return LoadPrivateKeyFromHex(string(data))
+}
+
+// LoadOrCreatePrivateKeyFile loads a stable node identity or creates it once.
+// Creation publishes a fully synced temporary file with an atomic hard link;
+// concurrent creators load the winner and never overwrite an existing key.
+func LoadOrCreatePrivateKeyFile(path string) (*ecdh.PrivateKey, error) {
+	if path == "" {
+		return nil, fmt.Errorf("natnode: identity key path is empty")
+	}
+	privateKey, err := LoadPrivateKeyFromFile(path)
+	if err == nil {
+		return privateKey, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, fmt.Errorf("natnode: create identity directory: %w", err)
+	}
+	privateKey, err = crypoto.MakeKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("natnode: generate identity key: %w", err)
+	}
+	temporary, err := os.CreateTemp(directory, ".identity-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("natnode: create temporary identity: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return nil, fmt.Errorf("natnode: protect temporary identity: %w", err)
+	}
+	encoded := []byte(crypoto.GetPrivKeyStr(privateKey))
+	if written, err := temporary.Write(encoded); err != nil || written != len(encoded) {
+		temporary.Close()
+		if err == nil {
+			err = fmt.Errorf("short write: %d of %d", written, len(encoded))
+		}
+		return nil, fmt.Errorf("natnode: write temporary identity: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return nil, fmt.Errorf("natnode: sync temporary identity: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return nil, fmt.Errorf("natnode: close temporary identity: %w", err)
+	}
+	if err := os.Link(temporaryPath, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return LoadPrivateKeyFromFile(path)
+		}
+		return nil, fmt.Errorf("natnode: publish identity key: %w", err)
+	}
+	directoryHandle, err := os.Open(directory)
+	if err != nil {
+		return nil, fmt.Errorf("natnode: open identity directory: %w", err)
+	}
+	if err := directoryHandle.Sync(); err != nil {
+		directoryHandle.Close()
+		return nil, fmt.Errorf("natnode: sync identity directory: %w", err)
+	}
+	if err := directoryHandle.Close(); err != nil {
+		return nil, fmt.Errorf("natnode: close identity directory: %w", err)
+	}
+	return privateKey, nil
 }

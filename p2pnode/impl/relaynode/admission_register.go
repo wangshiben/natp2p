@@ -3,8 +3,8 @@ package relaynode
 import (
 	"bnfs_p2p/admission"
 	"bnfs_p2p/logx"
-	"bnfs_p2p/networkFrameWork"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -20,6 +20,7 @@ import (
 type natAccount struct {
 	NodeID string
 	Role   admission.Role
+	Cert   *admission.SignedCert
 	Since  time.Time
 	// UplinkBytes 是该节点（作为 serverNode 时）经本 relay 转发给客户端的累计上行净荷
 	// （relay_to_clients 方向）。由 forward hook 累加（见 SetForwardHook 计费配置）。
@@ -51,6 +52,32 @@ func (s *accountStore) putRole(nodeID string, role admission.Role) {
 		s.accounts[nodeID] = acc
 	}
 	acc.Role = role
+}
+
+func (s *accountStore) putCert(nodeID string, cert *admission.SignedCert) {
+	if cert == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	acc := s.accounts[nodeID]
+	if acc == nil {
+		acc = &natAccount{NodeID: nodeID, Since: time.Now()}
+		s.accounts[nodeID] = acc
+	}
+	copyCert := *cert
+	acc.Cert = &copyCert
+	acc.Role = cert.Cert.Role
+}
+
+func (s *accountStore) cert(nodeID string) *admission.SignedCert {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if acc := s.accounts[nodeID]; acc != nil && acc.Cert != nil {
+		copyCert := *acc.Cert
+		return &copyCert
+	}
+	return nil
 }
 
 // addUplink 给某节点累加 server 上行净荷字节，返回累加后总量。
@@ -161,9 +188,18 @@ func (n *RelayNode) onRegisterVerify(nodeId string, signJSON []byte, remoteAddr 
 	}
 	if cert != nil {
 		n.accounts.putRole(nodeId, cert.Role)
+		n.accounts.putCert(nodeId, &admission.SignedCert{Cert: *cert, Sig: signedCertSignature(signJSON)})
 		logx.Infof("[relaynode] NAT 节点注册准入通过: %.16s role=%s remote=%s", nodeId, cert.Role, remoteAddr)
 	}
 	return nil
+}
+
+func signedCertSignature(signJSON []byte) string {
+	var signed admission.SignedCert
+	if json.Unmarshal(signJSON, &signed) != nil {
+		return ""
+	}
+	return signed.Sig
 }
 
 // AccountRole 返回本 relay 记录的某被托管节点角色（未知返回空）。供状态打印/计费与测试。
@@ -186,16 +222,15 @@ func (n *RelayNode) applyAdmissionHooks() {
 	if n.admissionEnabled() {
 		cover.SetRegisterVerifyHook(n.onRegisterVerify)
 		cover.SetBusinessConnectHook(n.onBusinessConnect) // 方案B: 服务边界角色强制
-		n.installMeteringHook()                           // serverNode 上行计量（见 billing_hook.go）
-		n.startSettlementLoop()                           // 周期向 CA 结算 + 余额耗尽熔断
+		n.installSecureBillingPipeline()
 	} else {
 		cover.SetRegisterVerifyHook(nil)
 		cover.SetBusinessConnectHook(nil)
 	}
 }
 
-// 连接保证金入场费（连接保证金模型，见 BILLING_修复方案_机制层）。
-// client 掏大头（它后续大流量不计量）；server 掏小额押金（防滥用 + 证明有余额）。
+// 以下常量和 helper 属于已退役的连接保证金实现；当前 onBusinessConnect 不再调用它们，
+// 字节费用只通过双签累计凭证结算。
 const (
 	connFeeClient int64 = 5 * 1024 * 1024 // 5 MB
 	connFeeServer int64 = 50 * 1024       // 0.05 MB
@@ -204,7 +239,7 @@ const (
 	depositWindow = 60 * time.Second
 )
 
-// depositReservation 是同一 (client,server) 对的一次保证金裁决。
+// depositReservation 是已退役连接保证金实现的一次裁决状态。
 // done 关闭前代表 CA 裁决仍在进行；关闭后 err 是所有等待者都必须继承的结果。只有 paidAt
 // 非零才表示 CA 已实际完成扣费，结果才可在 depositWindow 内复用。
 type depositReservation struct {
@@ -213,19 +248,17 @@ type depositReservation struct {
 	paidAt time.Time
 }
 
-// onBusinessConnect 在业务连接接入本地托管的目标节点前被调用（StreamOn 之前），做两件事：
+// onBusinessConnect 在业务连接接入本地托管的目标节点前被调用（StreamOn 之前）：
 //
 //  1. 方案B 服务边界角色强制：只有 role=server 的被托管节点才能作为连接目标被服务。
 //     堵死「持 client 证书却对外提供服务逃计费」——client 角色即便被寻址到也拒绝接入。
-//  2. 连接保证金双扣：经 CA /reserve 对 client 扣 5MB、server 扣 0.05MB 入场费，任一方
-//     余额不足即拒绝建连。堵死「0 余额白嫖」与「连接churn 白嫖」——建连本身有真实成本。
 //
-// 参数：targetNodeId=目标(server) NodeId；clientPubKeyHex=发起方公钥(派生 client NodeId)；
-// connID=连接标识(去重, 避免 dual leg/重试重复扣费)。
+// 参数：targetNodeId=目标(server) NodeId；clientPubKeyHex 与 connID 为传输层 hook 保留参数，
+// 当前角色门不会用它们发起扣款。
 //
 // 为何在托管 relay 这一点：目标角色只在托管它的 relay 落账；而此处业务首帧同时带着
 // 目标(Header)与发起方公钥(Payload)，是唯一能同时拿到两端身份、且覆盖同机/跨中继的点。
-// 模式：Off 不安装；Warn 记 WARN 放行；Enforce 角色不符或余额不足即拒。
+// 模式：Off 不安装；Warn 记 WARN 放行；Enforce 仅在目标角色不符时拒绝。
 func (n *RelayNode) onBusinessConnect(targetNodeId, clientPubKeyHex, connID string) error {
 	cfg := n.admissionConfig()
 	if cfg == nil || cfg.Mode == AdmissionOff {
@@ -240,26 +273,15 @@ func (n *RelayNode) onBusinessConnect(targetNodeId, clientPubKeyHex, connID stri
 			return fmt.Errorf("relaynode: 目标节点 %.16s 角色非 server(=%q), 拒绝业务连接(方案B)", targetNodeId, role)
 		}
 		logx.Warnf("[relaynode] 服务边界告警(warn, 放行): 目标 %.16s 角色=%q 非 server", targetNodeId, role)
-		return nil // warn 模式下不再往下扣保证金
+		return nil // warn 模式只记录角色异常
 	}
 
-	// —— 2) 连接保证金双扣（经 CA /reserve）——
-	settler, ok := cfg.Verifier.(*admission.CAClient)
-	if !ok || settler == nil {
-		return nil // 无 CA 客户端：无法扣费, 放行(仅角色强制生效)
-	}
-	clientNodeID := networkFrameWork.NodeIDFromPubKeyHex(clientPubKeyHex)
-	if clientNodeID == "" {
-		return nil // 无法派生 client 身份, 保守放行(避免误扣到错误账户)
-	}
-	// 按 (client,server) 对在 depositWindow 内去重：dual-leg 与链路抖动重试（各自新 connID）
-	// 只扣一笔，防止重试风暴以 5MB/次打空余额。并发到达时，后续连接等待 leader 的 CA
-	// 裁决，绝不能因为看见“请求进行中”而直接放行。
-	pairKey := clientNodeID + "|" + targetNodeId
-	return n.reservePair(cfg, settler, pairKey, clientNodeID, targetNodeId, connID)
+	// 字节费用只允许走双签累计凭证；旧 /reserve 入口已停用，不能成为额外扣款或可用性依赖。
+	return nil
 }
 
-// reservePair 对同一对端对实行 single-flight 保证金裁决。pending 状态从不等同于已付款：
+// reservePair 是已退役连接保证金实现的 single-flight helper，当前业务连接路径不调用。
+// pending 状态从不等同于已付款：
 // follower 必须等待 leader 的 /reserve 返回，并继承成功或拒绝结果。
 func (n *RelayNode) reservePair(cfg *AdmissionConfig, settler *admission.CAClient, pairKey, clientNodeID, targetNodeID, connID string) error {
 	for {
@@ -305,7 +327,7 @@ func (n *RelayNode) reservePair(cfg *AdmissionConfig, settler *admission.CAClien
 	}
 }
 
-// reserveConnectionDeposit 向 CA 发起一次实际保证金预扣，并把 CA 的裁决转换为本地准入结果。
+// reserveConnectionDeposit 是已退役连接保证金实现的 CA 预扣 helper，当前业务连接路径不调用。
 // 返回 paid=true 仅表示 CA 已原子完成双扣；Warn 模式的策略性放行始终返回 paid=false。
 func (n *RelayNode) reserveConnectionDeposit(cfg *AdmissionConfig, settler *admission.CAClient, clientNodeID, targetNodeId, connID string) (paid bool, err error) {
 	ctx, cancel := context.WithTimeout(n.ctx, 8*time.Second)

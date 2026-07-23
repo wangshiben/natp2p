@@ -215,6 +215,53 @@ func TestDualFrameRelayEndpointSweepExpiredRemovesIndexes(t *testing.T) {
 	}
 }
 
+func TestDualFrameRelayEndpointActiveRouteRefreshesIdleTTL(t *testing.T) {
+	endpoint := newFrameAdapterCacheTestEndpoint()
+	adapter := &TcpFrameAdapter{stream: &TcpStream{}}
+	now := time.Unix(1_700_150_000, 0)
+	first := &network.Frame{
+		MessageId:    91,
+		SeqId:        0,
+		TotalFrames:  2,
+		FrameType:    network.FrameTypeData,
+		ConnectionId: "active-route",
+	}
+
+	endpoint.mu.Lock()
+	logicalID, route, err := endpoint.resolveIncomingFrameLocked(streamTransportTCP, adapter, first, now)
+	endpoint.mu.Unlock()
+	if err != nil || route == nil {
+		t.Fatalf("resolve first active frame: logicalID=%d route=%p err=%v", logicalID, route, err)
+	}
+
+	continuedAt := now.Add(frameRelayRouteTTL - time.Second)
+	second := cloneFrame(first)
+	second.SeqId = 1
+	endpoint.mu.Lock()
+	endpoint.sweepExpiredLocked(continuedAt)
+	continuedID, continuedRoute, continueErr := endpoint.resolveIncomingFrameLocked(streamTransportTCP, adapter, second, continuedAt)
+	endpoint.mu.Unlock()
+	if continueErr != nil {
+		t.Fatalf("continue active route before idle TTL: %v", continueErr)
+	}
+	if continuedID != logicalID || continuedRoute != route {
+		t.Fatalf("active route was recreated before idle TTL: logicalID=%d/%d route=%p/%p", continuedID, logicalID, continuedRoute, route)
+	}
+	if !route.completedAt.IsZero() || !route.lastActive.Equal(continuedAt) {
+		t.Fatalf("continued active route has invalid state: completed=%v lastActive=%v", route.completedAt, route.lastActive)
+	}
+
+	endpoint.mu.Lock()
+	endpoint.sweepExpiredLocked(continuedAt.Add(frameRelayRouteTTL - time.Second))
+	stillActive := endpoint.routes[logicalID] == route
+	endpoint.sweepExpiredLocked(continuedAt.Add(frameRelayRouteTTL))
+	expired := endpoint.routes[logicalID] == nil
+	endpoint.mu.Unlock()
+	if !stillActive || !expired {
+		t.Fatalf("idle TTL lifecycle invalid: active-before-deadline=%v expired-at-deadline=%v", stillActive, expired)
+	}
+}
+
 func TestDualFrameRelayEndpointCacheLimitDisablesReplay(t *testing.T) {
 	endpoint := newFrameAdapterCacheTestEndpoint()
 	adapter := &TcpFrameAdapter{}

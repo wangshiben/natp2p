@@ -1,10 +1,17 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/billingrecord"
+	"bnfs_p2p/billingvoucher"
+	"bnfs_p2p/crypoto"
 	"bnfs_p2p/network"
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 )
+
+var ErrBillableRecordDeferred = errors.New("billing record is waiting for an earlier sequence")
 
 // ForwardHookFunc 是每转发到指定大小时调用的 hook。
 // 返回 nil 则继续转发；返回 error 则触发 errorHook 并停止该方向的转发。
@@ -39,6 +46,16 @@ type ForwardStats struct {
 	Direction string
 }
 
+type BillableRecord struct {
+	NodeID     string
+	Direction  string
+	SessionID  billingvoucher.Identifier
+	Sequence   uint64
+	Bytes      uint64
+	RecordID   billingvoucher.Identifier
+	Connection string
+}
+
 // ForwardHookConfig 转发 hook 配置
 type ForwardHookConfig struct {
 	// ThresholdBytes 是触发 hook 的字节数阈值（累计转发到这个大小就调用 hook）
@@ -47,8 +64,18 @@ type ForwardHookConfig struct {
 	Hook ForwardHookFunc
 	// ErrorHook 是错误处理 hook
 	ErrorHook ForwardErrorHookFunc
-	cacheOnce sync.Once
-	cache     *globalRetransmitCache
+	// BillableRoute 指定必须携带认证计费元数据的 E2E 业务路由。
+	BillableRoute string
+	// BillableRecordHook 在完整、唯一的 E2E 业务记录即将完成转发时同步调用。
+	BillableRecordHook func(context.Context, *BillableRecord) error
+	// BillableRecordRequired 决定指定 StreamGroup/方向是否必须执行认证记录门控。
+	// nil 保持兼容，表示所有匹配 BillableRoute 的记录都必须执行门控。
+	BillableRecordRequired func(nodeID, direction string) bool
+	cacheOnce              sync.Once
+	cache                  *globalRetransmitCache
+	holdbackOnce           sync.Once
+	holdback               *messageHoldback
+	holdbackLimits         *messageHoldbackLimits
 }
 
 // forwardHookState 转发 hook 的运行时状态
@@ -115,7 +142,7 @@ func (s *forwardHookState) onFrame(ctx context.Context, f *network.Frame, direct
 	s.lastFrame = f
 
 	// 检查是否达到阈值
-	if s.accumulatedBytes >= s.config.ThresholdBytes {
+	if s.config.ThresholdBytes > 0 && s.accumulatedBytes >= s.config.ThresholdBytes && s.config.Hook != nil {
 		stats := &ForwardStats{
 			NodeID:      s.nodeID,
 			Direction:   direction,
@@ -147,11 +174,70 @@ func (s *forwardHookState) onFrame(ctx context.Context, f *network.Frame, direct
 	return true
 }
 
+func (s *forwardHookState) billableRecordRequired(direction string) bool {
+	if s == nil || s.config == nil || s.config.BillableRecordHook == nil {
+		return false
+	}
+	if s.config.BillableRecordRequired == nil {
+		return true
+	}
+	return s.config.BillableRecordRequired(s.nodeID, direction)
+}
+
+func (s *forwardHookState) observeBillableRecord(ctx context.Context, message *network.Message, direction string) error {
+	header := message.Header
+	if header.BillingSessionID == ([32]byte{}) || header.BillingSequence == 0 || header.BillingBytes == 0 {
+		return fmt.Errorf("billing record metadata is required")
+	}
+	metadata, err := crypoto.InspectE2ERecord(message.Payload)
+	if err != nil {
+		return fmt.Errorf("inspect E2E billing record: %w", err)
+	}
+	if metadata.PlaintextBytes != header.BillingBytes {
+		return fmt.Errorf("billing byte count mismatch: header=%d record=%d", header.BillingBytes, metadata.PlaintextBytes)
+	}
+	if header.BillingBytes > billingvoucher.CumulativeWindowBytes {
+		return fmt.Errorf("single billing record exceeds 1 MiB window")
+	}
+	record := billingrecord.Record{
+		SessionID:   billingvoucher.Identifier(header.BillingSessionID),
+		Sequence:    header.BillingSequence,
+		Bytes:       header.BillingBytes,
+		Connection:  header.ConnectionId,
+		E2ERecordID: metadata.MessageID,
+		Ciphertext:  message.Payload,
+	}
+	recordID, err := record.ID()
+	if err != nil {
+		return err
+	}
+	return s.config.BillableRecordHook(ctx, &BillableRecord{
+		NodeID: s.nodeID, Direction: direction, SessionID: record.SessionID,
+		Sequence: record.Sequence, Bytes: record.Bytes, RecordID: recordID, Connection: record.Connection,
+	})
+}
+
+func (s *forwardHookState) rejectRecord(ctx context.Context, frame *network.Frame, direction string, err error) bool {
+	if s == nil || s.config == nil {
+		return false
+	}
+	if s.config.ErrorHook != nil {
+		s.config.ErrorHook(ctx, &ForwardErrorInfo{
+			Stats: &ForwardStats{NodeID: s.nodeID, Direction: direction, LastFrame: frame},
+			Err:   err, Direction: direction,
+		})
+	}
+	return false
+}
+
 // wouldInvokeHook 保守判断下一帧是否可能跨过 hook 阈值。Relay 批处理在该边界前
 // 先写完已积累批次，使外部计费/熔断回调仍只领先当前单帧，而不会领先整个写批次。
 // 重传指纹去重可能让实际回调不发生；这种情况只会少合并一帧，不改变计量结果。
 func (s *forwardHookState) wouldInvokeHook(f *network.Frame) bool {
 	if s == nil || s.config == nil || f == nil {
+		return false
+	}
+	if s.config.ThresholdBytes <= 0 || s.config.Hook == nil {
 		return false
 	}
 	if f.FrameType != network.FrameTypeData && f.FrameType != network.FrameTypeRetransmit {

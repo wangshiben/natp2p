@@ -14,19 +14,36 @@ DEFAULT_DISK_LIMIT=40
 DEFAULT_SAMPLE_SECONDS=5
 DEFAULT_PROBE_SECONDS=60
 DEFAULT_MAX_INFLIGHT=2
-DEFAULT_DASHBOARD_HOST=0.0.0.0
+DEFAULT_DASHBOARD_HOST=127.0.0.1
 DEFAULT_DASHBOARD_PORT=8911
 DEFAULT_CA_PORT=19100
 DEFAULT_SOAK_CREDIT_BYTES=2199023255552
-DEFAULT_WORKLOAD_LIMIT_MIBPS=10
+DEFAULT_WORKLOAD_LIMIT_MIBPS=5
 DEFAULT_FAILURE_WATCHER_HEARTBEAT_TIMEOUT_SECONDS=15
 DEFAULT_FAILURE_WATCHER_DEGRADED_GRACE_SECONDS=15
 DEFAULT_FAILURE_WATCHER_SOURCE_LAG_GRACE_SECONDS=15
 DEFAULT_FAILURE_WATCHER_SETTLE_TIMEOUT_SECONDS=30
+DEFAULT_BILLING_ADVERSARY_MODE=enforce
+DEFAULT_DASHBOARD_STATUS_PROBE_SECONDS=5
+DEFAULT_DASHBOARD_STATUS_FAILURE_GRACE_SECONDS=20
+DEFAULT_DASHBOARD_STATUS_MIN_FAILURES=3
+DEFAULT_VALIDATION_MODE=full
+DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS=900
+SMOKE_RANDOM_ATTEMPT_TIMEOUT_SECONDS=180
+DEFAULT_RANDOM_WORKER_STOP_TIMEOUT_SECONDS=5
+DEFAULT_RESOURCE_GUARD_STOP_TIMEOUT_SECONDS=10
+DEFAULT_WAIT_INTERVAL_SECONDS=30
+POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS=45
+POST_GATE_SERVER_RECOVERY_STABLE_SAMPLES=3
+PROFILE_SETUP_PRIVATE_SUBDIR=profile-setup
+PROFILE_SETUP_NAT_KEY_DIR=/artifacts/.private/$PROFILE_SETUP_PRIVATE_SUBDIR
 TOPOLOGY_RELAY_COUNT=7
 TOPOLOGY_NAT_SERVER_COUNT=13
 TOPOLOGY_NAT_CLIENT_COUNT=6
 RANDOM_WORKER_PIDS=()
+RANDOM_WORKER_STARTTIMES=()
+RANDOM_WORKER_PGIDS=()
+RANDOM_WORKER_TOKENS=()
 FAILURE_WATCHER_DETAIL=
 FAILURE_WATCHER_DEGRADED_SINCE=0
 FAILURE_WATCHER_LAG_SINCE=0
@@ -36,15 +53,23 @@ FAILURE_WATCHER_SOURCE_AVAILABLE=
 FAILURE_WATCHER_SOURCE_SIZE=
 FAILURE_WATCHER_SOURCE_OFFSET=
 FAILURE_WATCHER_NEW_FAILURES=
+RESOURCE_GUARD_DETAIL=
+
+source "$ROOT_DIR/test/local-chaos/billing-adversary-gate.sh"
+source "$ROOT_DIR/test/local-chaos/billing-production-gate.sh"
+source "$ROOT_DIR/test/local-chaos/mixed-path-gate.sh"
+REAL_BILLING_GATE_SERVER=natserver06
 
 usage() {
   cat <<'EOF'
 usage:
+  local-chaos-stability.sh run [options]
   local-chaos-stability.sh start [options]
+  local-chaos-stability.sh wait [--interval-seconds N]
   local-chaos-stability.sh status
   local-chaos-stability.sh stop
 
-start options:
+run/start options:
   --scenario random|1|2|3       fixed profile for the whole run (default: random)
   --duration-seconds N          running duration after the cluster is ready (default: 43200)
   --cpu-limit PCT               project CPU percentage of host capacity (default: 55)
@@ -53,10 +78,15 @@ start options:
   --sample-seconds N            resource sample interval (default: 5)
   --probe-seconds N             end-to-end file probe interval (default: 60)
   --max-inflight N              max concurrent transfer setups/downloads (default: 2)
-  --workload-limit-mibps N      aggregate transfer budget; 0 disables (default: 10)
-  --dashboard-host HOST         dashboard bind host (default: 0.0.0.0)
+  --workload-limit-mibps N      aggregate transfer budget; 0 disables (default: 5)
+  --dashboard-host HOST         dashboard bind host (default: 127.0.0.1)
   --dashboard-port PORT         dashboard port (default: 8911)
   --ca-port PORT                loopback CA port (default: 19100)
+  --billing-adversary MODE      enforce|report|off (default: enforce)
+  --validation-mode MODE        smoke|full validation (default: full)
+
+run-only options:
+  --wait-interval-seconds N     progress output interval (default: 30)
 EOF
 }
 
@@ -82,6 +112,35 @@ core_service_names() {
 
 is_positive_integer() {
   [[ $1 =~ ^[1-9][0-9]*$ ]]
+}
+
+validation_mode_attempt_timeout_seconds() {
+  case ${1:-$DEFAULT_VALIDATION_MODE} in
+    smoke) printf '%s\n' "$SMOKE_RANDOM_ATTEMPT_TIMEOUT_SECONDS" ;;
+    full) printf '%s\n' "$DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS" ;;
+    *) return 1 ;;
+  esac
+}
+
+random_worker_drain_timeout_seconds() {
+  local attempt_timeout_seconds=$1 stop_grace_seconds=${2:-$DEFAULT_RANDOM_WORKER_STOP_TIMEOUT_SECONDS}
+  is_positive_integer "$attempt_timeout_seconds" || return 1
+  is_nonnegative_integer "$stop_grace_seconds" || return 1
+  printf '%s\n' "$((attempt_timeout_seconds + stop_grace_seconds))"
+}
+
+deadline_step_timeout_seconds() {
+  local deadline_epoch=$1 maximum_seconds=$2 now_epoch remaining_seconds
+  [[ $deadline_epoch =~ ^[1-9][0-9]*$ ]] || return 1
+  is_positive_integer "$maximum_seconds" || return 1
+  now_epoch=$(date +%s)
+  remaining_seconds=$((deadline_epoch - now_epoch))
+  (( remaining_seconds > 0 )) || return 1
+  if (( remaining_seconds < maximum_seconds )); then
+    printf '%s\n' "$remaining_seconds"
+  else
+    printf '%s\n' "$maximum_seconds"
+  fi
 }
 
 is_nonnegative_integer() {
@@ -111,19 +170,250 @@ process_starttime() {
   awk '{print $22}' "/proc/$pid/stat" 2>/dev/null
 }
 
+process_group_id() {
+  local pid=$1 group_id
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  group_id=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [[ $group_id =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$group_id"
+}
+
+process_identity_alive() {
+  local pid=$1 expected_start=$2 expected_group=$3 current_start current_group state
+  [[ $pid =~ ^[1-9][0-9]*$ && $expected_start =~ ^[1-9][0-9]*$ \
+    && $expected_group =~ ^[1-9][0-9]*$ ]] || return 1
+  current_start=$(process_starttime "$pid" 2>/dev/null || true)
+  [[ $current_start == "$expected_start" ]] || return 1
+  current_group=$(process_group_id "$pid" 2>/dev/null || true)
+  [[ $current_group == "$expected_group" ]] || return 1
+  state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [[ -n $state && $state != Z* ]]
+}
+
+process_is_alive() {
+  local pid=$1 state
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [[ -n $state && $state != Z* ]]
+}
+
+random_worker_tracking_valid() {
+  (( ${#RANDOM_WORKER_PIDS[@]} == ${#RANDOM_WORKER_STARTTIMES[@]} \
+    && ${#RANDOM_WORKER_PIDS[@]} == ${#RANDOM_WORKER_PGIDS[@]} \
+    && ${#RANDOM_WORKER_PIDS[@]} == ${#RANDOM_WORKER_TOKENS[@]} ))
+}
+
+clear_random_worker_tracking() {
+  RANDOM_WORKER_PIDS=()
+  RANDOM_WORKER_STARTTIMES=()
+  RANDOM_WORKER_PGIDS=()
+  RANDOM_WORKER_TOKENS=()
+}
+
+create_random_worker_token() {
+  local token
+  token=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
+  [[ $token =~ ^[[:xdigit:]]{32}$ ]] || return 1
+  printf '%s\n' "${token,,}"
+}
+
+process_has_random_worker_token() {
+  local pid=$1 token=$2 entry
+  [[ $pid =~ ^[1-9][0-9]*$ && $token =~ ^[[:xdigit:]]{32}$ && -r /proc/$pid/environ ]] || return 1
+  while IFS= read -r -d '' entry; do
+    [[ $entry == "BNFS_RANDOM_WORKER_TOKEN=$token" ]] && return 0
+  done < "/proc/$pid/environ"
+  return 1
+}
+
+random_worker_token_mismatch_is_live() {
+  local pid=$1 expected_group=$2 state current_group
+  [[ $pid =~ ^[1-9][0-9]*$ && $expected_group =~ ^[1-9][0-9]*$ ]] || return 1
+  state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  [[ -n $state && $state != Z* ]] || return 1
+  current_group=$(process_group_id "$pid" 2>/dev/null || true)
+  [[ $current_group == "$expected_group" ]]
+}
+
+track_random_worker() {
+  local pid=$1 token=$2 start= group_id= attempt
+  [[ $token =~ ^[[:xdigit:]]{32}$ ]] || return 1
+  for attempt in $(seq 1 50); do
+    start=$(process_starttime "$pid" 2>/dev/null || true)
+    group_id=$(process_group_id "$pid" 2>/dev/null || true)
+    if [[ $start =~ ^[1-9][0-9]*$ && $group_id == "$pid" ]] \
+      && process_has_random_worker_token "$pid" "$token"; then
+      break
+    fi
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.02
+  done
+  [[ $start =~ ^[1-9][0-9]*$ && $group_id == "$pid" ]] \
+    && process_has_random_worker_token "$pid" "$token" || return 1
+  RANDOM_WORKER_PIDS+=("$pid")
+  RANDOM_WORKER_STARTTIMES+=("$start")
+  RANDOM_WORKER_PGIDS+=("$group_id")
+  RANDOM_WORKER_TOKENS+=("$token")
+}
+
+random_worker_registered() {
+  local registry=$1 client=$2 pid=$3 start=$4 group_id=$5 token=$6
+  [[ -f $registry ]] || return 1
+  awk -F '\t' -v client="$client" -v pid="$pid" -v start="$start" \
+    -v group_id="$group_id" -v token="$token" '
+      $1 == client && $2 == pid && $3 == start && $4 == group_id && $5 == token {
+        found = 1
+      }
+      END { exit !found }
+    ' "$registry"
+}
+
+wait_random_worker_registered() {
+  local registry=$1 client=$2 pid=$3 start=$4 group_id=$5 token=$6 attempt
+  for attempt in $(seq 1 50); do
+    random_worker_registered "$registry" "$client" "$pid" "$start" "$group_id" "$token" \
+      && return 0
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.02
+  done
+  return 1
+}
+
+registered_random_worker() {
+  local run_dir=$1 client=$2 expected_runner_pid=$3 expected_runner_start=$4
+  shift 4
+  local registry=$run_dir/worker-pids.tsv
+  local registry_lock=$run_dir/worker-pids.lock
+  local registry_closed=$run_dir/worker-pids.closed
+  local token=${BNFS_RANDOM_WORKER_TOKEN:-}
+  local worker_pid=$$ worker_start worker_group
+  worker_start=$(process_starttime "$worker_pid" 2>/dev/null || true)
+  worker_group=$(process_group_id "$worker_pid" 2>/dev/null || true)
+  [[ $client =~ ^natclient0[1-6]$ && $token =~ ^[[:xdigit:]]{32}$ \
+    && $worker_start =~ ^[1-9][0-9]*$ && $worker_group == "$worker_pid" ]] || return 1
+
+  exec 8> "$registry_lock"
+  flock -x 8 || return 1
+  [[ ! -e $registry_closed \
+    && $(head -n 1 "$registry" 2>/dev/null || true) == $'client\tpid\tstarttime\tpgid\ttoken' \
+    && $expected_runner_pid =~ ^[1-9][0-9]*$ \
+    && $expected_runner_start =~ ^[1-9][0-9]*$ \
+    && $(process_starttime "$expected_runner_pid" 2>/dev/null || true) == "$expected_runner_start" \
+    && $(process_group_id "$expected_runner_pid" 2>/dev/null || true) == "$expected_runner_pid" ]] \
+    || return 1
+  if awk -F '\t' -v client="$client" -v pid="$worker_pid" -v group_id="$worker_group" \
+    -v token="$token" 'NR > 1 && ($1 == client || $2 == pid || $4 == group_id || $5 == token) { found=1 } END { exit !found }' \
+    "$registry"; then
+    return 1
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$client" "$worker_pid" "$worker_start" "$worker_group" "$token" >> "$registry"
+  flock -u 8
+  exec 8>&-
+  exec bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _worker "$run_dir" "$client" "$@"
+}
+
+random_worker_identity_alive() {
+  local index=$1
+  random_worker_tracking_valid || return 1
+  [[ $index =~ ^[0-9]+$ && $index -lt ${#RANDOM_WORKER_PIDS[@]} ]] || return 1
+  process_identity_alive "${RANDOM_WORKER_PIDS[$index]}" \
+    "${RANDOM_WORKER_STARTTIMES[$index]}" "${RANDOM_WORKER_PGIDS[$index]}" \
+    && process_has_random_worker_token "${RANDOM_WORKER_PIDS[$index]}" \
+      "${RANDOM_WORKER_TOKENS[$index]}"
+}
+
+random_worker_group_identity_valid() {
+  local index=$1 pid expected_start expected_group token current_start current_group members member state
+  random_worker_tracking_valid || return 1
+  [[ $index =~ ^[0-9]+$ && $index -lt ${#RANDOM_WORKER_PIDS[@]} ]] || return 1
+  pid=${RANDOM_WORKER_PIDS[$index]}
+  expected_start=${RANDOM_WORKER_STARTTIMES[$index]}
+  expected_group=${RANDOM_WORKER_PGIDS[$index]}
+  token=${RANDOM_WORKER_TOKENS[$index]}
+  [[ $pid == "$expected_group" && $expected_start =~ ^[1-9][0-9]*$ \
+    && $token =~ ^[[:xdigit:]]{32}$ ]] || return 1
+  members=$(random_worker_group_members "$expected_group") || return 1
+  [[ -n $members ]] || return 1
+  if [[ -r /proc/$pid/stat ]]; then
+    current_start=$(process_starttime "$pid" 2>/dev/null || true)
+    current_group=$(process_group_id "$pid" 2>/dev/null || true)
+    state=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    [[ $current_start == "$expected_start" && $current_group == "$expected_group" \
+      && -n $state ]] || return 1
+  fi
+  while IFS= read -r member; do
+    [[ -r /proc/$member/stat ]] || continue
+    current_group=$(process_group_id "$member" 2>/dev/null || true)
+    [[ -n $current_group ]] || continue
+    [[ $current_group == "$expected_group" ]] || return 1
+    if ! process_has_random_worker_token "$member" "$token"; then
+      # A process can exit after the group snapshot but before /proc/environ is
+      # read. Recheck its non-zombie identity before treating it as tokenless.
+      random_worker_token_mismatch_is_live "$member" "$expected_group" || continue
+      return 1
+    fi
+  done <<< "$members"
+}
+
+random_worker_group_members() {
+  local group_id=$1
+  [[ $group_id =~ ^[1-9][0-9]*$ ]] || return 1
+  ps -eo pid=,pgid=,stat= | awk -v group_id="$group_id" '
+    $2 == group_id && $3 !~ /^Z/ { print $1 }
+  '
+}
+
+random_worker_group_alive() {
+  local group_id=$1 members
+  members=$(random_worker_group_members "$group_id") || return 1
+  [[ -n $members ]]
+}
+
+random_worker_groups_valid_for_signal() {
+  local index pid group_id
+  random_worker_tracking_valid || return 1
+  for index in "${!RANDOM_WORKER_PIDS[@]}"; do
+    pid=${RANDOM_WORKER_PIDS[$index]}
+    group_id=${RANDOM_WORKER_PGIDS[$index]}
+    if random_worker_group_alive "$group_id"; then
+      random_worker_group_identity_valid "$index" || return 1
+    elif process_is_alive "$pid"; then
+      return 1
+    fi
+  done
+}
+
+signal_random_worker_groups() {
+  local signal=$1 index group_id
+  [[ $signal == TERM || $signal == KILL ]] || return 1
+  random_worker_groups_valid_for_signal || return 1
+  for index in "${!RANDOM_WORKER_PIDS[@]}"; do
+    group_id=${RANDOM_WORKER_PGIDS[$index]}
+    random_worker_group_alive "$group_id" || continue
+    random_worker_group_identity_valid "$index" || return 1
+    if ! kill -"$signal" -- "-$group_id" 2>/dev/null; then
+      random_worker_group_alive "$group_id" && return 1
+    fi
+  done
+}
+
 stop_dashboard_process() {
   local run_dir=$1 pid start attempt
   [[ -f $run_dir/dashboard.pid && -f $run_dir/dashboard.starttime ]] || return 0
   pid=$(cat "$run_dir/dashboard.pid" 2>/dev/null || true)
   start=$(cat "$run_dir/dashboard.starttime" 2>/dev/null || true)
-  pid_matches "$pid" "$start" 'monitor/server.mjs' || return 0
+  pid_matches "$pid" "$start" 'monitor/server.mjs' \
+    && process_identity_alive "$pid" "$start" "$pid" || return 0
 
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   for attempt in $(seq 1 20); do
-    pid_matches "$pid" "$start" 'monitor/server.mjs' || return 0
+    pid_matches "$pid" "$start" 'monitor/server.mjs' \
+      && process_identity_alive "$pid" "$start" "$pid" || return 0
     sleep 0.1
   done
-  if pid_matches "$pid" "$start" 'monitor/server.mjs'; then
+  if pid_matches "$pid" "$start" 'monitor/server.mjs' \
+    && process_identity_alive "$pid" "$start" "$pid"; then
     kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
   fi
   for attempt in $(seq 1 20); do
@@ -160,7 +450,8 @@ current_runner_alive() {
   [[ -f $run_dir/runner.pid && -f $run_dir/runner.starttime ]] || return 1
   pid=$(cat "$run_dir/runner.pid")
   start=$(cat "$run_dir/runner.starttime")
-  pid_matches "$pid" "$start" 'local-chaos-stability.sh _run'
+  pid_matches "$pid" "$start" 'local-chaos-stability.sh _run' \
+    && process_identity_alive "$pid" "$start" "$pid"
 }
 
 write_metadata() {
@@ -174,11 +465,70 @@ set_phase() {
   printf '%s\n' "$phase" > "$run_dir/phase"
 }
 
+completed_terminal_evidence_valid() {
+  local status_file=$1
+  [[ $(run_field "$status_file" outcome 2>/dev/null || true) == COMPLETED \
+    && $(run_field "$status_file" detail 2>/dev/null || true) == duration_complete \
+    && $(run_field "$status_file" remaining_containers 2>/dev/null || true) == 0 \
+    && $(run_field "$status_file" remaining_networks 2>/dev/null || true) == 0 ]]
+}
+
+publish_terminal_result() {
+  local run_dir=$1 outcome=$2 detail=$3 remaining_containers=$4 remaining_networks=$5
+  local finished_epoch status_temporary phase_temporary
+  case $outcome in
+    COMPLETED|FAILED|RESOURCE_LIMIT|STOPPED) ;;
+    *) return 1 ;;
+  esac
+  [[ $detail =~ ^[a-z0-9_]+$ ]] || return 1
+  [[ $remaining_containers == unknown || $remaining_containers =~ ^[0-9]+$ ]] || return 1
+  [[ $remaining_networks == unknown || $remaining_networks =~ ^[0-9]+$ ]] || return 1
+  if [[ $outcome == COMPLETED ]]; then
+    [[ $detail == duration_complete && $remaining_containers == 0 \
+      && $remaining_networks == 0 ]] || return 1
+  fi
+  finished_epoch=$(date +%s) || return 1
+  status_temporary=$run_dir/status.env.tmp.$BASHPID
+  phase_temporary=$run_dir/phase.tmp.$BASHPID
+  if ! printf 'outcome=%s\ndetail=%s\nfinished_epoch=%s\nremaining_containers=%s\nremaining_networks=%s\n' \
+    "$outcome" "$detail" "$finished_epoch" "$remaining_containers" "$remaining_networks" \
+    > "$status_temporary" \
+    || ! printf '%s\n' "$outcome" > "$phase_temporary"; then
+    rm -f "$status_temporary" "$phase_temporary"
+    return 1
+  fi
+  if ! mv "$status_temporary" "$run_dir/status.env"; then
+    rm -f "$status_temporary" "$phase_temporary"
+    return 1
+  fi
+  if ! mv "$phase_temporary" "$run_dir/phase"; then
+    rm -f "$phase_temporary"
+    return 1
+  fi
+}
+
 random_scenario() {
   local value
   value=$(od -An -N4 -tu4 /dev/urandom | tr -d '[:space:]')
   [[ $value =~ ^[0-9]+$ ]] || return 1
   printf '%s\t%s\n' "$((value % 3 + 1))" "$value"
+}
+
+create_unique_run_directory() {
+  local scenario=$1 attempt nonce run_id run_dir
+  mkdir -p "$SOAK_HOME/runs"
+  for attempt in $(seq 1 20); do
+    nonce=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
+    [[ $nonce =~ ^[[:xdigit:]]{16}$ ]] || return 1
+    run_id=$(date -u +%Y%m%dT%H%M%S.%NZ)-${nonce,,}-s${scenario}
+    run_dir=$SOAK_HOME/runs/$run_id
+    if mkdir "$run_dir" 2>/dev/null; then
+      chmod 700 "$run_dir"
+      printf '%s\t%s\n' "$run_id" "$run_dir"
+      return 0
+    fi
+  done
+  return 1
 }
 
 start_run() {
@@ -187,6 +537,8 @@ start_run() {
   local sample_seconds=$DEFAULT_SAMPLE_SECONDS probe_seconds=$DEFAULT_PROBE_SECONDS
   local max_inflight=$DEFAULT_MAX_INFLIGHT
   local workload_limit_mibps=$DEFAULT_WORKLOAD_LIMIT_MIBPS
+  local billing_adversary_mode=$DEFAULT_BILLING_ADVERSARY_MODE
+  local validation_mode=$DEFAULT_VALIDATION_MODE random_attempt_timeout_seconds random_drain_timeout_seconds
   local dashboard_host=$DEFAULT_DASHBOARD_HOST dashboard_port=$DEFAULT_DASHBOARD_PORT ca_port=$DEFAULT_CA_PORT
 
   scenario=random
@@ -204,6 +556,8 @@ start_run() {
       --dashboard-host) dashboard_host=${2:?}; shift 2 ;;
       --dashboard-port) dashboard_port=${2:?}; shift 2 ;;
       --ca-port) ca_port=${2:?}; shift 2 ;;
+      --billing-adversary) billing_adversary_mode=${2:?}; shift 2 ;;
+      --validation-mode) validation_mode=${2:?}; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -235,6 +589,16 @@ start_run() {
     printf 'invalid dashboard host: %s\n' "$dashboard_host" >&2
     exit 2
   }
+  [[ $billing_adversary_mode == enforce || $billing_adversary_mode == report || $billing_adversary_mode == off ]] || {
+    printf 'invalid billing adversary mode: %s\n' "$billing_adversary_mode" >&2
+    exit 2
+  }
+  random_attempt_timeout_seconds=$(validation_mode_attempt_timeout_seconds "$validation_mode") || {
+    printf 'invalid validation mode: %s\n' "$validation_mode" >&2
+    exit 2
+  }
+  random_drain_timeout_seconds=$(random_worker_drain_timeout_seconds \
+    "$random_attempt_timeout_seconds") || exit 2
   for value in "$cpu_limit" "$memory_limit" "$disk_limit"; do
     is_percentage "$value" || { printf 'invalid percentage: %s\n' "$value" >&2; exit 2; }
   done
@@ -261,12 +625,12 @@ start_run() {
   fi
 
   local run_id run_dir project project_suffix
-  run_id=$(date -u +%Y%m%dT%H%M%SZ)-s${scenario}
-  run_dir=$SOAK_HOME/runs/$run_id
+  if ! IFS=$'\t' read -r run_id run_dir < <(create_unique_run_directory "$scenario"); then
+    printf 'unable to allocate a unique stability run directory\n' >&2
+    exit 1
+  fi
   project_suffix=${run_id//[^a-zA-Z0-9]/}
   project=bnfs-soak-${project_suffix,,}
-  mkdir -p "$run_dir"
-  chmod 700 "$run_dir"
   printf '%s\n' "$run_dir" > "$CURRENT_FILE"
   write_metadata "$run_dir" \
     "run_id=$run_id" \
@@ -285,6 +649,10 @@ start_run() {
     "dashboard_host=$dashboard_host" \
     "dashboard_port=$dashboard_port" \
     "ca_port=$ca_port" \
+    "billing_adversary_mode=$billing_adversary_mode" \
+    "validation_mode=$validation_mode" \
+    "random_attempt_timeout_seconds=$random_attempt_timeout_seconds" \
+    "random_worker_drain_timeout_seconds=$random_drain_timeout_seconds" \
     "compose_project=$project"
   set_phase "$run_dir" LAUNCHING
 
@@ -315,19 +683,68 @@ start_run() {
   phase=$(cat "$run_dir/phase" 2>/dev/null || printf 'UNKNOWN')
   printf 'run_id=%s\nscenario=%s\nscenario_name=%s\nphase=%s\nrun_dir=%s\ndashboard=http://%s:%s/\n' \
     "$run_id" "$scenario" "$(scenario_name "$scenario")" "$phase" "$run_dir" "$dashboard_host" "$dashboard_port"
-  [[ $phase == RUNNING || $phase == BUILDING || $phase == STARTING_CLUSTER || $phase == CONFIGURING_PROFILE ]]
+  if [[ $phase == COMPLETED ]]; then
+    completed_terminal_evidence_valid "$run_dir/status.env"
+    return
+  fi
+  [[ $phase == RUNNING || $phase == BUILDING || $phase == STARTING_CLUSTER \
+    || $phase == CONFIGURING_PROFILE || $phase == VERIFYING_BILLING ]]
+}
+
+run_foreground() {
+  local wait_interval=$DEFAULT_WAIT_INTERVAL_SECONDS
+  local -a start_args=()
+  while (($#)); do
+    case "$1" in
+      --wait-interval-seconds)
+        wait_interval=${2:?}
+        shift 2
+        ;;
+      *)
+        start_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  is_positive_integer "$wait_interval" || {
+    printf 'expected positive integer: %s\n' "$wait_interval" >&2
+    return 2
+  }
+  start_run "${start_args[@]}" || return $?
+  local run_dir
+  run_dir=$(read_current_run 2>/dev/null || true)
+  [[ -n $run_dir && -d $run_dir ]] || {
+    printf 'started stability run is unavailable\n' >&2
+    return 1
+  }
+  wait_for_run_completion "$run_dir" "$wait_interval"
 }
 
 credit_node() {
-  local ca_port=$1 node_id=$2 add_bytes=$3 response balance
+  local ca_port=$1 node_id=$2 add_bytes=$3 response balance payload
   # Perform ledger mutation inside the CA container. This remains reliable
   # even when Docker host-port forwarding is unavailable during startup; the
   # loopback host port is reserved for the read-only monitoring/dashboard path.
-  response=$(dc exec -T ca curl -fsS --connect-timeout 5 -H 'Content-Type: application/json' \
-    --data-binary "{\"node_id\":\"$node_id\",\"add_bytes\":$add_bytes}" \
-    "http://127.0.0.1:9100/credit") || return 1
+  payload="{\"node_id\":\"$node_id\",\"add_bytes\":$add_bytes}"
+  response=$(dc exec -T ca sh -c '
+    token=$(cat /artifacts/.private/admin.token) || exit 1
+    exec curl -fsS --connect-timeout 5 -H "Authorization: Bearer $token" \
+      -H "Content-Type: application/json" --data-binary "$1" \
+      http://127.0.0.1:9100/credit
+  ' _ "$payload") || return 1
   balance=$(sed -n 's/.*"balance":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' <<< "$response")
   [[ $balance =~ ^[1-9][0-9]*$ ]]
+}
+
+provision_container_adversaries() {
+  local run_dir=$1 ca_port=$2 credential_root=$PRIVATE_RUNTIME_DIR/ca
+  PRIVATE_RUNTIME_DIR="$PRIVATE_RUNTIME_DIR" \
+    CA_BASE_URL="http://127.0.0.1:$ca_port" \
+    CA_SERVER_ENROLLMENT_TOKEN_FILE="$credential_root/enroll-server.token" \
+    CA_RELAY_ENROLLMENT_TOKEN_FILE="$credential_root/enroll-relay.token" \
+    CA_ADMIN_TOKEN_FILE="$credential_root/admin.token" \
+    node "$ROOT_DIR/test/local-chaos/provision-adversaries.mjs" \
+      > "$run_dir/container-adversary-provision.log" 2>&1
 }
 
 generate_key() {
@@ -336,9 +753,39 @@ generate_key() {
   chmod 600 "$path"
 }
 
+prepare_profile_setup_identity() {
+  local service=$1 directory
+  [[ $service =~ ^nat(server|client)[0-9]{2}$ ]] || return 1
+  directory=$PRIVATE_RUNTIME_DIR/$service/$PROFILE_SETUP_PRIVATE_SUBDIR
+  mkdir -p "$directory"
+  chmod 700 "$directory"
+  generate_key "$directory/$service.key"
+}
+
+nat_key_host_file() {
+  local service=$1 directory key_directory=${BNFS_CHAOS_NAT_KEY_DIR:-/artifacts/.private}
+  [[ $service =~ ^nat(server|client)[0-9]{2}$ ]] || return 1
+  case $key_directory in
+    /artifacts/.private)
+      directory=$PRIVATE_RUNTIME_DIR/$service
+      ;;
+    "$PROFILE_SETUP_NAT_KEY_DIR")
+      directory=$PRIVATE_RUNTIME_DIR/$service/$PROFILE_SETUP_PRIVATE_SUBDIR
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  printf '%s/%s.key\n' "$directory" "$service"
+}
+
 ensure_key() {
   local path=$1
   [[ -s $path ]] || generate_key "$path"
+}
+
+node_id_from_private_key() {
+  node "$ROOT_DIR/test/local-chaos/node-id-from-key.mjs" "$1"
 }
 
 wait_service_health() {
@@ -367,18 +814,277 @@ wait_dashboard_health() {
   return 1
 }
 
-wait_resource_guard_ready() {
-  local run_dir=$1 guard_pid=$2 deadline
-  deadline=$((SECONDS + 10))
+DASHBOARD_STATUS_PROBE_DETAIL=
+probe_dashboard_status() {
+  local dashboard_host=$1 dashboard_port=$2 response_file=$3 expected_phase=${4:-}
+  local probe_host http_status validation_rc=0
+  probe_host=$dashboard_host
+  [[ $probe_host != 0.0.0.0 ]] || probe_host=127.0.0.1
+  DASHBOARD_STATUS_PROBE_DETAIL=dashboard_status_api_transport_failed
+  http_status=$(curl -sS --connect-timeout 1 --max-time 4 \
+    --output "$response_file" --write-out '%{http_code}' \
+    "http://$probe_host:$dashboard_port/api/status?fresh=1" 2>/dev/null) || {
+    rm -f "$response_file"
+    return 1
+  }
+  if [[ $http_status != 200 ]]; then
+    DASHBOARD_STATUS_PROBE_DETAIL=dashboard_status_api_http_invalid
+    rm -f "$response_file"
+    return 1
+  fi
+  node -e '
+    const fs = require("node:fs");
+    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const expectedPhase = process.argv[2] || "";
+    if (!value || Array.isArray(value) || typeof value !== "object"
+      || typeof value.generatedAt !== "string" || !Number.isFinite(Date.parse(value.generatedAt))
+      || typeof value.phase !== "string" || !value.status || Array.isArray(value.status)
+      || typeof value.status !== "object") process.exit(1);
+    if (expectedPhase && value.phase !== expectedPhase) process.exit(3);
+    if (!["RUNNING", "COMPLETED"].includes(value.phase)
+      || value.metadata?.billing_adversary_mode === "off") process.exit(0);
+    const expected = [
+      { service: "malicious-natserver", actor: "natserver", required: 4 },
+      { service: "malicious-relay", actor: "relay", required: 5 },
+    ];
+    const valid = Array.isArray(value.maliciousNodes)
+      && value.maliciousNodes.length === expected.length
+      && expected.every((item, index) => {
+        const node = value.maliciousNodes[index];
+        const probe = node?.probe;
+        return node && typeof node === "object" && !Array.isArray(node)
+          && node.service === item.service && node.actor === item.actor
+          && node.running === true && node.health === "healthy"
+          && Number.isSafeInteger(node.restartCount) && node.restartCount === 0
+          && probe && typeof probe === "object" && !Array.isArray(probe)
+          && probe.status === "RUNNING"
+          && Number.isSafeInteger(probe.executed) && probe.executed >= item.required
+          && Number.isSafeInteger(probe.failed) && probe.failed === 0
+          && Number.isSafeInteger(probe.covered) && probe.covered === item.required
+          && Number.isSafeInteger(probe.required) && probe.required === item.required;
+      });
+    if (!valid) process.exit(2);
+    const mixed = value.mixedPath;
+    const partitionForRelay = relay => ["relay03", "relay04", "relay05"].includes(relay)
+      ? "control_partition_a"
+      : ["relay06", "relay07"].includes(relay)
+        ? "control_partition_b"
+        : "";
+    const terminalReady = mixed?.status === "STOPPED" && mixed?.probe?.status === "PASS"
+      && mixed?.probe?.sha256Verified === true && mixed?.generation >= 9;
+    const natAttachment = mixed?.attachments?.maliciousNatserver;
+    const relayAttachment = mixed?.attachments?.maliciousRelay;
+    const attachmentValid = natAttachment?.attachmentType === "registered_to_normal_relay"
+      && natAttachment?.basis === "live_relay_registration"
+      && partitionForRelay(natAttachment?.currentRelay) === natAttachment?.normalPartition
+      && relayAttachment?.attachmentType === "control_peer_with_normal_relay"
+      && relayAttachment?.basis === "live_control_hello"
+      && relayAttachment?.peerDirection === "normal_relay_to_malicious_relay"
+      && partitionForRelay(relayAttachment?.currentRelay) === relayAttachment?.normalPartition;
+    const latestMigrations = Array.isArray(mixed?.migrations) ? mixed.migrations.slice(0, 2) : [];
+    const terminalContainmentValid = !terminalReady || (latestMigrations.length === 2
+      && latestMigrations.every(migration => migration?.trigger?.contained === true
+        && migration?.triggerContained === true && migration?.isolationVerified === true
+        && migration?.containmentVerified === true && migration?.probePassed === true
+        && partitionForRelay(migration?.currentRelay) === migration?.normalPartition));
+    const terminalNetworkCoverageValid = !terminalReady || (mixed?.networkSummary?.required === 9
+      && mixed?.networkSummary?.covered === 9 && mixed?.networkSummary?.violations === 0
+      && mixed?.networkSummary?.executed === mixed?.generation
+      && mixed?.networkSummary?.contained === mixed?.generation);
+    const mixedValid = mixed && typeof mixed === "object" && !Array.isArray(mixed)
+      && mixed.available === true && (mixed.healthy === true || terminalReady)
+      && Array.isArray(mixed.path?.nodes) && mixed.path.nodes.includes("mixed-path-probe")
+      && mixed.path.nodes.includes("malicious-natserver")
+      && mixed.path?.kind === "normal_partition_mixed_adversary"
+      && mixed.path?.containsNormalPartition === true && mixed.path?.containsMaliciousNode === true
+      && mixed.probe?.status === "PASS" && mixed.probe?.sha256Verified === true
+      && attachmentValid && terminalContainmentValid && terminalNetworkCoverageValid
+      && mixed.attachments?.maliciousNatserver?.currentRelay?.match(/^relay0[3-7]$/)
+      && ["malicious-relay", ...Array.from({length: 7}, (_, index) => `relay0${index + 1}`)]
+        .includes(mixed.attachments?.normalProbe?.currentRelay);
+    if (!mixedValid) process.exit(4);
+  ' "$response_file" "$expected_phase" >/dev/null 2>&1 || validation_rc=$?
+  if (( validation_rc != 0 )); then
+    if (( validation_rc == 2 )); then
+      DASHBOARD_STATUS_PROBE_DETAIL=dashboard_status_api_malicious_nodes_invalid
+    elif (( validation_rc == 4 )); then
+      DASHBOARD_STATUS_PROBE_DETAIL=dashboard_status_api_mixed_path_invalid
+    elif (( validation_rc == 3 )); then
+      DASHBOARD_STATUS_PROBE_DETAIL=dashboard_status_api_phase_invalid
+    else
+      DASHBOARD_STATUS_PROBE_DETAIL=dashboard_status_api_json_invalid
+    fi
+    rm -f "$response_file"
+    return 1
+  fi
+  rm -f "$response_file"
+  DASHBOARD_STATUS_PROBE_DETAIL=
+  return 0
+}
+
+dashboard_status_failure_is_fatal() {
+  local now_epoch=$1 failed_since=$2 consecutive_failures=$3
+  (( failed_since > 0 \
+    && consecutive_failures >= DEFAULT_DASHBOARD_STATUS_MIN_FAILURES \
+    && now_epoch - failed_since >= DEFAULT_DASHBOARD_STATUS_FAILURE_GRACE_SECONDS ))
+}
+
+DASHBOARD_FINALIZATION_DETAIL=
+verify_dashboard_finalization() {
+  local dashboard_pid=$1 dashboard_start=$2 dashboard_host=$3 dashboard_port=$4 response_file=$5
+  local expected_phase=${6:-COMPLETED}
+  DASHBOARD_FINALIZATION_DETAIL=
+  if ! pid_matches "$dashboard_pid" "$dashboard_start" 'monitor/server.mjs'; then
+    DASHBOARD_FINALIZATION_DETAIL=dashboard_exited
+    return 1
+  fi
+  if ! probe_dashboard_status "$dashboard_host" "$dashboard_port" "$response_file" "$expected_phase"; then
+    DASHBOARD_FINALIZATION_DETAIL=${DASHBOARD_STATUS_PROBE_DETAIL:-dashboard_status_api_invalid}
+    return 1
+  fi
+}
+
+wait_dashboard_status() {
+  local dashboard_host=$1 dashboard_port=$2 response_file=$3 deadline
+  deadline=$((SECONDS + 20))
   while (( SECONDS < deadline )); do
-    kill -0 "$guard_pid" 2>/dev/null || return 1
-    if [[ -s $run_dir/resource-guard.status ]] \
-      && grep -q '^RUNNING ' "$run_dir/resource-guard.status"; then
+    if probe_dashboard_status "$dashboard_host" "$dashboard_port" "$response_file"; then
       return 0
     fi
-    sleep 0.1
+    sleep 0.25
   done
   return 1
+}
+
+resource_guard_max_sample_age() {
+  local interval_seconds=$1 maximum_age=$((interval_seconds * 3))
+  (( maximum_age >= 30 )) || maximum_age=30
+  printf '%s\n' "$maximum_age"
+}
+
+inspect_resource_guard() {
+  local run_dir=$1 guard_pid=$2 guard_start=$3 interval_seconds=$4
+  local expected_duration=$5 cpu_limit=$6 memory_limit=$7 disk_limit=$8 now_epoch=$9
+  local status_line expected_header latest_line timestamp epoch containers state maximum_age
+  local project_cpu_raw project_cpu_host host_cpu project_memory project_memory_host
+  local host_memory docker_disk artifact_disk guard_disk
+  RESOURCE_GUARD_DETAIL=
+  if [[ ! -r /proc/$guard_pid/stat ]]; then
+    RESOURCE_GUARD_DETAIL=resource_guard_exited
+    return 1
+  fi
+  if ! process_identity_alive "$guard_pid" "$guard_start" "$guard_pid"; then
+    RESOURCE_GUARD_DETAIL=resource_guard_identity_invalid
+    return 1
+  fi
+  if [[ ! -s $run_dir/resource-guard.status ]] \
+    || (( $(wc -l < "$run_dir/resource-guard.status") != 1 )); then
+    RESOURCE_GUARD_DETAIL=resource_guard_status_invalid
+    return 1
+  fi
+  status_line=$(<"$run_dir/resource-guard.status")
+  local -a status_fields=()
+  read -r -a status_fields <<< "$status_line"
+  if (( ${#status_fields[@]} != 8 )) \
+    || [[ ${status_fields[0]} != RUNNING \
+      || ! ${status_fields[1]} =~ ^started=[0-9T:+-]+$ \
+      || ${status_fields[2]} != "duration_seconds=$expected_duration" \
+      || ${status_fields[3]} != "interval_seconds=$interval_seconds" \
+      || ${status_fields[4]} != "cpu_limit_pct=$cpu_limit" \
+      || ${status_fields[5]} != "memory_limit_pct=$memory_limit" \
+      || ${status_fields[6]} != "disk_limit_pct=$disk_limit" \
+      || ! ${status_fields[7]} =~ ^logical_cpus=[1-9][0-9]*$ ]]; then
+    RESOURCE_GUARD_DETAIL=resource_guard_status_invalid
+    return 1
+  fi
+  expected_header=$'timestamp\tepoch\tcontainers\tproject_cpu_raw_pct\tproject_cpu_host_pct\thost_cpu_pct\tproject_memory_bytes\tproject_memory_host_pct\thost_memory_pct\tdocker_disk_pct\tartifact_disk_pct\tguard_disk_pct\tstate'
+  if [[ ! -s $run_dir/resources.tsv \
+    || $(head -n 1 "$run_dir/resources.tsv" 2>/dev/null || true) != "$expected_header" \
+    || $(wc -l < "$run_dir/resources.tsv") -lt 2 ]]; then
+    RESOURCE_GUARD_DETAIL=resource_guard_sample_missing
+    return 1
+  fi
+  latest_line=$(tail -n 1 "$run_dir/resources.tsv" 2>/dev/null || true)
+  IFS=$'\t' read -r timestamp epoch containers project_cpu_raw project_cpu_host host_cpu \
+    project_memory project_memory_host host_memory docker_disk artifact_disk guard_disk state \
+    <<< "$latest_line"
+  if [[ ! $timestamp =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} \
+    || ! $epoch =~ ^[0-9]+$ || ! $containers =~ ^[1-9][0-9]*$ \
+    || ! $project_memory =~ ^[0-9]+$ || $state != OK ]]; then
+    RESOURCE_GUARD_DETAIL=resource_guard_sample_invalid
+    return 1
+  fi
+  local numeric_value
+  for numeric_value in "$project_cpu_raw" "$project_cpu_host" "$host_cpu" \
+    "$project_memory_host" "$host_memory" "$docker_disk" "$artifact_disk" "$guard_disk"; do
+    if [[ ! $numeric_value =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      RESOURCE_GUARD_DETAIL=resource_guard_sample_invalid
+      return 1
+    fi
+  done
+  if (( epoch > now_epoch + 5 )); then
+    RESOURCE_GUARD_DETAIL=resource_guard_sample_invalid
+    return 1
+  fi
+  maximum_age=$(resource_guard_max_sample_age "$interval_seconds")
+  if (( now_epoch - epoch > maximum_age )); then
+    RESOURCE_GUARD_DETAIL=resource_guard_sample_stale
+    return 1
+  fi
+}
+
+wait_resource_guard_ready() {
+  local run_dir=$1 guard_pid=$2 guard_start=$3 interval_seconds=$4
+  local expected_duration=$5 cpu_limit=$6 memory_limit=$7 disk_limit=$8 deadline
+  deadline=$((SECONDS + $(resource_guard_max_sample_age "$interval_seconds")))
+  while (( SECONDS < deadline )); do
+    if inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$interval_seconds" \
+      "$expected_duration" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+      return 0
+    fi
+    [[ $RESOURCE_GUARD_DETAIL != resource_guard_exited \
+      && $RESOURCE_GUARD_DETAIL != resource_guard_identity_invalid ]] || return 1
+    sleep 0.25
+  done
+  return 1
+}
+
+stop_resource_guard() {
+  local run_dir=$1 guard_pid=$2 guard_start=$3 attempt guard_rc=0 status_line
+  RESOURCE_GUARD_DETAIL=
+  if [[ ! -r /proc/$guard_pid/stat ]]; then
+    RESOURCE_GUARD_DETAIL=resource_guard_exited
+    return 1
+  fi
+  if ! process_identity_alive "$guard_pid" "$guard_start" "$guard_pid"; then
+    RESOURCE_GUARD_DETAIL=resource_guard_identity_invalid
+    return 1
+  fi
+  kill -TERM "$guard_pid" 2>/dev/null || {
+    RESOURCE_GUARD_DETAIL=resource_guard_stop_failed
+    return 1
+  }
+  for attempt in $(seq 1 $((DEFAULT_RESOURCE_GUARD_STOP_TIMEOUT_SECONDS * 10))); do
+    process_identity_alive "$guard_pid" "$guard_start" "$guard_pid" || break
+    sleep 0.1
+  done
+  if process_identity_alive "$guard_pid" "$guard_start" "$guard_pid"; then
+    kill -KILL "$guard_pid" 2>/dev/null || true
+    wait "$guard_pid" 2>/dev/null || true
+    RESOURCE_GUARD_DETAIL=resource_guard_stop_timeout
+    return 1
+  fi
+  wait "$guard_pid" || guard_rc=$?
+  if (( guard_rc != 0 )) || [[ ! -s $run_dir/resource-guard.status ]] \
+    || (( $(wc -l < "$run_dir/resource-guard.status") != 1 )); then
+    RESOURCE_GUARD_DETAIL=resource_guard_stop_failed
+    return 1
+  fi
+  status_line=$(<"$run_dir/resource-guard.status")
+  if [[ ! $status_line =~ ^STOPPED_BY_SIGNAL[[:space:]]timestamp=[0-9T:+-]+$ ]]; then
+    RESOURCE_GUARD_DETAIL=resource_guard_stop_failed
+    return 1
+  fi
 }
 
 wait_failure_watcher_ready() {
@@ -596,23 +1302,19 @@ free_dashboard_port() {
 
 start_client_and_credit() {
   local service=$1 relay=$2 target_id=$3 listen_port=$4 scenario=$5 ca_port=$6
-  local log_file=$RUNTIME_DIR/$scenario/$service.log node_id relaunched_node_id
+  local log_file=$RUNTIME_DIR/$scenario/$service.log
+  local key_file node_id logged_node_id
 
-  # The client starts connecting immediately after printing its NodeID. The CA
-  # deposit check can therefore beat a post-launch /credit request. Use the
-  # stable private key for an identity warm-up, credit that identity, stop the
-  # warm-up process, then start the real client with the same NodeID.
-  launch_tunnel_client "$service" "$relay" "$target_id" "$listen_port" "$scenario"
-  wait_file_pattern "$log_file" '本节点 ID:' 20 || return 1
-  node_id=$(awk '/本节点 ID:/{print $NF; exit}' "$log_file")
+  key_file=$(nat_key_host_file "$service") || return 1
+  [[ -s $key_file ]] || return 1
+  node_id=$(node_id_from_private_key "$key_file") || return 1
   [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
   credit_node "$ca_port" "$node_id" "$DEFAULT_SOAK_CREDIT_BYTES" || return 1
 
-  dc exec -T "$service" sh -lc 'pkill -TERM -x tunclient >/dev/null 2>&1 || true; sleep 0.5; pkill -KILL -x tunclient >/dev/null 2>&1 || true'
-  launch_tunnel_client "$service" "$relay" "$target_id" "$listen_port" "$scenario"
+  launch_tunnel_client "$service" "$relay" "$target_id" "$listen_port" "$scenario" || return 1
   wait_file_pattern "$log_file" '本节点 ID:' 20 || return 1
-  relaunched_node_id=$(awk '/本节点 ID:/{print $NF; exit}' "$log_file")
-  [[ $relaunched_node_id == "$node_id" ]] || return 1
+  logged_node_id=$(awk '/本节点 ID:/{print $NF; exit}' "$log_file")
+  [[ $logged_node_id == "$node_id" ]] || return 1
   wait_client_ready "$service" "$scenario" 70
 }
 
@@ -690,9 +1392,9 @@ capture_project_evidence() {
 configure_profile() {
   local run_dir=$1 selected=$2 ca_port=$3 per_transfer_limit_mibps=$4
   local scenario=stability server client server_relay client_relay listen_port server_id source_sha source_size
-  mkdir -p "$RUNTIME_DIR/$scenario" "$RUNTIME_DIR/keys"
+  mkdir -p "$RUNTIME_DIR/$scenario"
   export BNFS_CHAOS_NAT_CA_URL=http://ca:9100
-  export BNFS_CHAOS_NAT_KEY_DIR=/artifacts/keys
+  export BNFS_CHAOS_NAT_KEY_DIR=$PROFILE_SETUP_NAT_KEY_DIR
 
   case "$selected" in
     1)
@@ -713,8 +1415,8 @@ configure_profile() {
       ;;
   esac
 
-  generate_key "$RUNTIME_DIR/keys/$server.key"
-  generate_key "$RUNTIME_DIR/keys/$client.key"
+  prepare_profile_setup_identity "$server" || return 1
+  prepare_profile_setup_identity "$client" || return 1
   server_id=$(start_tunnel_server "$server" "$server_relay" "$scenario" 5 200 "$per_transfer_limit_mibps") || return 1
   credit_node "$ca_port" "$server_id" "$DEFAULT_SOAK_CREDIT_BYTES" || return 1
   start_client_and_credit "$client" "$client_relay" "$server_id" "$listen_port" "$scenario" "$ca_port" || return 1
@@ -792,6 +1494,69 @@ server_entry_relay() {
   printf 'relay%02d\n' "$relay_number"
 }
 
+client_entry_relay() {
+  local service=${1:-} selected=${2:-} number
+  [[ $service =~ ^natclient([0-9]{2})$ ]] || return 1
+  number=$((10#${BASH_REMATCH[1]}))
+  (( number >= 1 && number <= TOPOLOGY_NAT_CLIENT_COUNT )) || return 1
+  case "$selected:$service" in
+    2:natclient04) printf 'relay02\n' ;;
+    1:*|2:*|3:*) printf 'relay01\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+relay_can_reach_server_relay() {
+  local entry_relay=${1:-} server_relay=${2:-}
+  [[ $entry_relay =~ ^relay0[1-7]$ && $server_relay =~ ^relay0[1-7]$ ]] || return 1
+  [[ $entry_relay == "$server_relay" ]] && return 0
+  [[ $entry_relay == relay01 && $server_relay =~ ^relay0[3-7]$ ]] && return 0
+  [[ $server_relay == relay01 && $entry_relay =~ ^relay0[3-7]$ ]]
+}
+
+random_reachable_server_line() {
+  local run_dir=$1 entry_relay=$2
+  [[ -s $run_dir/server-pool.tsv && $entry_relay =~ ^relay0[1-7]$ ]] || return 1
+  awk -F '\t' -v entry_relay="$entry_relay" '
+    function reachable(entry, host) {
+      return entry == host \
+        || (entry == "relay01" && host ~ /^relay0[3-7]$/) \
+        || (host == "relay01" && entry ~ /^relay0[3-7]$/)
+    }
+    NR > 1 && NF == 3 && reachable(entry_relay, $2) { print }
+  ' "$run_dir/server-pool.tsv" | shuf -n 1
+}
+
+validate_client_entry_table() {
+  local table=${1:-} selected=${2:-} service_column=${3:-} relay_column=${4:-} role_column=${5:-0}
+  local number service expected_relay actual_relay record_count
+  [[ -s $table && $service_column =~ ^[1-9][0-9]*$ && $relay_column =~ ^[1-9][0-9]*$ \
+    && $role_column =~ ^[0-9]+$ ]] || return 1
+  record_count=$(awk -F '\t' -v role_column="$role_column" '
+    NR > 1 && (role_column == 0 || $role_column == "natclient") { count++ }
+    END { print count + 0 }
+  ' "$table") || return 1
+  (( record_count == TOPOLOGY_NAT_CLIENT_COUNT )) || return 1
+  for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
+    printf -v service 'natclient%02d' "$number"
+    expected_relay=$(client_entry_relay "$service" "$selected") || return 1
+    actual_relay=$(awk -F '\t' -v service="$service" -v service_column="$service_column" \
+      -v relay_column="$relay_column" -v role_column="$role_column" '
+      NR == 1 { next }
+      $service_column == service {
+        if (role_column != 0 && $role_column != "natclient") next
+        matches++
+        relay=$relay_column
+      }
+      END {
+        if (matches != 1 || relay == "") exit 1
+        print relay
+      }
+    ' "$table") || return 1
+    [[ $actual_relay == "$expected_relay" ]] || return 1
+  done
+}
+
 stop_random_nat_processes() {
   local service
   while IFS= read -r service; do
@@ -805,14 +1570,15 @@ stop_random_nat_processes() {
 
 initialize_random_workload() {
   local run_dir=$1 ca_port=$2 selected=$3 max_inflight=$4 per_transfer_limit_mibps=$5 workload_limit_mibps=$6 scenario=random-workload
-  local number service relay node_id expected_node_id listen_port role count registration_count
-  mkdir -p "$RUNTIME_DIR/$scenario" "$RUNTIME_DIR/keys" "$run_dir/server-locks" \
+  local number service relay node_id expected_node_id listen_port role count registration_count client_ingress_override
+  mkdir -p "$RUNTIME_DIR/$scenario" "$run_dir/server-locks" \
     "$run_dir/inflight-slots" \
     "$run_dir/server-fresh" "$run_dir/transfer-records" "$run_dir/transfer-errors" \
     "$run_dir/transfer-logs" "$run_dir/workers"
   export BNFS_CHAOS_NAT_CA_URL=http://ca:9100
-  export BNFS_CHAOS_NAT_KEY_DIR=/artifacts/keys
+  export BNFS_CHAOS_NAT_KEY_DIR=/artifacts/.private
 
+  client_entry_relay natclient01 "$selected" >/dev/null || return 1
   stop_random_nat_processes || return 1
   printf 'service\trole\tnode_id\tingress_relay\tcredited\n' > "$run_dir/nat-identities.tsv"
   for role in natserver natclient; do
@@ -823,17 +1589,19 @@ initialize_random_workload() {
       if [[ $role == natserver ]]; then
         relay=$(server_entry_relay "$service" "$selected") || return 1
       else
-        relay=relay01
+        relay=$(client_entry_relay "$service" "$selected") || return 1
       fi
-      ensure_key "$RUNTIME_DIR/keys/$service.key"
-      node_id=$(node "$ROOT_DIR/test/local-chaos/node-id-from-key.mjs" "$RUNTIME_DIR/keys/$service.key") || return 1
+      mkdir -p "$PRIVATE_RUNTIME_DIR/$service"
+      chmod 700 "$PRIVATE_RUNTIME_DIR/$service"
+      ensure_key "$PRIVATE_RUNTIME_DIR/$service/$service.key"
+      node_id=$(node_id_from_private_key "$PRIVATE_RUNTIME_DIR/$service/$service.key") || return 1
       [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
       credit_node "$ca_port" "$node_id" "$DEFAULT_SOAK_CREDIT_BYTES" || return 1
       printf '%s\t%s\t%s\t%s\tyes\n' "$service" "$role" "$node_id" "$relay" >> "$run_dir/nat-identities.tsv"
     done
   done
   [[ $(tail -n +2 "$run_dir/nat-identities.tsv" | cut -f3 | sort -u | wc -l) -eq $((TOPOLOGY_NAT_SERVER_COUNT + TOPOLOGY_NAT_CLIENT_COUNT)) ]] || return 1
-  awk -F '\t' '$2 == "natclient" && $4 != "relay01" { exit 1 }' "$run_dir/nat-identities.tsv" || return 1
+  validate_client_entry_table "$run_dir/nat-identities.tsv" "$selected" 1 4 2 || return 1
 
   printf 'server\tingress_relay\tnode_id\n' > "$run_dir/server-pool.tsv"
   for ((number = 1; number <= TOPOLOGY_NAT_SERVER_COUNT; number++)); do
@@ -844,6 +1612,7 @@ initialize_random_workload() {
     node_id=$(start_tunnel_server "$service" "$relay:9000" "$scenario" 5 200 "$per_transfer_limit_mibps") || return 1
     [[ $node_id == "$expected_node_id" ]] || return 1
     wait_relay_registration "$relay" "$node_id" "$registration_count" 20 || return 1
+    wait_random_server_billing_ready "$service" "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS" || return 1
     printf '%s\t%s\t%s\n' "$service" "$relay" "$node_id" >> "$run_dir/server-pool.tsv"
     touch "$run_dir/server-fresh/$service"
   done
@@ -851,17 +1620,25 @@ initialize_random_workload() {
   printf 'client\tingress_relay\tlisten_port\tnode_id\n' > "$run_dir/client-pool.tsv"
   for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
     printf -v service 'natclient%02d' "$number"
-    relay=relay01
+    relay=$(client_entry_relay "$service" "$selected") || return 1
     listen_port=$((18100 + number))
     node_id=$(awk -F '\t' -v service="$service" '$1==service {print $3}' "$run_dir/nat-identities.tsv")
     [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
     printf '%s\t%s\t%s\t%s\n' "$service" "$relay" "$listen_port" "$node_id" >> "$run_dir/client-pool.tsv"
   done
-  awk -F '\t' 'NR > 1 && $2 != "relay01" { exit 1 }' "$run_dir/client-pool.tsv" || return 1
+  validate_client_entry_table "$run_dir/client-pool.tsv" "$selected" 1 2 || return 1
+  client_ingress_override=$(awk -F '\t' '
+    NR > 1 && $2 != "relay01" {
+      if (overrides != "") overrides=overrides ","
+      overrides=overrides $1 ":" $2
+    }
+    END { print overrides == "" ? "none" : overrides }
+  ' "$run_dir/client-pool.tsv") || return 1
+  [[ -n $client_ingress_override ]] || return 1
 
-  printf 'mode=random_concurrent\nclient_count=%s\nserver_count=%s\nmax_inflight=%s\nworkload_limit_mibps=%s\nper_transfer_limit_mibps=%s\nrandom_ingress_default=relay01\n' \
+  printf 'mode=random_concurrent\nclient_count=%s\nserver_count=%s\nmax_inflight=%s\nworkload_limit_mibps=%s\nper_transfer_limit_mibps=%s\nrandom_ingress_default=relay01\nrandom_ingress_override=%s\n' \
     "$TOPOLOGY_NAT_CLIENT_COUNT" "$TOPOLOGY_NAT_SERVER_COUNT" "$max_inflight" \
-    "$workload_limit_mibps" "$per_transfer_limit_mibps" >> "$run_dir/workload.env"
+    "$workload_limit_mibps" "$per_transfer_limit_mibps" "$client_ingress_override" >> "$run_dir/workload.env"
 }
 
 record_profile_setup_failure() {
@@ -925,8 +1702,11 @@ verify_profile3_tcp_cold_start() {
   random_transfer_once "$run_dir" random-workload "$server" "$client" "$actual_relay" \
     "$listen_port" "$transfer_id" "$record_file" 100 || rc=$?
   snapshot_transfer_logs "$run_dir" "$transfer_id" "$client" "$server"
-  append_transfer_record "$run_dir" "$record_file" || rc=1
-  rm -f "$record_file"
+  if append_transfer_record "$run_dir" "$record_file"; then
+    rm -f "$record_file" || rc=1
+  else
+    rc=1
+  fi
   stop_nat_process "$client" tunclient || true
   if (( rc != 0 )); then
     record_profile_setup_failure "$run_dir" tcp_cold_start_transfer_failed
@@ -939,8 +1719,18 @@ verify_profile3_tcp_cold_start() {
 
 write_failed_transfer() {
   local client=$1 relay=$2 server=$3 transfer_id=$4 record_file=$5 rc=${6:-1} requested_mib=${7:-0}
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0.000000\t0.000\tnot-run\t\t\n' \
-    "$(date --iso-8601=seconds)" "$transfer_id" "$client" "$relay" "$server" "$requested_mib" "$rc" > "$record_file"
+  write_transfer_record_atomic "$record_file" "$(date --iso-8601=seconds)" "$transfer_id" \
+    "$client" "$relay" "$server" "$requested_mib" "$rc" 0 0.000000 0.000 not-run '' ''
+}
+
+write_timed_out_transfer() {
+  local client=$1 relay=$2 server=$3 transfer_id=$4 record_file=$5 requested_mib=$6 started_ns=$7
+  local ended_ns elapsed
+  ended_ns=$(date +%s%N)
+  elapsed=$(awk -v start="$started_ns" -v end="$ended_ns" \
+    'BEGIN {printf "%.6f", (end-start)/1000000000}')
+  write_transfer_record_atomic "$record_file" "$(date --iso-8601=seconds)" "$transfer_id" \
+    "$client" "$relay" "$server" "$requested_mib" 28 0 "$elapsed" 0.000 not-run '' ''
 }
 
 relay_registration_count() {
@@ -966,6 +1756,99 @@ wait_relay_registration() {
   return 1
 }
 
+wait_relay_registration_generation() {
+  local relay=$1 node_id=$2 previous_count=$3 timeout_seconds=${4:-45}
+  local deadline current_count
+  deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline )); do
+    current_count=$(relay_registration_count "$relay" "$node_id") || return 1
+    if (( current_count >= previous_count + 2 )); then
+      return 0
+    fi
+    sleep 0.25
+  done
+  log_step "$node_id 未在 $relay 完成新代次双腿注册"
+  return 1
+}
+
+random_server_tunnel_process_count() {
+  local server=$1 count
+  count=$(dc exec -T "$server" pgrep -x tunserver 2>/dev/null | wc -l) || return 1
+  [[ $count =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$count"
+}
+
+random_server_relay_tcp_connection_count() {
+  local server=$1 count
+  count=$(netns_exec "$server" ss -Hnt state established 2>/dev/null \
+    | awk '$NF ~ /:9000$/ { count++ } END { print count + 0 }') || return 1
+  [[ $count =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$count"
+}
+
+wait_random_server_billing_ready() {
+  local server=$1 timeout_seconds=${2:-$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS}
+  local deadline stable_samples=0 process_count tcp_connections observation
+  local version billing_enabled active_sessions observed cosigned fully_confirmed generated_milliseconds
+  deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline )); do
+    process_count=$(random_server_tunnel_process_count "$server" 2>/dev/null || printf '0')
+    tcp_connections=$(random_server_relay_tcp_connection_count "$server" 2>/dev/null || printf '0')
+    observation=$(billing_production_gate_read_nat_observation "$server" 2>/dev/null || true)
+    IFS=$'\t' read -r version billing_enabled active_sessions observed cosigned \
+      fully_confirmed generated_milliseconds <<< "$observation"
+    if [[ $process_count == 1 && $tcp_connections =~ ^[0-9]+$ && tcp_connections -ge 2 \
+      && $version == 1 && $billing_enabled == true && $active_sessions == 1 \
+      && $observed =~ ^[0-9]+$ && $cosigned =~ ^[0-9]+$ && $fully_confirmed == true ]] \
+      && (( observed >= cosigned )) \
+      && billing_production_gate_observation_is_fresh "$generated_milliseconds"; then
+      stable_samples=$((stable_samples + 1))
+      if (( stable_samples >= POST_GATE_SERVER_RECOVERY_STABLE_SAMPLES )); then
+        return 0
+      fi
+    else
+      stable_samples=0
+    fi
+    sleep 0.25
+  done
+  log_step "$server 的双腿数据路径或双签计费控制未稳定"
+  return 1
+}
+
+recover_random_server_pool_after_relay_restart() {
+  local run_dir=$1 affected_relay=$2
+  local server server_relay expected_node_id previous_count actual_node_id gate_server_line
+  local recovered=0
+  [[ $REAL_BILLING_GATE_SERVER =~ ^natserver[0-9]{2}$ ]] || return 1
+  [[ -s $run_dir/server-pool.tsv ]] || return 1
+  gate_server_line=$(awk -F '\t' -v server="$REAL_BILLING_GATE_SERVER" \
+    '$1 == server { print; exit }' "$run_dir/server-pool.tsv") || return 1
+  IFS=$'\t' read -r server server_relay expected_node_id <<< "$gate_server_line"
+  [[ $server == "$REAL_BILLING_GATE_SERVER" && $server_relay == "$affected_relay" \
+    && $expected_node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  rm -f "$run_dir/server-fresh/$server" || return 1
+  wait_random_server_billing_ready "$server" "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS" || return 1
+  recovered=1
+
+  while IFS=$'\t' read -r server server_relay expected_node_id; do
+    [[ $server != server ]] || continue
+    [[ $server_relay == "$affected_relay" ]] || continue
+    [[ $server =~ ^natserver[0-9]{2}$ && $expected_node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    [[ $server != "$REAL_BILLING_GATE_SERVER" ]] || continue
+    rm -f "$run_dir/server-fresh/$server" || return 1
+    previous_count=$(relay_registration_count "$affected_relay" "$expected_node_id") || return 1
+    actual_node_id=$(restart_tunnel_server "$server" "$affected_relay:9000" random-workload \
+      2>/dev/null </dev/null) || return 1
+    [[ $actual_node_id == "$expected_node_id" ]] || return 1
+    wait_relay_registration_generation "$affected_relay" "$expected_node_id" "$previous_count" \
+      "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS" || return 1
+    wait_random_server_billing_ready "$server" "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS" || return 1
+    touch "$run_dir/server-fresh/$server" || return 1
+    recovered=$((recovered + 1))
+  done < "$run_dir/server-pool.tsv"
+  (( recovered > 0 ))
+}
+
 snapshot_transfer_logs() {
   local run_dir=$1 transfer_id=$2 client=$3 server=$4
   local source_dir=$RUNTIME_DIR/random-workload destination=$run_dir/transfer-logs
@@ -974,59 +1857,218 @@ snapshot_transfer_logs() {
   [[ ! -f $source_dir/$server.log ]] || cp "$source_dir/$server.log" "$destination/$transfer_id-server.log"
 }
 
+validate_scenario_client_ingress_coverage() {
+  local run_dir=$1 selected=$2 number client expected_relay
+  [[ $selected == 2 ]] || return 0
+  for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
+    printf -v client 'natclient%02d' "$number"
+    expected_relay=$(client_entry_relay "$client" "$selected") || return 1
+    if ! awk -F '\t' -v client="$client" -v expected_relay="$expected_relay" '
+      NR > 1 && $3 == client && $7 == 0 && $8 > 0 && $11 == "yes" {
+        successes++
+        if ($4 == expected_relay) expected++
+        else unexpected++
+      }
+      END { exit !(successes > 0 && expected == successes && unexpected == 0) }
+    ' "$run_dir/transfers.tsv"; then
+      log_step "$client 没有始终经预期入口 $expected_relay 完成成功传输"
+      return 1
+    fi
+  done
+}
+
 validate_random_workload_coverage() {
-  local run_dir=$1 client
+  local run_dir=$1 selected=${2:-} validation_mode=${3:-$DEFAULT_VALIDATION_MODE}
+  local client expected_relay
+  [[ $validation_mode == smoke || $validation_mode == full ]] || return 1
   while IFS= read -r client; do
     if ! awk -F '\t' -v client="$client" 'NR > 1 && $3 == client && $4 ~ /^relay0[1-7]$/ && $7 == 0 && $8 > 0 && $11 == "yes" { found=1 } END { exit !found }' \
       "$run_dir/transfers.tsv"; then
       log_step "$client 没有完成任何一条 SHA-256 正确的随机传输"
       return 1
     fi
-    if ! awk -F '\t' -v client="$client" '
+    expected_relay=$(client_entry_relay "$client" "$selected") || return 1
+    if ! awk -F '\t' -v client="$client" -v expected_relay="$expected_relay" \
+      -v validation_mode="$validation_mode" '
+      function reachable(entry, host) {
+        return entry == host \
+          || (entry == "relay01" && host ~ /^relay0[3-7]$/) \
+          || (host == "relay01" && entry ~ /^relay0[3-7]$/)
+      }
       NR == FNR {
         if (FNR > 1) {
+          host[$1]=$2
           if ($2 ~ /^relay0[2-5]$/) partition[$1]="A"
           if ($2 ~ /^relay0[6-7]$/) partition[$1]="B"
+          if (reachable(expected_relay, $2) && partition[$1] == "A") expectedA=1
+          if (reachable(expected_relay, $2) && partition[$1] == "B") expectedB=1
         }
         next
       }
       FNR > 1 && $3 == client && $4 ~ /^relay0[1-7]$/ && $7 == 0 && $8 > 0 && $11 == "yes" {
+        if (!reachable($4, host[$5])) invalid=1
         if (partition[$5] == "A") seenA=1
         if (partition[$5] == "B") seenB=1
       }
-      END { exit !(seenA && seenB) }
+      END {
+        exit invalid || (validation_mode == "full" \
+          && ((expectedA && !seenA) || (expectedB && !seenB)))
+      }
     ' "$run_dir/server-pool.tsv" "$run_dir/transfers.tsv"; then
-      log_step "$client 未同时完成分区 A 与分区 B 的 SHA-256 正确传输"
+      log_step "$client 未覆盖所有一跳可达控制分区，或记录了不可达的成功路径"
       return 1
     fi
   done < <(numbered_service_names natclient "$TOPOLOGY_NAT_CLIENT_COUNT")
-  if ! awk -F '\t' '
-    NR == FNR { if (FNR > 1) expected[$1]=1; next }
-    FNR > 1 && $4 ~ /^relay0[1-7]$/ && $7 == 0 && $8 > 0 && $11 == "yes" { reached[$5]=1 }
-    END {
-      missing=0
-      for (server in expected) if (!reached[server]) missing++
-      exit missing != 0
+  if [[ $validation_mode == full ]]; then
+    if ! awk -F '\t' '
+      NR == FNR { if (FNR > 1) expected[$1]=1; next }
+      FNR > 1 && $4 ~ /^relay0[1-7]$/ && $7 == 0 && $8 > 0 && $11 == "yes" { reached[$5]=1 }
+      END {
+        missing=0
+        for (server in expected) if (!reached[server]) missing++
+        exit missing != 0
+      }
+    ' "$run_dir/server-pool.tsv" "$run_dir/transfers.tsv"; then
+      log_step "随机负载尚未成功覆盖完整 $TOPOLOGY_NAT_SERVER_COUNT NatServer 池"
+      return 1
+    fi
+  elif ! awk -F '\t' '
+    NR == FNR {
+      if (FNR > 1 && $2 ~ /^relay0[2-5]$/) expectedA=1
+      if (FNR > 1 && $2 ~ /^relay0[6-7]$/) expectedB=1
+      host[$1]=$2
+      next
     }
+    FNR > 1 && $7 == 0 && $8 > 0 && $11 == "yes" {
+      if (host[$5] ~ /^relay0[2-5]$/) seenA=1
+      if (host[$5] ~ /^relay0[6-7]$/) seenB=1
+    }
+    END { exit (expectedA && !seenA) || (expectedB && !seenB) }
   ' "$run_dir/server-pool.tsv" "$run_dir/transfers.tsv"; then
-    log_step "随机负载尚未成功覆盖完整 $TOPOLOGY_NAT_SERVER_COUNT NatServer 池"
+    log_step "smoke 随机负载未覆盖所有存在的控制分区"
     return 1
   fi
+  validate_scenario_client_ingress_coverage "$run_dir" "$selected" || return 1
   return 0
 }
 
 append_transfer_record() {
   local run_dir=$1 record_file=$2
   local timestamp transfer_id client relay server requested_mib rc bytes seconds throughput sha_ok expected_sha actual_sha
+  local record_line probe_line existing_record existing_probe lock_fd append_rc=0
+  [[ -f $record_file ]] || return 1
+  [[ $(wc -l < "$record_file") -eq 1 ]] || return 1
+  awk -F '\t' 'NR == 1 { valid=(NF == 13) } END { exit !(NR == 1 && valid) }' "$record_file" || return 1
   IFS=$'\t' read -r timestamp transfer_id client relay server requested_mib rc bytes seconds throughput sha_ok expected_sha actual_sha < "$record_file"
-  [[ -n $timestamp && -n $transfer_id && -n $client && -n $relay && -n $server ]] || return 1
-  {
-    flock 9
-    cat "$record_file" >> "$run_dir/transfers.tsv"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$timestamp" "$transfer_id" "$requested_mib" "$rc" "$bytes" "$seconds" "$throughput" \
-      "$sha_ok" "$client" "$expected_sha" "$actual_sha" >> "$run_dir/large-probes.tsv"
-  } 9>> "$run_dir/transfers.lock"
+  [[ $timestamp =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T \
+    && -n $transfer_id && -n $client && -n $relay && -n $server \
+    && $requested_mib =~ ^[0-9]+$ && $rc =~ ^[0-9]+$ && $bytes =~ ^[0-9]+$ \
+    && $seconds =~ ^[0-9]+([.][0-9]+)?$ && $throughput =~ ^[0-9]+([.][0-9]+)?$ \
+    && $sha_ok =~ ^(yes|no|not-run)$ ]] || return 1
+  [[ $rc != 125 || $sha_ok != not-run ]] || return 1
+  record_line=$(<"$record_file")
+  probe_line=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    "$timestamp" "$transfer_id" "$requested_mib" "$rc" "$bytes" "$seconds" "$throughput" \
+    "$sha_ok" "$client" "$expected_sha" "$actual_sha")
+
+  exec {lock_fd}>> "$run_dir/transfers.lock" || return 1
+  if ! flock "$lock_fd"; then
+    exec {lock_fd}>&-
+    return 1
+  fi
+  if ! existing_record=$(awk -F '\t' -v transfer_id="$transfer_id" '
+    NR > 1 && $2 == transfer_id { count++; if (count == 1) record=$0 }
+    END { if (count > 1) exit 2; if (count == 1) print record }
+  ' "$run_dir/transfers.tsv"); then
+    append_rc=1
+  elif [[ -n $existing_record ]]; then
+    [[ $existing_record == "$record_line" ]] || append_rc=1
+  elif ! printf '%s\n' "$record_line" >> "$run_dir/transfers.tsv"; then
+    append_rc=1
+  fi
+
+  if (( append_rc == 0 )); then
+    if ! existing_probe=$(awk -F '\t' -v transfer_id="$transfer_id" '
+      NR > 1 && $2 == transfer_id { count++; if (count == 1) record=$0 }
+      END { if (count > 1) exit 2; if (count == 1) print record }
+    ' "$run_dir/large-probes.tsv"); then
+      append_rc=1
+    elif [[ -n $existing_probe ]]; then
+      [[ $existing_probe == "$probe_line" ]] || append_rc=1
+    elif ! printf '%s\n' "$probe_line" >> "$run_dir/large-probes.tsv"; then
+      append_rc=1
+    fi
+  fi
+  flock -u "$lock_fd" 2>/dev/null || append_rc=1
+  exec {lock_fd}>&-
+  (( append_rc == 0 ))
+}
+
+reconcile_pending_transfer_records() {
+  local run_dir=$1 record_file unexpected_file reconcile_rc=0
+  [[ -d $run_dir/transfer-records ]] || return 1
+  while IFS= read -r -d '' record_file; do
+    if append_transfer_record "$run_dir" "$record_file"; then
+      rm -f "$record_file" || reconcile_rc=1
+    else
+      reconcile_rc=1
+    fi
+  done < <(find "$run_dir/transfer-records" -mindepth 1 -maxdepth 1 -type f -name '*.tsv' -print0)
+  unexpected_file=$(find "$run_dir/transfer-records" -mindepth 1 -maxdepth 1 -type f ! -name '*.tsv' -print -quit)
+  [[ -z $unexpected_file ]] || reconcile_rc=1
+  (( reconcile_rc == 0 ))
+}
+
+mark_pending_transfer_timeouts() {
+  local run_dir=$1 record_file timestamp transfer_id client relay server requested_mib
+  local rc bytes seconds throughput sha_ok expected_sha actual_sha started_epoch now_epoch elapsed
+  local update_rc=0
+  [[ -d $run_dir/transfer-records ]] || return 1
+  now_epoch=$(date +%s)
+  while IFS= read -r -d '' record_file; do
+    [[ $(wc -l < "$record_file") -eq 1 ]] || { update_rc=1; continue; }
+    awk -F '\t' 'NR == 1 { valid=(NF == 13) } END { exit !(NR == 1 && valid) }' \
+      "$record_file" || { update_rc=1; continue; }
+    IFS=$'\t' read -r timestamp transfer_id client relay server requested_mib rc bytes seconds \
+      throughput sha_ok expected_sha actual_sha < "$record_file"
+    [[ $rc == 125 && $sha_ok == not-run ]] || continue
+    if [[ ! $timestamp =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T || -z $transfer_id \
+      || -z $client || -z $relay || -z $server || ! $requested_mib =~ ^[0-9]+$ \
+      || $bytes != 0 || ! $seconds =~ ^[0-9]+([.][0-9]+)?$ \
+      || ! $throughput =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      update_rc=1
+      continue
+    fi
+    started_epoch=$(date --date="$timestamp" +%s 2>/dev/null || true)
+    if [[ ! $started_epoch =~ ^[0-9]+$ || $started_epoch -gt $now_epoch ]]; then
+      update_rc=1
+      continue
+    fi
+    printf -v elapsed '%d.000000' "$((now_epoch - started_epoch))"
+    write_transfer_record_atomic "$record_file" "$(date --iso-8601=seconds)" "$transfer_id" \
+      "$client" "$relay" "$server" "$requested_mib" 28 0 "$elapsed" 0.000 not-run \
+      "$expected_sha" "$actual_sha" || update_rc=1
+  done < <(find "$run_dir/transfer-records" -mindepth 1 -maxdepth 1 -type f -name '*.tsv' -print0)
+  (( update_rc == 0 ))
+}
+
+RANDOM_WORKER_EVIDENCE_DETAIL=
+finalize_random_worker_evidence() {
+  local run_dir=$1
+  RANDOM_WORKER_EVIDENCE_DETAIL=
+  if ! mark_pending_transfer_timeouts "$run_dir"; then
+    RANDOM_WORKER_EVIDENCE_DETAIL=random_transfer_timeout_record_failed
+    return 1
+  fi
+  if ! reconcile_pending_transfer_records "$run_dir"; then
+    RANDOM_WORKER_EVIDENCE_DETAIL=random_transfer_reconciliation_failed
+    return 1
+  fi
+  if awk -F '\t' 'NR > 1 && $7 == 125 && $11 == "not-run" { found=1 } END { exit !found }' \
+    "$run_dir/transfers.tsv"; then
+    RANDOM_WORKER_EVIDENCE_DETAIL=random_transfer_placeholder_published
+    return 1
+  fi
 }
 
 random_below() {
@@ -1067,14 +2109,17 @@ release_transfer_slot() {
 
 random_client_worker() {
   local run_dir=$1 client=$2 relay=$3 listen_port=$4 deadline_epoch=$5 pause_seconds=$6 max_inflight=$7
+  local attempt_timeout_seconds=${8:-$DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS}
   local failures=0 initial_delay server_line server server_relay target_id
-  local server_lock_fd transfer_id record_file server_node_id transfer_ok cooldown actual_relay
-  local requested_mib registration_count slot_rc append_ok TRANSFER_SLOT_FD=
+  local server_lock_fd transfer_id record_file transfer_ok cooldown actual_relay
+  local requested_mib registration_count slot_rc append_ok client_ready rearm_ok now_epoch remaining_seconds TRANSFER_SLOT_FD=
+  local attempt_started_ns attempt_deadline_epoch step_timeout transfer_rc attempt_timed_out
+  is_positive_integer "$attempt_timeout_seconds" || return 1
   initial_delay=$(random_below "$((pause_seconds + 1))") || return 1
   (( initial_delay == 0 )) || sleep "$initial_delay"
 
   while (( $(date +%s) < deadline_epoch )); do
-    server_line=$(tail -n +2 "$run_dir/server-pool.tsv" | shuf -n 1) || return 1
+    server_line=$(random_reachable_server_line "$run_dir" "$relay") || return 1
     IFS=$'\t' read -r server server_relay target_id <<< "$server_line"
     [[ -n $server && -n $server_relay && -n $target_id ]] || return 1
     requested_mib=$(random_probe_size_mib) || return 1
@@ -1098,46 +2143,112 @@ random_client_worker() {
 
     transfer_id="$(date +%s%N)-$client"
     record_file=$run_dir/transfer-records/$transfer_id.tsv
+    attempt_started_ns=$(date +%s%N)
+    attempt_deadline_epoch=$(( $(date +%s) + attempt_timeout_seconds ))
+    if ! write_failed_transfer "$client" "$relay" "$server" "$transfer_id" "$record_file" 125 "$requested_mib"; then
+      release_transfer_slot
+      flock -u "$server_lock_fd" 2>/dev/null || true
+      exec {server_lock_fd}>&-
+      return 1
+    fi
     transfer_ok=0
+    client_ready=0
+    rearm_ok=1
+    attempt_timed_out=0
     stop_nat_process "$client" tunclient || true
-    if [[ -f $run_dir/server-fresh/$server ]]; then
-      rm -f "$run_dir/server-fresh/$server"
-      server_node_id=$target_id
+    rm -f "$run_dir/server-fresh/$server"
+    if ! step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 70); then
+      write_timed_out_transfer "$client" "$relay" "$server" "$transfer_id" \
+        "$record_file" "$requested_mib" "$attempt_started_ns"
+      attempt_timed_out=1
     else
-      registration_count=$(relay_registration_count "$server_relay" "$target_id") || registration_count=0
-      server_node_id=$(restart_tunnel_server "$server" "$server_relay:9000" random-workload 2>/dev/null || true)
-      if [[ $server_node_id == "$target_id" ]]; then
-        wait_relay_registration "$server_relay" "$server_node_id" "$registration_count" 20 || server_node_id=
+      launch_tunnel_client "$client" "$relay:9000" "$target_id" "$listen_port" random-workload
+      if ! step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 70); then
+        write_timed_out_transfer "$client" "$relay" "$server" "$transfer_id" \
+          "$record_file" "$requested_mib" "$attempt_started_ns"
+        attempt_timed_out=1
       fi
     fi
-    if [[ $server_node_id == "$target_id" ]]; then
-      launch_tunnel_client "$client" "$relay:9000" "$target_id" "$listen_port" random-workload
-      if wait_client_ready "$client" random-workload 70; then
-        actual_relay=$(wait_client_entry_relay "$client" 5 2>/dev/null || true)
-        if [[ -n $actual_relay ]]; then
-          if random_transfer_once "$run_dir" random-workload "$server" "$client" "$actual_relay" "$listen_port" "$transfer_id" "$record_file" "$requested_mib"; then
-            transfer_ok=1
-          fi
+    if (( attempt_timed_out == 0 )) \
+      && wait_client_ready "$client" random-workload "$step_timeout"; then
+      client_ready=1
+      if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 5); then
+        actual_relay=$(wait_client_entry_relay "$client" "$step_timeout" 2>/dev/null || true)
+      else
+        actual_relay=
+      fi
+      if [[ -n $actual_relay ]]; then
+        if random_transfer_once "$run_dir" random-workload "$server" "$client" "$actual_relay" \
+          "$listen_port" "$transfer_id" "$record_file" "$requested_mib" \
+          "$attempt_deadline_epoch"; then
+          transfer_ok=1
         else
-          write_failed_transfer "$client" unknown "$server" "$transfer_id" "$record_file" 4 "$requested_mib"
+          transfer_rc=$?
+          (( transfer_rc == 28 )) && attempt_timed_out=1
+        fi
+      elif (( $(date +%s) >= attempt_deadline_epoch )); then
+        write_timed_out_transfer "$client" "$relay" "$server" "$transfer_id" \
+          "$record_file" "$requested_mib" "$attempt_started_ns"
+        attempt_timed_out=1
+      else
+        write_failed_transfer "$client" unknown "$server" "$transfer_id" "$record_file" 4 "$requested_mib"
+      fi
+    elif (( attempt_timed_out == 0 && $(date +%s) >= attempt_deadline_epoch )); then
+      actual_relay=$(wait_client_entry_relay "$client" 1 2>/dev/null || true)
+      [[ -n $actual_relay ]] || actual_relay=$relay
+      write_timed_out_transfer "$client" "$actual_relay" "$server" "$transfer_id" \
+        "$record_file" "$requested_mib" "$attempt_started_ns"
+      attempt_timed_out=1
+    elif (( attempt_timed_out == 0 )); then
+      actual_relay=$(wait_client_entry_relay "$client" 2 2>/dev/null || true)
+      [[ -n $actual_relay ]] || actual_relay=unknown
+      write_failed_transfer "$client" "$actual_relay" "$server" "$transfer_id" "$record_file" 2 "$requested_mib"
+    fi
+    registration_count=
+    if (( client_ready == 1 && attempt_timed_out == 0 )); then
+      registration_count=$(relay_registration_count "$server_relay" "$target_id") || rearm_ok=0
+    fi
+    if ! stop_nat_process "$client" tunclient; then
+      rearm_ok=0
+    fi
+    if (( client_ready == 1 && rearm_ok == 1 && attempt_timed_out == 0 )); then
+      if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" \
+        "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS"); then
+        if ! wait_relay_registration_generation "$server_relay" "$target_id" \
+          "$registration_count" "$step_timeout"; then
+          rearm_ok=0
+          (( $(date +%s) < attempt_deadline_epoch )) || attempt_timed_out=1
         fi
       else
-        actual_relay=$(wait_client_entry_relay "$client" 2 2>/dev/null || true)
-        [[ -n $actual_relay ]] || actual_relay=unknown
-        write_failed_transfer "$client" "$actual_relay" "$server" "$transfer_id" "$record_file" 2 "$requested_mib"
+        rearm_ok=0
+        attempt_timed_out=1
       fi
-    else
-      write_failed_transfer "$client" unknown "$server" "$transfer_id" "$record_file" 3 "$requested_mib"
+    fi
+    if (( rearm_ok == 1 && attempt_timed_out == 0 )); then
+      if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" \
+        "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS"); then
+        if ! wait_random_server_billing_ready "$server" "$step_timeout"; then
+          rearm_ok=0
+          (( $(date +%s) < attempt_deadline_epoch )) || attempt_timed_out=1
+        fi
+      else
+        rearm_ok=0
+        attempt_timed_out=1
+      fi
     fi
     snapshot_transfer_logs "$run_dir" "$transfer_id" "$client" "$server"
-    stop_nat_process "$client" tunclient || true
     append_ok=1
-    append_transfer_record "$run_dir" "$record_file" || append_ok=0
-    rm -f "$record_file"
+    if append_transfer_record "$run_dir" "$record_file"; then
+      rm -f "$record_file" || append_ok=0
+    else
+      append_ok=0
+    fi
     release_transfer_slot
     flock -u "$server_lock_fd"
     exec {server_lock_fd}>&-
     (( append_ok == 1 )) || return 1
+    (( attempt_timed_out == 0 )) || return 28
+    (( rearm_ok == 1 )) || return 1
 
     if (( transfer_ok == 1 )); then
       failures=0
@@ -1145,21 +2256,131 @@ random_client_worker() {
       failures=$((failures + 1))
       (( failures < 3 )) || return 1
     fi
+    now_epoch=$(date +%s)
+    (( now_epoch < deadline_epoch )) || return 0
     cooldown=$(( $(random_below "$pause_seconds") + 1 )) || return 1
-    sleep "$cooldown"
+    remaining_seconds=$((deadline_epoch - now_epoch))
+    (( cooldown <= remaining_seconds )) || cooldown=$remaining_seconds
+    (( cooldown == 0 )) || sleep "$cooldown"
   done
 }
 
-stop_random_workers() {
-  local pid
+RANDOM_WORKER_DRAIN_DETAIL=
+drain_random_workers() {
+  local attempt_timeout_seconds=${1:-$DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS}
+  local stop_grace_seconds=${2:-$DEFAULT_RANDOM_WORKER_STOP_TIMEOUT_SECONDS}
+  local timeout_seconds
+  local deadline_epoch index pid group_id alive=0 wait_failed=0 group_leaked=0
+  RANDOM_WORKER_DRAIN_DETAIL=
+  timeout_seconds=$(random_worker_drain_timeout_seconds \
+    "$attempt_timeout_seconds" "$stop_grace_seconds") || {
+    RANDOM_WORKER_DRAIN_DETAIL=random_worker_identity_invalid
+    return 1
+  }
   (( ${#RANDOM_WORKER_PIDS[@]} > 0 )) || return 0
-  for pid in "${RANDOM_WORKER_PIDS[@]}"; do
-    kill -TERM "$pid" 2>/dev/null || true
+  if ! random_worker_tracking_valid; then
+    RANDOM_WORKER_DRAIN_DETAIL=random_worker_identity_invalid
+    return 1
+  fi
+  deadline_epoch=$(( $(date +%s) + timeout_seconds ))
+  while :; do
+    alive=0
+    for index in "${!RANDOM_WORKER_PIDS[@]}"; do
+      pid=${RANDOM_WORKER_PIDS[$index]}
+      group_id=${RANDOM_WORKER_PGIDS[$index]}
+      if random_worker_group_alive "$group_id"; then
+        if ! random_worker_group_identity_valid "$index"; then
+          if ! random_worker_group_alive "$group_id" && ! process_is_alive "$pid"; then
+            continue
+          fi
+          sleep 0.01
+          if ! random_worker_group_identity_valid "$index"; then
+            if ! random_worker_group_alive "$group_id" && ! process_is_alive "$pid"; then
+              continue
+            fi
+            RANDOM_WORKER_DRAIN_DETAIL=random_worker_identity_invalid
+            return 1
+          fi
+        fi
+        alive=1
+      elif process_is_alive "$pid"; then
+        RANDOM_WORKER_DRAIN_DETAIL=random_worker_identity_invalid
+        return 1
+      fi
+    done
+    (( alive == 1 )) || break
+    if (( $(date +%s) >= deadline_epoch )); then
+      RANDOM_WORKER_DRAIN_DETAIL=random_worker_drain_timeout
+      return 1
+    fi
+    sleep 0.25
   done
+  for pid in "${RANDOM_WORKER_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || wait_failed=1
+  done
+  for group_id in "${RANDOM_WORKER_PGIDS[@]}"; do
+    random_worker_group_alive "$group_id" && group_leaked=1
+  done
+  if (( group_leaked == 1 )); then
+    RANDOM_WORKER_DRAIN_DETAIL=random_worker_group_leaked
+    return 1
+  fi
+  clear_random_worker_tracking
+  if (( wait_failed == 1 )); then
+    RANDOM_WORKER_DRAIN_DETAIL=random_client_worker_failed
+    return 1
+  fi
+}
+
+stop_random_workers() {
+  local pid group_id deadline_epoch alive=0 stop_failed=0
+  (( ${#RANDOM_WORKER_PIDS[@]} > 0 )) || return 0
+  if ! random_worker_tracking_valid; then
+    RANDOM_WORKER_DRAIN_DETAIL=random_worker_identity_invalid
+    return 1
+  fi
+  if ! signal_random_worker_groups TERM; then
+    RANDOM_WORKER_DRAIN_DETAIL=random_worker_identity_invalid
+    return 1
+  fi
+  deadline_epoch=$(( $(date +%s) + DEFAULT_RANDOM_WORKER_STOP_TIMEOUT_SECONDS ))
+  while :; do
+    alive=0
+    for group_id in "${RANDOM_WORKER_PGIDS[@]}"; do
+      if random_worker_group_alive "$group_id"; then
+        alive=1
+        break
+      fi
+    done
+    (( alive == 1 && $(date +%s) < deadline_epoch )) || break
+    sleep 0.1
+  done
+  if (( alive == 1 )); then
+    if ! signal_random_worker_groups KILL; then
+      RANDOM_WORKER_DRAIN_DETAIL=random_worker_identity_invalid
+      return 1
+    fi
+  fi
   for pid in "${RANDOM_WORKER_PIDS[@]}"; do
     wait "$pid" 2>/dev/null || true
   done
-  RANDOM_WORKER_PIDS=()
+  for _ in $(seq 1 40); do
+    alive=0
+    for group_id in "${RANDOM_WORKER_PGIDS[@]}"; do
+      if random_worker_group_alive "$group_id"; then
+        alive=1
+        break
+      fi
+    done
+    (( alive == 0 )) && break
+    sleep 0.05
+  done
+  (( alive == 0 )) || stop_failed=1
+  if (( stop_failed == 1 )); then
+    RANDOM_WORKER_DRAIN_DETAIL=random_worker_group_stop_failed
+    return 1
+  fi
+  clear_random_worker_tracking
 }
 
 cleanup_project() {
@@ -1174,9 +2395,66 @@ cleanup_project() {
   [[ -z $networks ]] || docker network rm $networks >/dev/null 2>&1 || true
 }
 
+PROJECT_REMAINING_CONTAINERS=unknown
+PROJECT_REMAINING_NETWORKS=unknown
+inspect_compose_project_residuals() {
+  local project=$1 container_ids= network_ids= result=0
+  PROJECT_REMAINING_CONTAINERS=unknown
+  PROJECT_REMAINING_NETWORKS=unknown
+  [[ $project =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || return 1
+  if container_ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project"); then
+    PROJECT_REMAINING_CONTAINERS=$(awk 'NF { count++ } END { print count + 0 }' <<< "$container_ids")
+  else
+    result=1
+  fi
+  if network_ids=$(docker network ls -q --filter "label=com.docker.compose.project=$project"); then
+    PROJECT_REMAINING_NETWORKS=$(awk 'NF { count++ } END { print count + 0 }' <<< "$network_ids")
+  else
+    result=1
+  fi
+  return "$result"
+}
+
+terminal_result_after_cleanup() {
+  local outcome=$1 detail=$2 inspection_status=$3
+  local remaining_containers=$4 remaining_networks=$5
+  if [[ $outcome == COMPLETED ]]; then
+    if [[ $inspection_status != ok || ! $remaining_containers =~ ^[0-9]+$ \
+      || ! $remaining_networks =~ ^[0-9]+$ ]]; then
+      outcome=FAILED
+      detail=project_cleanup_inspection_failed
+    elif (( remaining_containers != 0 || remaining_networks != 0 )); then
+      outcome=FAILED
+      detail=project_cleanup_incomplete
+    fi
+  fi
+  printf '%s\t%s\n' "$outcome" "$detail"
+}
+
+finalize_run_terminal_result() {
+  local run_dir=$1 compose_file=$2 project=$3 dashboard_pid=$4 dashboard_start=$5
+  local dashboard_host=$6 dashboard_port=$7 dashboard_probe_file=$8
+  local outcome=$9 detail=${10} inspection_status=ok
+  if [[ $outcome == COMPLETED ]] \
+    && ! verify_dashboard_finalization "$dashboard_pid" "$dashboard_start" \
+      "$dashboard_host" "$dashboard_port" "$dashboard_probe_file" RUNNING; then
+    outcome=FAILED
+    detail=${DASHBOARD_FINALIZATION_DETAIL:-dashboard_status_api_invalid}
+  fi
+  cleanup_project "$compose_file" "$project" || true
+  if ! inspect_compose_project_residuals "$project"; then
+    inspection_status=failed
+  fi
+  IFS=$'\t' read -r outcome detail < <(terminal_result_after_cleanup "$outcome" "$detail" \
+    "$inspection_status" "$PROJECT_REMAINING_CONTAINERS" "$PROJECT_REMAINING_NETWORKS")
+  publish_terminal_result "$run_dir" "$outcome" "$detail" \
+    "$PROJECT_REMAINING_CONTAINERS" "$PROJECT_REMAINING_NETWORKS" || return 1
+  [[ $outcome == COMPLETED ]]
+}
+
 run_internal() {
   local run_dir=$1
-  local scenario duration cpu_limit memory_limit disk_limit sample_seconds probe_seconds max_inflight workload_limit_mibps per_transfer_limit_mibps dashboard_host dashboard_port ca_port project
+  local scenario duration cpu_limit memory_limit disk_limit sample_seconds probe_seconds max_inflight workload_limit_mibps per_transfer_limit_mibps dashboard_host dashboard_port ca_port billing_adversary_mode validation_mode random_attempt_timeout random_worker_drain_timeout enable_container_adversaries project
   source "$run_dir/metadata.env"
   scenario=${scenario:?}
   duration=${duration_seconds:?}
@@ -1191,6 +2469,16 @@ run_internal() {
   dashboard_host=${dashboard_host:?}
   dashboard_port=${dashboard_port:?}
   ca_port=${ca_port:?}
+  billing_adversary_mode=${billing_adversary_mode:-$DEFAULT_BILLING_ADVERSARY_MODE}
+  validation_mode=${validation_mode:-$DEFAULT_VALIDATION_MODE}
+  random_attempt_timeout=${random_attempt_timeout_seconds:-}
+  random_worker_drain_timeout=${random_worker_drain_timeout_seconds:-}
+  [[ $(validation_mode_attempt_timeout_seconds "$validation_mode" 2>/dev/null || true) \
+      == "$random_attempt_timeout" \
+    && $(random_worker_drain_timeout_seconds "$random_attempt_timeout" 2>/dev/null || true) \
+      == "$random_worker_drain_timeout" ]] || return 1
+  enable_container_adversaries=1
+  [[ $billing_adversary_mode != off ]] || enable_container_adversaries=0
   project=${compose_project:?}
 
   local runner_pid=$$ runner_start compose_file=$run_dir/runtime/compose.json
@@ -1202,8 +2490,10 @@ run_internal() {
     > "$run_dir/large-probes.tsv"
   printf 'timestamp\ttransfer_id\tclient\tingress_relay\tserver\trequested_mib\trc\tbytes\tseconds\tmib_per_second\tsha256_ok\texpected_sha\tactual_sha\n' \
     > "$run_dir/transfers.tsv"
-  local stop_requested=0 guard_pid= dashboard_pid= dashboard_start= failure_watcher_pid= outcome=FAILED detail=initializing
+  local stop_requested=0 guard_pid= guard_start= dashboard_pid= dashboard_start= failure_watcher_pid= billing_adversary_pid= mixed_path_pid= outcome=FAILED detail=initializing
   local failure_watcher_degraded_since=0 failure_watcher_lag_since=0
+  local dashboard_status_failed_since=0 dashboard_status_consecutive_failures=0
+  local dashboard_status_next_probe=0 dashboard_status_probe_file=$run_dir/dashboard-status-probe.tmp
 
   trap 'stop_requested=1' INT TERM HUP
   set_phase "$run_dir" BUILDING
@@ -1218,10 +2508,11 @@ run_internal() {
   mkdir -p "$run_dir/runtime"
   export ROOT_DIR
   export RUNTIME_DIR=$run_dir/runtime
+  export PRIVATE_RUNTIME_DIR=$RUNTIME_DIR/.private
   export COMPOSE_FILE=$compose_file
   export COMPOSE_PROJECT=$project
   export BNFS_CHAOS_IMAGE=${BNFS_CHAOS_IMAGE:-bnfs-local-chaos:latest}
-  BNFS_CHAOS_ENABLE_CA=1 BNFS_CHAOS_CA_HOST_PORT="$ca_port" \
+  BNFS_CHAOS_ENABLE_CA=1 BNFS_CHAOS_ENABLE_ADVERSARIES="$enable_container_adversaries" BNFS_CHAOS_CA_HOST_PORT="$ca_port" \
     node "$ROOT_DIR/test/local-chaos/generate-compose.mjs" "$RUNTIME_DIR" > "$COMPOSE_FILE"
   source "$ROOT_DIR/test/local-chaos/lib.sh"
 
@@ -1261,7 +2552,8 @@ run_internal() {
   printf '%s\n' "$dashboard_start" > "$run_dir/dashboard.starttime"
   if ! wait_file_pattern "$run_dir/dashboard.log" 'BNFS stability dashboard listening' 10 \
     || ! pid_matches "$dashboard_pid" "$dashboard_start" 'monitor/server.mjs' \
-    || ! wait_dashboard_health "$dashboard_host" "$dashboard_port"; then
+    || ! wait_dashboard_health "$dashboard_host" "$dashboard_port" \
+    || ! wait_dashboard_status "$dashboard_host" "$dashboard_port" "$dashboard_status_probe_file"; then
     stop_dashboard_process "$run_dir" || true
     wait "$dashboard_pid" 2>/dev/null || true
     stop_failure_watcher "$failure_watcher_pid"
@@ -1274,6 +2566,8 @@ run_internal() {
   if ! topology_reset || ! wait_service_health ca 45; then
     detail=cluster_start_failed
   else
+    local billing_adversary_ready=1 billing_adversary_allow_violations=0
+    [[ $billing_adversary_mode == report ]] && billing_adversary_allow_violations=1
     setsid "$ROOT_DIR/test/local-chaos/resource-guard.sh" \
       --compose-file "$compose_file" --project "$project" --output-dir "$run_dir" \
       --watch-pid "$runner_pid" --watch-pgid "$runner_pid" --duration-seconds "$((duration + 900))" \
@@ -1281,113 +2575,308 @@ run_internal() {
       --memory-limit "$memory_limit" --disk-limit "$disk_limit" \
       > "$run_dir/resource-guard.log" 2>&1 &
     guard_pid=$!
+    guard_start=$(process_starttime "$guard_pid" 2>/dev/null || true)
     printf '%s\n' "$guard_pid" > "$run_dir/resource-guard.pid"
+    printf '%s\n' "$guard_start" > "$run_dir/resource-guard.starttime"
 
-    if ! wait_resource_guard_ready "$run_dir" "$guard_pid"; then
-      detail=resource_guard_start_failed
+    if ! wait_resource_guard_ready "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+      "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit"; then
+      detail=${RESOURCE_GUARD_DETAIL:-resource_guard_start_failed}
     else
       set_phase "$run_dir" CONFIGURING_PROFILE
-      if ! write_core_identity "$run_dir/core-identity.tsv"; then
+      if ! write_core_identity "$run_dir/core-identity.pre-gate.tsv"; then
         detail=core_identity_capture_failed
       else
         capture_project_evidence "$run_dir" initial
         if configure_profile "$run_dir" "$scenario" "$ca_port" "$per_transfer_limit_mibps" \
-          && initialize_random_workload "$run_dir" "$ca_port" "$scenario" "$max_inflight" "$per_transfer_limit_mibps" "$workload_limit_mibps" \
+          && initialize_random_workload "$run_dir" "$ca_port" "$scenario" "$max_inflight" \
+            "$per_transfer_limit_mibps" "$workload_limit_mibps" \
           && verify_profile3_tcp_cold_start "$run_dir" "$scenario" \
           && core_services_healthy \
-          && core_services_unchanged "$run_dir/core-identity.tsv"; then
-          if [[ -s $run_dir/resource-termination.tsv ]] && (( $(wc -l < "$run_dir/resource-termination.tsv") > 1 )); then
+          && core_services_unchanged "$run_dir/core-identity.pre-gate.tsv"; then
+          if [[ -s $run_dir/resource-termination.tsv ]] \
+            && (( $(wc -l < "$run_dir/resource-termination.tsv") > 1 )); then
             outcome=RESOURCE_LIMIT
             detail=resource_threshold_exceeded
+          elif ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+            "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+            outcome=FAILED
+            detail=$RESOURCE_GUARD_DETAIL
           elif (( stop_requested == 1 )); then
             outcome=STOPPED
             detail=signal_requested_during_profile
           else
-            local started_epoch deadline_epoch client_line worker_failed=0 pid worker_start
-            started_epoch=$(date +%s)
-            deadline_epoch=$((started_epoch + duration))
-            printf 'started_epoch=%s\ndeadline_epoch=%s\n' "$started_epoch" "$deadline_epoch" >> "$run_dir/metadata.env"
-            set_phase "$run_dir" RUNNING
-            outcome=COMPLETED
-            detail=duration_complete
-            RANDOM_WORKER_PIDS=()
-            printf 'client\tpid\tstarttime\n' > "$run_dir/worker-pids.tsv"
-            while IFS= read -r client_line; do
-              local worker_client worker_relay worker_port worker_node_id
-              IFS=$'\t' read -r worker_client worker_relay worker_port worker_node_id <<< "$client_line"
-              (
-                random_client_worker "$run_dir" "$worker_client" "$worker_relay" "$worker_port" "$deadline_epoch" "$probe_seconds" "$max_inflight"
-              ) > "$run_dir/workers/$worker_client.log" 2>&1 &
-              pid=$!
-              worker_start=$(process_starttime "$pid" 2>/dev/null || true)
-              RANDOM_WORKER_PIDS+=("$pid")
-              printf '%s\t%s\t%s\n' "$worker_client" "$pid" "$worker_start" >> "$run_dir/worker-pids.tsv"
-              [[ $worker_start =~ ^[1-9][0-9]*$ ]] || worker_failed=1
-            done < <(tail -n +2 "$run_dir/client-pool.tsv")
-            if (( ${#RANDOM_WORKER_PIDS[@]} != TOPOLOGY_NAT_CLIENT_COUNT || worker_failed == 1 )); then
-              outcome=FAILED
-              detail=random_worker_start_failed
+            set_phase "$run_dir" VERIFYING_BILLING
+            if ! run_billing_production_gate "$run_dir"; then
+              detail=$(read_billing_production_gate_detail \
+                "$run_dir/billing-production-gate.status" 2>/dev/null || true)
+              [[ -n $detail ]] || detail=billing_production_gate_failed
+            elif ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+              "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+              detail=$RESOURCE_GUARD_DETAIL
+            elif ! recover_random_server_pool_after_relay_restart \
+              "$run_dir" "$REAL_BILLING_GATE_RELAY"; then
+              detail=post_gate_server_pool_recovery_failed
+            elif ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+              "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+              detail=$RESOURCE_GUARD_DETAIL
+            elif ! core_services_healthy; then
+              detail=billing_production_gate_core_unhealthy
+            elif ! write_core_identity "$run_dir/core-identity.tsv"; then
+              detail=core_identity_recapture_failed
             else
-              while (( $(date +%s) < deadline_epoch )); do
-                if [[ -s $run_dir/resource-termination.tsv ]] && (( $(wc -l < "$run_dir/resource-termination.tsv") > 1 )); then
-                  outcome=RESOURCE_LIMIT
-                  detail=resource_threshold_exceeded
-                  break
+              if [[ $billing_adversary_mode != off ]]; then
+                if ! provision_container_adversaries "$run_dir" "$ca_port"; then
+                  billing_adversary_ready=0
+                  detail=container_adversary_provision_failed
+                else
+                  billing_adversary_pid=$(start_billing_adversary \
+                    "$run_dir" "$ca_port" "$runner_pid" "$billing_adversary_mode" 2>/dev/null || true)
+                  if [[ ! $billing_adversary_pid =~ ^[1-9][0-9]*$ ]]; then
+                    billing_adversary_ready=0
+                    detail=billing_adversary_start_failed
+                  elif ! inspect_billing_adversary "$run_dir" "$billing_adversary_pid" \
+                    "$(date +%s)" "$billing_adversary_allow_violations"; then
+                    billing_adversary_ready=0
+                    detail=$BILLING_ADVERSARY_DETAIL
+                  else
+                    mixed_path_pid=$(start_mixed_adversary_path \
+                      "$run_dir" "$ca_port" "$runner_pid" 2>/dev/null || true)
+                    if [[ ! $mixed_path_pid =~ ^[1-9][0-9]*$ ]]; then
+                      billing_adversary_ready=0
+                      detail=mixed_path_start_failed
+                    elif ! inspect_mixed_adversary_path \
+                      "$run_dir" "$mixed_path_pid" "$(date +%s)" 0; then
+                      billing_adversary_ready=0
+                      detail=$MIXED_PATH_DETAIL
+                    fi
+                  fi
                 fi
-                if (( stop_requested == 1 )); then
-                  outcome=STOPPED
-                  detail=signal_requested
-                  break
-                fi
-                if ! inspect_failure_watcher "$run_dir" "$failure_watcher_pid" "$(date +%s)" \
-                  "$failure_watcher_degraded_since" 0 "$failure_watcher_lag_since"; then
-                  outcome=FAILED
-                  detail=$FAILURE_WATCHER_DETAIL
-                  break
-                fi
-                failure_watcher_degraded_since=$FAILURE_WATCHER_DEGRADED_SINCE
-                failure_watcher_lag_since=$FAILURE_WATCHER_LAG_SINCE
-                if ! pid_matches "$dashboard_pid" "$dashboard_start" 'monitor/server.mjs'; then
-                  wait "$dashboard_pid" 2>/dev/null || true
-                  outcome=FAILED
-                  detail=dashboard_exited
-                  break
-                fi
-                if ! core_services_healthy; then
-                  outcome=FAILED
-                  detail=core_service_unhealthy
-                  break
-                fi
-                if ! core_services_unchanged "$run_dir/core-identity.tsv"; then
-                  outcome=FAILED
-                  detail=core_service_recreated_or_restarted
-                  break
-                fi
-                worker_failed=0
-                for pid in "${RANDOM_WORKER_PIDS[@]}"; do
-                  if ! kill -0 "$pid" 2>/dev/null; then
+              fi
+              if (( billing_adversary_ready == 1 )) \
+                && ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+                  "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+                billing_adversary_ready=0
+                detail=$RESOURCE_GUARD_DETAIL
+              fi
+              if (( billing_adversary_ready == 1 )); then
+                local started_epoch deadline_epoch client_line worker_failed=0 pid
+                local worker_start worker_group worker_index worker_token
+                local random_workers_ok=1 random_workers_quiesced=0
+                local random_worker_terminalization_failed=0 random_worker_failure_detail=
+                started_epoch=$(date +%s)
+                deadline_epoch=$((started_epoch + duration))
+                printf 'started_epoch=%s\ndeadline_epoch=%s\n' \
+                  "$started_epoch" "$deadline_epoch" >> "$run_dir/metadata.env"
+                set_phase "$run_dir" RUNNING
+                outcome=COMPLETED
+                detail=duration_complete
+                clear_random_worker_tracking
+                rm -f "$run_dir/worker-pids.closed"
+                printf 'client\tpid\tstarttime\tpgid\ttoken\n' > "$run_dir/worker-pids.tsv"
+                while IFS= read -r client_line; do
+                  local worker_client worker_relay worker_port worker_node_id
+                  IFS=$'\t' read -r worker_client worker_relay worker_port worker_node_id <<< "$client_line"
+                  worker_token=$(create_random_worker_token 2>/dev/null || true)
+                  if [[ ! $worker_token =~ ^[[:xdigit:]]{32}$ ]]; then
+                    worker_failed=1
+                    continue
+                  fi
+                  env BNFS_RANDOM_WORKER_TOKEN="$worker_token" \
+                    setsid bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _registered_worker \
+                    "$run_dir" "$worker_client" "$runner_pid" "$runner_start" \
+                    "$worker_relay" "$worker_port" "$deadline_epoch" "$probe_seconds" "$max_inflight" \
+                    "$random_attempt_timeout" \
+                    > "$run_dir/workers/$worker_client.log" 2>&1 &
+                  pid=$!
+                  if track_random_worker "$pid" "$worker_token"; then
+                    worker_index=$(( ${#RANDOM_WORKER_PIDS[@]} - 1 ))
+                    worker_start=${RANDOM_WORKER_STARTTIMES[$worker_index]}
+                    worker_group=${RANDOM_WORKER_PGIDS[$worker_index]}
+                    if ! wait_random_worker_registered "$run_dir/worker-pids.tsv" \
+                      "$worker_client" "$pid" "$worker_start" "$worker_group" "$worker_token"; then
+                      worker_failed=1
+                    fi
+                  else
+                    kill -TERM "$pid" 2>/dev/null || true
                     wait "$pid" 2>/dev/null || true
                     worker_failed=1
-                    break
                   fi
-                done
-                if (( worker_failed == 1 )); then
+                done < <(tail -n +2 "$run_dir/client-pool.tsv")
+                if (( ${#RANDOM_WORKER_PIDS[@]} != TOPOLOGY_NAT_CLIENT_COUNT \
+                  || worker_failed == 1 )); then
                   outcome=FAILED
-                  detail=random_client_worker_failed
-                  break
+                  detail=random_worker_start_failed
+                else
+                  while (( $(date +%s) < deadline_epoch )); do
+                    if [[ -s $run_dir/resource-termination.tsv ]] \
+                      && (( $(wc -l < "$run_dir/resource-termination.tsv") > 1 )); then
+                      outcome=RESOURCE_LIMIT
+                      detail=resource_threshold_exceeded
+                      break
+                    fi
+                    if ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+                      "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+                      outcome=FAILED
+                      detail=$RESOURCE_GUARD_DETAIL
+                      break
+                    fi
+                    if (( stop_requested == 1 )); then
+                      outcome=STOPPED
+                      detail=signal_requested
+                      break
+                    fi
+                    if ! inspect_failure_watcher "$run_dir" "$failure_watcher_pid" "$(date +%s)" \
+                      "$failure_watcher_degraded_since" 0 "$failure_watcher_lag_since"; then
+                      outcome=FAILED
+                      detail=$FAILURE_WATCHER_DETAIL
+                      break
+                    fi
+                    failure_watcher_degraded_since=$FAILURE_WATCHER_DEGRADED_SINCE
+                    failure_watcher_lag_since=$FAILURE_WATCHER_LAG_SINCE
+                    if [[ $billing_adversary_mode != off ]] \
+                      && ! inspect_billing_adversary "$run_dir" "$billing_adversary_pid" \
+                        "$(date +%s)" "$billing_adversary_allow_violations"; then
+                      outcome=FAILED
+                      detail=$BILLING_ADVERSARY_DETAIL
+                      break
+                    fi
+                    if [[ $billing_adversary_mode != off ]] \
+                      && ! inspect_mixed_adversary_path \
+                        "$run_dir" "$mixed_path_pid" "$(date +%s)" 0; then
+                      outcome=FAILED
+                      detail=$MIXED_PATH_DETAIL
+                      break
+                    fi
+                    if ! pid_matches "$dashboard_pid" "$dashboard_start" 'monitor/server.mjs'; then
+                      wait "$dashboard_pid" 2>/dev/null || true
+                      outcome=FAILED
+                      detail=dashboard_exited
+                      break
+                    fi
+                    local dashboard_status_now
+                    dashboard_status_now=$(date +%s)
+                    if (( dashboard_status_now >= dashboard_status_next_probe )); then
+                      dashboard_status_next_probe=$((dashboard_status_now \
+                        + DEFAULT_DASHBOARD_STATUS_PROBE_SECONDS))
+                      if probe_dashboard_status \
+                        "$dashboard_host" "$dashboard_port" "$dashboard_status_probe_file"; then
+                        dashboard_status_failed_since=0
+                        dashboard_status_consecutive_failures=0
+                      else
+                        dashboard_status_consecutive_failures=$((dashboard_status_consecutive_failures + 1))
+                        if (( dashboard_status_failed_since == 0 )); then
+                          dashboard_status_failed_since=$dashboard_status_now
+                        fi
+                        if dashboard_status_failure_is_fatal "$dashboard_status_now" \
+                          "$dashboard_status_failed_since" "$dashboard_status_consecutive_failures"; then
+                          outcome=FAILED
+                          detail=${DASHBOARD_STATUS_PROBE_DETAIL:-dashboard_status_api_invalid}
+                          break
+                        fi
+                      fi
+                    fi
+                    if ! core_services_healthy; then
+                      outcome=FAILED
+                      detail=core_service_unhealthy
+                      break
+                    fi
+                    if ! core_services_unchanged "$run_dir/core-identity.tsv"; then
+                      outcome=FAILED
+                      detail=core_service_recreated_or_restarted
+                      break
+                    fi
+                    worker_failed=0
+                    for worker_index in "${!RANDOM_WORKER_PIDS[@]}"; do
+                      pid=${RANDOM_WORKER_PIDS[$worker_index]}
+                      if ! random_worker_identity_alive "$worker_index"; then
+                        if (( $(date +%s) < deadline_epoch )); then
+                          if process_is_alive "$pid"; then
+                            detail=random_worker_identity_invalid
+                          else
+                            wait "$pid" 2>/dev/null || true
+                            detail=random_client_worker_failed
+                          fi
+                          worker_failed=1
+                        fi
+                        break
+                      fi
+                    done
+                    if (( worker_failed == 1 )); then
+                      if (( $(date +%s) < deadline_epoch )); then
+                        outcome=FAILED
+                      fi
+                      break
+                    fi
+                    sleep 1
+                  done
                 fi
-                sleep 1
-              done
-            fi
-            stop_random_workers
-            if [[ $outcome == COMPLETED ]]; then
-              if ! wait_failure_watcher_caught_up "$run_dir" "$failure_watcher_pid" \
-                "$DEFAULT_FAILURE_WATCHER_SETTLE_TIMEOUT_SECONDS" "$failure_watcher_degraded_since"; then
-                outcome=FAILED
-                detail=$FAILURE_WATCHER_DETAIL
-              elif ! validate_random_workload_coverage "$run_dir"; then
-                outcome=FAILED
-                detail=random_workload_coverage_failed
+                if [[ $outcome == COMPLETED ]]; then
+                  if drain_random_workers "$random_attempt_timeout"; then
+                    random_workers_quiesced=1
+                  else
+                    random_workers_ok=0
+                    random_worker_failure_detail=$RANDOM_WORKER_DRAIN_DETAIL
+                    if stop_random_workers; then
+                      random_workers_quiesced=1
+                    elif [[ -n $RANDOM_WORKER_DRAIN_DETAIL ]]; then
+                      random_worker_failure_detail=$RANDOM_WORKER_DRAIN_DETAIL
+                      random_worker_terminalization_failed=1
+                    fi
+                  fi
+                else
+                  if stop_random_workers; then
+                    random_workers_quiesced=1
+                  else
+                    random_workers_ok=0
+                    random_worker_failure_detail=${RANDOM_WORKER_DRAIN_DETAIL:-random_worker_group_stop_failed}
+                    random_worker_terminalization_failed=1
+                  fi
+                fi
+                if (( random_workers_quiesced == 1 )); then
+                  if ! finalize_random_worker_evidence "$run_dir"; then
+                    random_worker_failure_detail=${RANDOM_WORKER_EVIDENCE_DETAIL:-random_transfer_reconciliation_failed}
+                    random_worker_terminalization_failed=1
+                  fi
+                else
+                  random_worker_terminalization_failed=1
+                fi
+                if (( random_worker_terminalization_failed == 1 )); then
+                  outcome=FAILED
+                  detail=${random_worker_failure_detail:-random_worker_terminalization_failed}
+                fi
+                if [[ $outcome == COMPLETED ]]; then
+                  if [[ -s $run_dir/resource-termination.tsv ]] \
+                    && (( $(wc -l < "$run_dir/resource-termination.tsv") > 1 )); then
+                    outcome=RESOURCE_LIMIT
+                    detail=resource_threshold_exceeded
+                  elif ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+                    "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+                    outcome=FAILED
+                    detail=$RESOURCE_GUARD_DETAIL
+                  elif (( random_workers_ok == 0 )); then
+                    outcome=FAILED
+                    detail=${random_worker_failure_detail:-random_client_worker_failed}
+                  elif ! wait_failure_watcher_caught_up "$run_dir" "$failure_watcher_pid" \
+                    "$DEFAULT_FAILURE_WATCHER_SETTLE_TIMEOUT_SECONDS" \
+                    "$failure_watcher_degraded_since"; then
+                    outcome=FAILED
+                    detail=$FAILURE_WATCHER_DETAIL
+                  elif ! core_services_healthy; then
+                    outcome=FAILED
+                    detail=core_service_unhealthy
+                  elif ! core_services_unchanged "$run_dir/core-identity.tsv"; then
+                    outcome=FAILED
+                    detail=core_service_recreated_or_restarted
+                  elif ! validate_random_workload_coverage "$run_dir" "$scenario" "$validation_mode"; then
+                    outcome=FAILED
+                    detail=random_workload_coverage_failed
+                  elif [[ $billing_adversary_mode != off ]] \
+                    && ! drain_mixed_adversary_path "$run_dir" "$mixed_path_pid" 90; then
+                    outcome=FAILED
+                    detail=$MIXED_PATH_DETAIL
+                  fi
+                fi
               fi
             fi
           fi
@@ -1398,20 +2887,135 @@ run_internal() {
     fi
   fi
 
+  if ! stop_mixed_adversary_path "$mixed_path_pid"; then
+    outcome=FAILED
+    detail=mixed_path_stop_timeout
+  fi
+  if ! stop_billing_adversary "$billing_adversary_pid"; then
+    outcome=FAILED
+    detail=billing_adversary_stop_timeout
+  fi
+  if [[ $outcome == COMPLETED && $billing_adversary_mode != off ]] \
+    && ! inspect_billing_adversary_final "$run_dir" "$(date +%s)" \
+      "$billing_adversary_allow_violations"; then
+    outcome=FAILED
+    detail=$BILLING_ADVERSARY_DETAIL
+  fi
   stop_failure_watcher "$failure_watcher_pid"
   capture_project_evidence "$run_dir" final
   if [[ -n $guard_pid ]]; then
-    kill -TERM "$guard_pid" 2>/dev/null || true
-    wait "$guard_pid" 2>/dev/null || true
+    if [[ $outcome == COMPLETED ]] \
+      && ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
+        "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
+      outcome=FAILED
+      detail=$RESOURCE_GUARD_DETAIL
+    fi
+    if ! stop_resource_guard "$run_dir" "$guard_pid" "$guard_start"; then
+      outcome=FAILED
+      detail=${RESOURCE_GUARD_DETAIL:-resource_guard_stop_failed}
+    fi
   fi
-  cleanup_project "$compose_file" "$project"
-  local remaining_containers remaining_networks
-  remaining_containers=$(docker ps -aq --filter "label=com.docker.compose.project=$project" | wc -l)
-  remaining_networks=$(docker network ls -q --filter "label=com.docker.compose.project=$project" | wc -l)
-  printf 'outcome=%s\ndetail=%s\nfinished_epoch=%s\nremaining_containers=%s\nremaining_networks=%s\n' \
-    "$outcome" "$detail" "$(date +%s)" "$remaining_containers" "$remaining_networks" > "$run_dir/status.env"
-  set_phase "$run_dir" "$outcome"
-  [[ $outcome == COMPLETED ]]
+  finalize_run_terminal_result "$run_dir" "$compose_file" "$project" \
+    "$dashboard_pid" "$dashboard_start" "$dashboard_host" "$dashboard_port" \
+    "$dashboard_status_probe_file" "$outcome" "$detail"
+}
+
+run_field() {
+  local file=$1 key=$2
+  [[ -f $file ]] || return 1
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file"
+}
+
+print_wait_snapshot() {
+  local run_dir=$1 phase=$2 alive=$3 now_epoch deadline remaining=pending
+  local transfer_rows=0 transfer_failures=0 detail dashboard_host dashboard_port
+  now_epoch=$(date +%s)
+  deadline=$(run_field "$run_dir/metadata.env" deadline_epoch 2>/dev/null || true)
+  if [[ $deadline =~ ^[0-9]+$ ]]; then
+    remaining=$((deadline > now_epoch ? deadline - now_epoch : 0))
+  fi
+  if [[ -f $run_dir/transfers.tsv ]]; then
+    read -r transfer_rows transfer_failures < <(awk -F '\t' '
+      NR > 1 {
+        rows++
+        if ($7 != 0 || tolower($11) != "yes") failures++
+      }
+      END { print rows + 0, failures + 0 }
+    ' "$run_dir/transfers.tsv")
+  fi
+  detail=$(run_field "$run_dir/status.env" detail 2>/dev/null || true)
+  dashboard_host=$(run_field "$run_dir/metadata.env" dashboard_host 2>/dev/null || true)
+  dashboard_port=$(run_field "$run_dir/metadata.env" dashboard_port 2>/dev/null || true)
+  printf 'timestamp=%s phase=%s runner_alive=%s remaining_seconds=%s transfers=%s failures=%s detail=%s dashboard=http://%s:%s/\n' \
+    "$(date --iso-8601=seconds)" "$phase" "$alive" "$remaining" \
+    "$transfer_rows" "$transfer_failures" "${detail:-pending}" \
+    "${dashboard_host:-unknown}" "${dashboard_port:-unknown}"
+}
+
+wait_for_run_completion() {
+  local run_dir=$1 interval_seconds=$2 phase alive outcome detail
+  is_positive_integer "$interval_seconds" || {
+    printf 'expected positive integer: %s\n' "$interval_seconds" >&2
+    return 2
+  }
+  [[ -d $run_dir ]] || {
+    printf 'stability run directory does not exist: %s\n' "$run_dir" >&2
+    return 1
+  }
+  printf 'waiting_for_run=%s\n' "$run_dir"
+  while :; do
+    phase=$(cat "$run_dir/phase" 2>/dev/null || printf 'UNKNOWN')
+    alive=no
+    current_runner_alive "$run_dir" && alive=yes
+    print_wait_snapshot "$run_dir" "$phase" "$alive"
+    case "$phase" in
+      COMPLETED)
+        outcome=$(run_field "$run_dir/status.env" outcome 2>/dev/null || true)
+        detail=$(run_field "$run_dir/status.env" detail 2>/dev/null || true)
+        completed_terminal_evidence_valid "$run_dir/status.env" || {
+          printf 'stability terminal evidence is inconsistent: outcome=%s detail=%s\n' \
+            "${outcome:-missing}" "${detail:-missing}" >&2
+          return 1
+        }
+        return 0
+        ;;
+      FAILED|RESOURCE_LIMIT|STOPPED)
+        return 1
+        ;;
+    esac
+    if [[ $alive != yes ]]; then
+      printf 'stability runner exited before publishing a terminal result\n' >&2
+      return 1
+    fi
+    sleep "$interval_seconds"
+  done
+}
+
+wait_run() {
+  local interval_seconds=$DEFAULT_WAIT_INTERVAL_SECONDS
+  while (($#)); do
+    case "$1" in
+      --interval-seconds)
+        interval_seconds=${2:?}
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
+      *)
+        printf 'unknown wait option: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+  local run_dir
+  run_dir=$(read_current_run 2>/dev/null || true)
+  [[ -n $run_dir && -d $run_dir ]] || {
+    printf 'no stability run found\n' >&2
+    return 1
+  }
+  wait_for_run_completion "$run_dir" "$interval_seconds"
 }
 
 status_run() {
@@ -1424,6 +3028,8 @@ status_run() {
   printf 'run_dir=%s\nphase=%s\nrunner_alive=%s\n' "$run_dir" "$phase" "$alive"
   cat "$run_dir/metadata.env" 2>/dev/null || true
   cat "$run_dir/status.env" 2>/dev/null || true
+  cat "$run_dir/billing-production-gate.status" 2>/dev/null || true
+  cat "$run_dir/billing-adversary.status" 2>/dev/null || true
   if [[ -f $run_dir/resources.tsv ]]; then
     printf 'latest_resource_sample='; tail -n 1 "$run_dir/resources.tsv"
   fi
@@ -1462,6 +3068,8 @@ stop_run() {
   project=$(awk -F= '$1=="compose_project"{print $2}' "$run_dir/metadata.env")
   compose_file=$run_dir/runtime/compose.json
   cleanup_project "$compose_file" "$project"
+  stop_mixed_adversary_path_run "$run_dir"
+  stop_billing_adversary_run "$run_dir"
   stop_dashboard_process "$run_dir" || true
   if [[ -f $run_dir/dashboard-public.pid && -f $run_dir/dashboard-public.starttime ]]; then
     public_pid=$(cat "$run_dir/dashboard-public.pid")
@@ -1483,10 +3091,25 @@ stop_run() {
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
   case ${1:-status} in
+    run) shift; run_foreground "$@" ;;
     start) shift; start_run "$@" ;;
+    wait) shift || true; wait_run "$@" ;;
     status) shift || true; status_run "$@" ;;
     stop) shift || true; stop_run "$@" ;;
     _run) shift; run_internal "${1:?run directory required}" ;;
+    _worker)
+      shift
+      source "$ROOT_DIR/test/local-chaos/lib.sh"
+      run_dir=${1:?run directory required}
+      random_client_worker "$run_dir" "${2:?client required}" \
+        "${3:?relay required}" "${4:?listen port required}" "${5:?deadline required}" \
+        "${6:?pause required}" "${7:?max inflight required}" \
+        "${8:?attempt timeout required}"
+      ;;
+    _registered_worker) shift; registered_random_worker \
+      "${1:?run directory required}" "${2:?client required}" \
+      "${3:?runner PID required}" "${4:?runner start time required}" \
+      "${@:5}" ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
   esac

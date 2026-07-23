@@ -31,6 +31,10 @@ type peerLink struct {
 	owner    *RelayNode
 	addr     string // 对端 relay 的拨号地址（仅 dial 侧已知；accept 侧为空直到 HELLO）
 	outbound bool   // true=本端主动拨号维持；false=对端拨入
+	// inboundSessionKey / inboundGeneration 标识被动接入的逻辑 dual session；主动链路恒为空/0。
+	inboundSessionKey string
+	inboundGeneration uint64
+	expectedPeerID    string
 
 	mu        sync.Mutex
 	sc        *client.StreamClient
@@ -184,13 +188,18 @@ func (pl *peerLink) sendHello() error {
 
 // send 在控制链路上发送一条控制消息。
 func (pl *peerLink) send(cm *controlMessage) error {
+	return pl.sendContext(pl.ctx, cm)
+}
+
+// sendContext 在控制链路上发送一条受调用方截止时间约束的控制消息。
+func (pl *peerLink) sendContext(ctx context.Context, cm *controlMessage) error {
 	pl.mu.Lock()
 	sc := pl.sc
 	pl.mu.Unlock()
 	if sc == nil {
 		return errPeerLinkDown
 	}
-	return sc.SendMessage(pl.ctx, encodeControl(cm, pl.owner.idStr(), ""))
+	return sc.SendMessage(ctx, encodeControl(cm, pl.owner.idStr(), ""))
 }
 
 // serve 持续读取并分派对端发来的控制消息，直到链路出错或上下文取消。
@@ -228,15 +237,38 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 			}
 		}
 		pl.mu.Lock()
+		if pl.sc != sc || pl.ctx.Err() != nil {
+			pl.mu.Unlock()
+			return
+		}
 		wasCounted := pl.countedUp
+		if pl.expectedPeerID != "" && pl.expectedPeerID != cm.NodeId {
+			expectedPeerID := pl.expectedPeerID
+			pl.mu.Unlock()
+			logx.Warnf("[relaynode] 控制链路身份与接入公钥不匹配，关闭链路: expected=%.16s got=%.16s", expectedPeerID, cm.NodeId)
+			pl.clearStream(sc)
+			return
+		}
+		if wasCounted && pl.peerID != cm.NodeId {
+			oldPeerID := pl.peerID
+			pl.mu.Unlock()
+			logx.Warnf("[relaynode] 控制链路身份发生变化，关闭链路: old=%.16s new=%.16s", oldPeerID, cm.NodeId)
+			pl.clearStream(sc)
+			return
+		}
 		pl.peerID = cm.NodeId
 		pl.peerAddr = cm.Addr
-		pl.countedUp = true
+		if !wasCounted {
+			// 在 pl.mu 内完成 owner 计数上升，保证并发 close 不会先 down 后 up。
+			pl.owner.relayLinkUp(cm.NodeId)
+			pl.countedUp = true
+		}
 		pl.mu.Unlock()
 		if wasCounted {
 			pl.owner.relayControlSeen(cm.NodeId)
-		} else {
-			pl.owner.relayLinkUp(cm.NodeId)
+		}
+		if !pl.outbound && !pl.owner.activateInboundLink(pl, cm.NodeId) {
+			return
 		}
 		// 带上本链路的主动拨号地址（accept 侧为空）, 让 owner 能识别「这条正是注册到 index 的链路」,
 		// 从而在自动获知 index 真实 NodeID 后回调确认。
@@ -292,7 +324,9 @@ func (pl *peerLink) setStream(sc *client.StreamClient) {
 func (pl *peerLink) clearStream(sc *client.StreamClient) {
 	pl.mu.Lock()
 	downPeerID := ""
+	cleared := false
 	if pl.sc == sc {
+		cleared = true
 		pl.sc = nil
 		if pl.countedUp {
 			downPeerID = pl.peerID
@@ -300,8 +334,14 @@ func (pl *peerLink) clearStream(sc *client.StreamClient) {
 		}
 	}
 	pl.mu.Unlock()
+	if cleared && !pl.outbound {
+		pl.cancel()
+	}
 	if downPeerID != "" {
 		pl.owner.relayLinkDown(downPeerID)
+	}
+	if cleared && !pl.outbound {
+		pl.owner.removeInboundLink(pl)
 	}
 	sc.Close()
 }
@@ -328,6 +368,9 @@ func (pl *peerLink) close() {
 	pl.mu.Unlock()
 	if downPeerID != "" {
 		pl.owner.relayLinkDown(downPeerID)
+	}
+	if !pl.outbound {
+		pl.owner.removeInboundLink(pl)
 	}
 	if sc != nil {
 		sc.Close()
