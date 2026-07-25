@@ -161,6 +161,56 @@ test("malicious Compose actors receive neither management credentials nor shared
   assert.equal(JSON.stringify(compose.services["malicious-relay"]).includes("ca-issue.token"), false);
 });
 
+test("IP-family plan assigns isolated IPv4, IPv6 and dual-stack paths", async (context) => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-ip-family-runtime-"));
+  context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
+  const planFile = path.join(runtimeDir, "ip-family-plan.tsv");
+  await fs.writeFile(planFile, [
+    "family\trelay\tnatserver\tnatclient",
+    "ipv4\trelay03\tnatserver01\tnatclient01",
+    "ipv6\trelay04\tnatserver02\tnatclient02",
+    "dual\trelay05\tnatserver03\tnatclient03",
+    "",
+  ].join("\n"), { mode: 0o600 });
+  const { stdout } = await execFileAsync(process.execPath, [generator, runtimeDir], {
+    env: {
+      ...process.env,
+      BNFS_CHAOS_ENABLE_CA: "1",
+      BNFS_CHAOS_IP_FAMILY_PLAN_FILE: planFile,
+    },
+    maxBuffer: 1024 * 1024,
+  });
+  const compose = JSON.parse(stdout);
+
+  assert.deepEqual(compose.networks.ip_family_ipv4.ipam.config, [{ subnet: "10.253.41.0/24" }]);
+  assert.equal(compose.networks.ip_family_ipv4.enable_ipv6, false);
+  assert.deepEqual(compose.networks.ip_family_ipv6.ipam.config, [{ subnet: "fd92:7b5e:4c31:42::/64" }]);
+  assert.equal(compose.networks.ip_family_ipv6.enable_ipv6, true);
+  assert.deepEqual(compose.networks.ip_family_dual.ipam.config, [
+    { subnet: "10.253.43.0/24" },
+    { subnet: "fd92:7b5e:4c31:43::/64" },
+  ]);
+
+  assert.deepEqual(compose.services.relay03.networks.ip_family_ipv4, { ipv4_address: "10.253.41.250" });
+  assert.deepEqual(compose.services.relay04.networks.ip_family_ipv6, { ipv6_address: "fd92:7b5e:4c31:42::250" });
+  assert.deepEqual(compose.services.relay05.networks.ip_family_dual, {
+    ipv4_address: "10.253.43.250",
+    ipv6_address: "fd92:7b5e:4c31:43::250",
+  });
+  assert.ok(compose.services.natserver01.networks.ip_family_ipv4);
+  assert.ok(compose.services.natserver02.networks.ip_family_ipv6);
+  assert.ok(compose.services.natclient03.networks.ip_family_dual);
+  assert.deepEqual(compose.services.ca.networks.ip_family_ipv4, { ipv4_address: "10.253.41.251" });
+  assert.deepEqual(compose.services.ca.networks.ip_family_ipv6, { ipv6_address: "fd92:7b5e:4c31:42::251" });
+  assert.deepEqual(compose.services.ca.networks.ip_family_dual, {
+    ipv4_address: "10.253.43.251",
+    ipv6_address: "fd92:7b5e:4c31:43::251",
+  });
+  assert.equal(commandOption(compose.services.relay03.command, "-ca"), "http://10.253.41.251:9100");
+  assert.equal(commandOption(compose.services.relay04.command, "-ca"), "http://[fd92:7b5e:4c31:42::251]:9100");
+  assert.equal(commandOption(compose.services.relay05.command, "-ca"), "http://10.253.43.251:9100");
+});
+
 function numbered(prefix, count) {
   return Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1).padStart(2, "0")}`);
 }
@@ -171,6 +221,11 @@ function sensitivePaths(command) {
     const index = command.indexOf(option);
     return index >= 0 ? [command[index + 1]] : [];
   });
+}
+
+function commandOption(command, option) {
+  const index = command.indexOf(option);
+  return index < 0 ? "" : command[index + 1];
 }
 
 async function assertEnrollmentCredential(compose, privateRoot, serviceName, expectedToken) {

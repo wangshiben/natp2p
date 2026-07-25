@@ -184,7 +184,9 @@ billing_production_gate_queue_digest() {
 
 billing_production_gate_resolve_payer() {
   local run_dir=$1 server=$2 node_id
-  node_id=$(awk -F '\t' -v service="$server" '$1 == service { print $3; exit }' "$run_dir/server-pool.tsv")
+  node_id=$(awk -F '\t' -v service="$server" '
+    $1 == service { if (NF >= 5) print $5; else print $3; exit }
+  ' "$run_dir/server-pool.tsv")
   [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
   printf '%s\n' "$node_id"
 }

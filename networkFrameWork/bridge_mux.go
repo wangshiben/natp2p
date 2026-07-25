@@ -856,7 +856,7 @@ func DialBridgeMuxSession(parent context.Context, addr, selfNodeID string) (*Mux
 		conn = kconn
 		logx.Infof("[bridge-mux] 桥接物理连接走 KCP: addr=%s self=%.16s", addr, selfNodeID)
 	} else {
-		tconn, err := net.Dial("tcp4", addr)
+		tconn, err := net.Dial("tcp", addr)
 		if err != nil {
 			return nil, err
 		}

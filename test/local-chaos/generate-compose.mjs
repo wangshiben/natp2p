@@ -10,10 +10,35 @@ const enableCA = process.env.BNFS_CHAOS_ENABLE_CA === "1";
 const enableAdversaries = enableCA && process.env.BNFS_CHAOS_ENABLE_ADVERSARIES === "1";
 const caHostPort = process.env.BNFS_CHAOS_CA_HOST_PORT ?? "19100";
 const adversarySeed = process.env.BNFS_CHAOS_ADVERSARY_SEED ?? "bnfs-container-adversary-v1";
+const ipFamilyPlanFile = process.env.BNFS_CHAOS_IP_FAMILY_PLAN_FILE ?? "";
 const relayCount = 7;
 const natServerCount = 13;
 const natClientCount = 6;
 const caCredentials = enableCA ? provisionCACredentials() : null;
+const ipFamilyPlan = readIPFamilyPlan(ipFamilyPlanFile);
+const ipFamilySpecs = Object.freeze({
+  ipv4: Object.freeze({
+    network: "ip_family_ipv4",
+    ipv4Subnet: "10.253.41.0/24",
+    relayIPv4: "10.253.41.250",
+    caIPv4: "10.253.41.251",
+  }),
+  ipv6: Object.freeze({
+    network: "ip_family_ipv6",
+    ipv6Subnet: "fd92:7b5e:4c31:42::/64",
+    relayIPv6: "fd92:7b5e:4c31:42::250",
+    caIPv6: "fd92:7b5e:4c31:42::251",
+  }),
+  dual: Object.freeze({
+    network: "ip_family_dual",
+    ipv4Subnet: "10.253.43.0/24",
+    ipv6Subnet: "fd92:7b5e:4c31:43::/64",
+    relayIPv4: "10.253.43.250",
+    relayIPv6: "fd92:7b5e:4c31:43::250",
+    caIPv4: "10.253.43.251",
+    caIPv6: "fd92:7b5e:4c31:43::251",
+  }),
+});
 
 const networks = {
   control_index: network("10.200.0.0/24"),
@@ -22,6 +47,10 @@ const networks = {
 };
 for (let relay = 1; relay <= relayCount; relay += 1) {
   networks[relayNetwork(relay)] = network(`10.201.${relay}.0/24`);
+}
+for (const assignment of ipFamilyPlan) {
+  const spec = ipFamilySpecs[assignment.family];
+  networks[spec.network] = ipFamilyNetwork(spec);
 }
 if (enableCA) {
   // Docker intentionally blocks published ports for containers attached only
@@ -93,7 +122,7 @@ for (let relay = 1; relay <= relayCount; relay += 1) {
       ...adversaryPeer,
       "-key", "/artifacts/.private/identity.key",
       "-billing-queue", "/artifacts/.private/wait-submit.queue",
-      ...admissionArgs,
+      ...admissionArgsForService(name),
     ],
     attachedNetworks,
   );
@@ -138,6 +167,18 @@ function network(subnet) {
   };
 }
 
+function ipFamilyNetwork(spec) {
+  const config = [];
+  if (spec.ipv4Subnet) config.push({ subnet: spec.ipv4Subnet });
+  if (spec.ipv6Subnet) config.push({ subnet: spec.ipv6Subnet });
+  return {
+    driver: "bridge",
+    internal: true,
+    enable_ipv6: Boolean(spec.ipv6Subnet),
+    ipam: { config },
+  };
+}
+
 function commonService(name) {
   const servicePrivateDirectory = preparePrivateDirectory(name);
   return {
@@ -165,7 +206,7 @@ function caService(name) {
       "-client-enrollment-token-file", "/artifacts/.private/enroll-client.token",
       "-admin-token-file", "/artifacts/.private/admin.token",
     ],
-    networks: Object.keys(networks),
+    networks: caNetworkAttachments(),
     ports: [`127.0.0.1:${caHostPort}:9100`],
     healthcheck: {
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9100'"],
@@ -194,7 +235,7 @@ function nodeService(name, command, attachedNetworks) {
     service.depends_on = { ca: { condition: "service_healthy" } };
     service.environment = ["BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue.token"];
   }
-  return service;
+  return attachIPFamilyNetwork(service, name);
 }
 
 function idleNatService(name, attachedNetworks) {
@@ -207,7 +248,7 @@ function idleNatService(name, attachedNetworks) {
   if (enableCA && caCredentials) {
     service.environment = ["BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue.token"];
   }
-  return service;
+  return attachIPFamilyNetwork(service, name);
 }
 
 function adversaryService(name, role, peerURL, attachedNetworks) {
@@ -361,4 +402,81 @@ function preparePrivateDirectory(name) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.chmodSync(directory, 0o700);
   return directory;
+}
+
+function readIPFamilyPlan(filename) {
+  if (!filename) return Object.freeze([]);
+  const file = fs.lstatSync(filename);
+  if (!file.isFile() || file.isSymbolicLink() || file.size > 4096) {
+    throw new Error("invalid IP family plan file");
+  }
+  const lines = fs.readFileSync(filename, "utf8").trim().split(/\r?\n/).filter(Boolean);
+  if (lines[0] !== "family\trelay\tnatserver\tnatclient" || lines.length !== 4) {
+    throw new Error("invalid IP family plan schema");
+  }
+  const assignments = lines.slice(1).map((line) => {
+    const [family, relay, natserver, natclient, extra] = line.split("\t");
+    if (extra !== undefined || !["ipv4", "ipv6", "dual"].includes(family)
+      || !/^relay0[3-7]$/.test(relay ?? "")
+      || !/^natserver(?:0[1-9]|1[0-3])$/.test(natserver ?? "")
+      || !/^natclient0[1-6]$/.test(natclient ?? "")) {
+      throw new Error("invalid IP family plan entry");
+    }
+    return Object.freeze({ family, relay, natserver, natclient });
+  });
+  if (new Set(assignments.map((assignment) => assignment.family)).size !== 3
+    || new Set(assignments.map((assignment) => assignment.relay)).size !== 3
+    || new Set(assignments.map((assignment) => assignment.natserver)).size !== 3
+    || new Set(assignments.map((assignment) => assignment.natclient)).size !== 3) {
+    throw new Error("IP family plan must use distinct IPv4, IPv6 and dual-stack nodes");
+  }
+  return Object.freeze(assignments);
+}
+
+function assignmentForService(name) {
+  return ipFamilyPlan.find((assignment) => (
+    assignment.relay === name || assignment.natserver === name || assignment.natclient === name
+  ));
+}
+
+function attachIPFamilyNetwork(service, name) {
+  const assignment = assignmentForService(name);
+  if (!assignment) return service;
+  const spec = ipFamilySpecs[assignment.family];
+  const attachments = Array.isArray(service.networks)
+    ? Object.fromEntries(service.networks.map((networkName) => [networkName, {}]))
+    : { ...service.networks };
+  const attachment = {};
+  if (name === assignment.relay) {
+    if (spec.relayIPv4) attachment.ipv4_address = spec.relayIPv4;
+    if (spec.relayIPv6) attachment.ipv6_address = spec.relayIPv6;
+  }
+  attachments[spec.network] = attachment;
+  service.networks = attachments;
+  return service;
+}
+
+function admissionArgsForService(name) {
+  if (!enableCA) return ["-admission", "off"];
+  const assignment = assignmentForService(name);
+  if (!assignment || name !== assignment.relay) return admissionArgs;
+  const spec = ipFamilySpecs[assignment.family];
+  const caAddress = assignment.family === "ipv4" || assignment.family === "dual"
+    ? spec.caIPv4
+    : spec.caIPv6;
+  const host = caAddress.includes(":") ? `[${caAddress}]` : caAddress;
+  return ["-ca", `http://${host}:9100`, "-admission", "enforce"];
+}
+
+function caNetworkAttachments() {
+  if (ipFamilyPlan.length === 0) return Object.keys(networks);
+  const attachments = Object.fromEntries(Object.keys(networks).map((networkName) => [networkName, {}]));
+  for (const assignment of ipFamilyPlan) {
+    const spec = ipFamilySpecs[assignment.family];
+    const attachment = {};
+    if (spec.caIPv4) attachment.ipv4_address = spec.caIPv4;
+    if (spec.caIPv6) attachment.ipv6_address = spec.caIPv6;
+    attachments[spec.network] = attachment;
+  }
+  return attachments;
 }

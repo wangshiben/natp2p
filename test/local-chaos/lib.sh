@@ -153,10 +153,10 @@ launch_tunnel_server() {
 
   local command="exec env BNFS_RELAY_INCLUDE_INDEX=0 /opt/bnfs/tunserver -index index:9000 -target 127.0.0.1:8080"
   if [[ -n $relay ]]; then
-    command+=" -relay $relay"
+    command+=" -relay '$relay'"
   fi
   if [[ -n ${BNFS_CHAOS_NAT_CA_URL:-} ]]; then
-    command+=" -ca $BNFS_CHAOS_NAT_CA_URL"
+    command+=" -ca '$BNFS_CHAOS_NAT_CA_URL'"
   fi
   if [[ -n ${BNFS_CHAOS_NAT_KEY_DIR:-} ]]; then
     command+=" -key $BNFS_CHAOS_NAT_KEY_DIR/$service.key"
@@ -359,10 +359,10 @@ launch_tunnel_client() {
   rm -f "$client_log"
   local command="exec env BNFS_RELAY_INCLUDE_INDEX=0 /opt/bnfs/tunclient -index index:9000 -target $target_id -listen 127.0.0.1:$listen_port"
   if [[ -n $relay ]]; then
-    command+=" -relay $relay"
+    command+=" -relay '$relay'"
   fi
   if [[ -n ${BNFS_CHAOS_NAT_CA_URL:-} ]]; then
-    command+=" -ca $BNFS_CHAOS_NAT_CA_URL"
+    command+=" -ca '$BNFS_CHAOS_NAT_CA_URL'"
   fi
   if [[ -n ${BNFS_CHAOS_NAT_KEY_DIR:-} ]]; then
     command+=" -key $BNFS_CHAOS_NAT_KEY_DIR/$service.key"
@@ -402,13 +402,22 @@ detect_client_entry_relay() {
 }
 
 wait_client_entry_relay() {
-  local service=$1 timeout_seconds=${2:-5} deadline relay
+  local service=$1 timeout_seconds=${2:-5} expected_relay=${3:-} deadline relay peer
+  [[ -z $expected_relay || $expected_relay =~ ^relay0[1-7]$ ]] || return 1
   deadline=$((SECONDS + timeout_seconds))
   while (( SECONDS < deadline )); do
     relay=$(detect_client_entry_relay "$service" 2>/dev/null || true)
     if [[ $relay =~ ^relay0[1-7]$ ]]; then
       printf '%s\n' "$relay"
       return 0
+    fi
+    if [[ $expected_relay =~ ^relay0[1-7]$ ]]; then
+      peer=$(netns_exec "$service" ss -Hnt state established 2>/dev/null \
+        | awk '$NF ~ /:9000$/ { print $NF; exit }')
+      if [[ -n $peer ]]; then
+        printf '%s\n' "$expected_relay"
+        return 0
+      fi
     fi
     sleep 0.25
   done

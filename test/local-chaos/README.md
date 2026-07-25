@@ -60,6 +60,20 @@ downgrades its gates. A short topology diagnostic may opt into
 mode, attempt deadline and derived worker-drain timeout are retained in
 `metadata.env`.
 
+Use `--ip-family-coverage random` to add a fail-closed IPv4/IPv6 compatibility
+gate. The runner assigns distinct Relay, NatServer and NatClient nodes to an
+IPv4-only path, an IPv6-only path and a dual-stack path. The dual-stack probe
+connects the Client to the selected Relay over IPv4 while the Server connects
+to the same Relay over IPv6. Address assignment, established sockets and a
+random 100–200 MiB SHA-256-verified transfer must all pass before steady state;
+the same evidence is revalidated at the terminal gate and shown on the
+Dashboard. For example:
+
+```bash
+bash scripts/local-chaos-stability.sh start --ip-family-coverage random \
+  --max-inflight 1 --workload-limit-mibps 5 --dashboard-host 0.0.0.0
+```
+
 For a run that must survive the observing shell, use detached `start`, confirm
 that startup reaches `RUNNING`, and then attach the same fail-closed waiter:
 

@@ -207,6 +207,14 @@
 
   <section class="panel" style="margin-bottom:14px">
     <div class="split-title">
+      <h2>IPv4 / IPv6 / 双栈路径覆盖</h2>
+      <span class="muted small">随机选中的 NAT Client、NAT Server、Relay 强制使用对应地址族；双栈项要求 Client IPv4 与 Server IPv6 同 Relay 转发</span>
+    </div>
+    <div class="failure-watcher" id="ipFamilyCoverage"><strong>IP 地址族覆盖</strong><span>本轮未启用</span></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="split-title">
       <h2>失败诊断与拓扑路径</h2>
       <span class="muted small" id="failureFreshness">等待失败分析数据</span>
     </div>
@@ -313,6 +321,7 @@ function render(data) {
   renderProbe(data.largeProbes?.latest || data.probes.latest);
   renderWorkers(data.workers);
   renderClientTransfers(data.clientTransfers, data.metadata, data.maliciousNodes, data.billingAdversary?.containerProbe?.recent, data.mixedPath);
+  renderIPFamilyCoverage(data.ipFamilyCoverage, data.metadata);
   renderFailureWatcher(data.failureWatcher);
   renderFailureAnalysis(data.failureAnalysis);
   renderBillingAdversary(data.billingAdversary);
@@ -430,6 +439,35 @@ function renderClientTransfers(transfers = {}, metadata = {}, maliciousNodes = [
       '</article>';
   }).join('');
   $('clientTransfers').innerHTML = clientCards + renderMixedPathTransferCard(mixedPath);
+}
+function renderIPFamilyCoverage(coverage = {}, metadata = {}) {
+  const enabled = coverage.enabled === true || String(metadata.ip_family_coverage || '') === 'random';
+  const results = Array.isArray(coverage.results) ? coverage.results : [];
+  const required = Math.max(0, num(coverage.required) || 3);
+  const passed = Math.max(0, num(coverage.passed));
+  const healthy = coverage.healthy === true;
+  const stateClass = !enabled ? 'warn' : healthy ? 'ok' : results.some(item => item?.state === 'FAIL') ? 'bad' : 'warn';
+  const body = !enabled
+    ? '<strong>IP 地址族覆盖：未启用</strong><span>本轮保留默认 IPv4 混沌拓扑；新 12 小时轮次会启用随机 IPv4 / IPv6 / 双栈门禁</span>'
+    : '<strong>IP 地址族覆盖：' + (healthy ? 'PASS' : '进行中') + '</strong>' +
+      '<span>已通过 <strong>' + passed + ' / ' + required + '</strong></span>' +
+      results.map(item => {
+        const state = String(item?.state || 'PENDING');
+        const statusClass = state === 'PASS' ? 'ok' : state === 'FAIL' ? 'bad' : 'warn';
+        const family = item?.family === 'ipv4' ? 'IPv4' : item?.family === 'ipv6' ? 'IPv6' : 'IPv4 + IPv6 双栈';
+        const checks = [
+          item?.addressCheck ? '地址 PASS' : '地址待验',
+          item?.clientSocket ? 'Client socket PASS' : 'Client socket 待验',
+          item?.serverSocket ? 'Server socket PASS' : 'Server socket 待验',
+          item?.sha256 ? 'SHA-256 PASS' : 'SHA-256 待验',
+        ].join(' · ');
+        return '<span class="failure-stat"><strong>' + escapeHtml(family) + '</strong> ' +
+          escapeHtml(item?.natclient || 'Client') + ' → ' + escapeHtml(item?.relay || 'Relay') + ' → ' +
+          escapeHtml(item?.natserver || 'Server') + ' · <span class="' + statusClass + '">' +
+          escapeHtml(state) + '</span><br><span class="muted small">' + escapeHtml(checks) + '</span></span>';
+      }).join('');
+  $('ipFamilyCoverage').className = 'failure-watcher ' + stateClass;
+  $('ipFamilyCoverage').innerHTML = body;
 }
 function renderMixedPathTransferCard(mixedPath = {}) {
   const probe = mixedPath.probe || {};

@@ -519,7 +519,7 @@ func tcpClientStreamContext(ctx context.Context, FirstMessage *network.Message, 
 	defer cancel()
 
 	var dialer net.Dialer
-	conn, err := dialer.DialContext(handshakeCtx, "tcp4", tcpAddr)
+	conn, err := dialer.DialContext(handshakeCtx, "tcp", tcpAddr)
 	if err != nil {
 		return nil, err
 	}

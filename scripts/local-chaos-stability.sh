@@ -28,6 +28,7 @@ DEFAULT_DASHBOARD_STATUS_PROBE_SECONDS=5
 DEFAULT_DASHBOARD_STATUS_FAILURE_GRACE_SECONDS=20
 DEFAULT_DASHBOARD_STATUS_MIN_FAILURES=3
 DEFAULT_VALIDATION_MODE=full
+DEFAULT_IP_FAMILY_COVERAGE=off
 DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS=900
 SMOKE_RANDOM_ATTEMPT_TIMEOUT_SECONDS=180
 DEFAULT_RANDOM_WORKER_STOP_TIMEOUT_SECONDS=5
@@ -84,6 +85,7 @@ run/start options:
   --ca-port PORT                loopback CA port (default: 19100)
   --billing-adversary MODE      enforce|report|off (default: enforce)
   --validation-mode MODE        smoke|full validation (default: full)
+  --ip-family-coverage MODE     off|random IPv4/IPv6/dual-stack coverage (default: off)
 
 run-only options:
   --wait-interval-seconds N     progress output interval (default: 30)
@@ -514,6 +516,157 @@ random_scenario() {
   printf '%s\t%s\n' "$((value % 3 + 1))" "$value"
 }
 
+is_ip_family_coverage_mode() {
+  [[ ${1:-} == off || ${1:-} == random ]]
+}
+
+create_ip_family_plan() {
+  local run_dir=$1 mode=$2 plan_file family relay natserver natclient
+  local -a relays=() natservers=() natclients=()
+  is_ip_family_coverage_mode "$mode" || return 1
+  plan_file=$run_dir/ip-family-plan.tsv
+  if [[ $mode == off ]]; then
+    rm -f "$plan_file"
+    return 0
+  fi
+  mapfile -t relays < <(numbered_service_names relay "$TOPOLOGY_RELAY_COUNT" | awk '/^relay0[3-7]$/' | shuf -n 3)
+  # natserver06 is reserved by the production waitSubmit recovery gate.
+  mapfile -t natservers < <(numbered_service_names natserver "$TOPOLOGY_NAT_SERVER_COUNT" \
+    | awk '$0 != "natserver06"' | shuf -n 3)
+  mapfile -t natclients < <(numbered_service_names natclient "$TOPOLOGY_NAT_CLIENT_COUNT" | shuf -n 3)
+  (( ${#relays[@]} == 3 && ${#natservers[@]} == 3 && ${#natclients[@]} == 3 )) || return 1
+  {
+    printf 'family\trelay\tnatserver\tnatclient\n'
+    for family in ipv4 ipv6 dual; do
+      case $family in
+        ipv4) printf '%s\t%s\t%s\t%s\n' "$family" "${relays[0]}" "${natservers[0]}" "${natclients[0]}" ;;
+        ipv6) printf '%s\t%s\t%s\t%s\n' "$family" "${relays[1]}" "${natservers[1]}" "${natclients[1]}" ;;
+        dual) printf '%s\t%s\t%s\t%s\n' "$family" "${relays[2]}" "${natservers[2]}" "${natclients[2]}" ;;
+      esac
+    done
+  } > "$plan_file"
+  chmod 600 "$plan_file"
+  validate_ip_family_plan "$plan_file"
+}
+
+validate_ip_family_plan() {
+  local plan_file=${1:-}
+  [[ -s $plan_file && ! -L $plan_file ]] || return 1
+  [[ $(wc -l < "$plan_file") -eq 4 ]] || return 1
+  awk -F '\t' '
+    NR == 1 { valid=($0 == "family\trelay\tnatserver\tnatclient"); next }
+    NF != 4 || !($1 == "ipv4" || $1 == "ipv6" || $1 == "dual") \
+      || $2 !~ /^relay0[3-7]$/ || $3 !~ /^natserver(0[1-9]|1[0-3])$/ \
+      || $4 !~ /^natclient0[1-6]$/ { valid=0; next }
+    family[$1]++; relay[$2]++; server[$3]++; client[$4]++
+    END {
+      valid = valid && family["ipv4"] == 1 && family["ipv6"] == 1 && family["dual"] == 1
+      for (name in relay) if (relay[name] != 1) valid=0
+      for (name in server) if (server[name] != 1) valid=0
+      for (name in client) if (client[name] != 1) valid=0
+      exit !valid
+    }
+  ' "$plan_file"
+}
+
+ip_family_plan_file() {
+  local run_dir=$1 plan_file=$run_dir/ip-family-plan.tsv
+  if [[ -s $plan_file ]] && validate_ip_family_plan "$plan_file"; then
+    printf '%s\n' "$plan_file"
+  fi
+}
+
+service_ip_family() {
+  local run_dir=$1 service=$2 plan_file family
+  plan_file=$(ip_family_plan_file "$run_dir" 2>/dev/null || true)
+  if [[ -n $plan_file ]]; then
+    family=$(awk -F '\t' -v service="$service" 'NR > 1 && ($2 == service || $3 == service || $4 == service) { print $1; exit }' "$plan_file")
+    if [[ $family == ipv4 || $family == ipv6 || $family == dual ]]; then
+      printf '%s\n' "$family"
+      return 0
+    fi
+  fi
+  printf 'default\n'
+}
+
+service_ip_family_relay() {
+  local run_dir=$1 service=$2 fallback_relay=$3 plan_file relay
+  [[ $fallback_relay =~ ^relay0[1-7]$ ]] || return 1
+  plan_file=$(ip_family_plan_file "$run_dir" 2>/dev/null || true)
+  if [[ -n $plan_file ]]; then
+    relay=$(awk -F '\t' -v service="$service" 'NR > 1 && ($2 == service || $3 == service || $4 == service) { print $2; exit }' "$plan_file")
+    if [[ $relay =~ ^relay0[3-7]$ ]]; then
+      printf '%s\n' "$relay"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$fallback_relay"
+}
+
+ip_family_relay_endpoint() {
+  local family=$1 role=$2 fallback_relay=$3
+  [[ $fallback_relay =~ ^relay0[1-7]$ ]] || return 1
+  case "$family:$role" in
+    ipv4:*) printf '10.253.41.250:9000\n' ;;
+    ipv6:*) printf '[fd92:7b5e:4c31:42::250]:9000\n' ;;
+    dual:natserver) printf '[fd92:7b5e:4c31:43::250]:9000\n' ;;
+    dual:*) printf '10.253.43.250:9000\n' ;;
+    default:*) printf '%s:9000\n' "$fallback_relay" ;;
+    *) return 1 ;;
+  esac
+}
+
+service_relay_endpoint() {
+  local run_dir=$1 service=$2 role=$3 relay=$4 family
+  family=$(service_ip_family "$run_dir" "$service") || return 1
+  ip_family_relay_endpoint "$family" "$role" "$relay"
+}
+
+service_ca_endpoint() {
+  local run_dir=$1 service=$2 role=$3 family
+  family=$(service_ip_family "$run_dir" "$service") || return 1
+  case "$family:$role" in
+    ipv4:*) printf 'http://10.253.41.251:9100\n' ;;
+    ipv6:*) printf 'http://[fd92:7b5e:4c31:42::251]:9100\n' ;;
+    dual:natserver) printf 'http://[fd92:7b5e:4c31:43::251]:9100\n' ;;
+    dual:*) printf 'http://10.253.43.251:9100\n' ;;
+    default:*) printf 'http://ca:9100\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+launch_tunnel_server_for_ip_family() {
+  local run_dir=$1 service=$2 relay=$3 scenario=$4 ca_endpoint relay_endpoint
+  ca_endpoint=$(service_ca_endpoint "$run_dir" "$service" natserver) || return 1
+  relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natserver "$relay") || return 1
+  BNFS_CHAOS_NAT_CA_URL="$ca_endpoint" launch_tunnel_server "$service" "$relay_endpoint" "$scenario"
+}
+
+start_tunnel_server_for_ip_family() {
+  local run_dir=$1 service=$2 relay=$3 scenario=$4 size_mb=$5 max_size_mb=$6 send_rate_mibps=$7
+  local ca_endpoint relay_endpoint
+  ca_endpoint=$(service_ca_endpoint "$run_dir" "$service" natserver) || return 1
+  relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natserver "$relay") || return 1
+  BNFS_CHAOS_NAT_CA_URL="$ca_endpoint" start_tunnel_server "$service" "$relay_endpoint" \
+    "$scenario" "$size_mb" "$max_size_mb" "$send_rate_mibps"
+}
+
+restart_tunnel_server_for_ip_family() {
+  local run_dir=$1 service=$2 relay=$3 scenario=$4 ca_endpoint relay_endpoint
+  ca_endpoint=$(service_ca_endpoint "$run_dir" "$service" natserver) || return 1
+  relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natserver "$relay") || return 1
+  BNFS_CHAOS_NAT_CA_URL="$ca_endpoint" restart_tunnel_server "$service" "$relay_endpoint" "$scenario"
+}
+
+launch_tunnel_client_for_ip_family() {
+  local run_dir=$1 service=$2 relay=$3 target_id=$4 listen_port=$5 scenario=$6
+  local ca_endpoint relay_endpoint
+  ca_endpoint=$(service_ca_endpoint "$run_dir" "$service" natclient) || return 1
+  relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natclient "$relay") || return 1
+  BNFS_CHAOS_NAT_CA_URL="$ca_endpoint" launch_tunnel_client "$service" "$relay_endpoint" \
+    "$target_id" "$listen_port" "$scenario"
+}
+
 create_unique_run_directory() {
   local scenario=$1 attempt nonce run_id run_dir
   mkdir -p "$SOAK_HOME/runs"
@@ -539,6 +692,7 @@ start_run() {
   local workload_limit_mibps=$DEFAULT_WORKLOAD_LIMIT_MIBPS
   local billing_adversary_mode=$DEFAULT_BILLING_ADVERSARY_MODE
   local validation_mode=$DEFAULT_VALIDATION_MODE random_attempt_timeout_seconds random_drain_timeout_seconds
+  local ip_family_coverage=$DEFAULT_IP_FAMILY_COVERAGE
   local dashboard_host=$DEFAULT_DASHBOARD_HOST dashboard_port=$DEFAULT_DASHBOARD_PORT ca_port=$DEFAULT_CA_PORT
 
   scenario=random
@@ -558,6 +712,7 @@ start_run() {
       --ca-port) ca_port=${2:?}; shift 2 ;;
       --billing-adversary) billing_adversary_mode=${2:?}; shift 2 ;;
       --validation-mode) validation_mode=${2:?}; shift 2 ;;
+      --ip-family-coverage) ip_family_coverage=${2:?}; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -591,6 +746,10 @@ start_run() {
   }
   [[ $billing_adversary_mode == enforce || $billing_adversary_mode == report || $billing_adversary_mode == off ]] || {
     printf 'invalid billing adversary mode: %s\n' "$billing_adversary_mode" >&2
+    exit 2
+  }
+  is_ip_family_coverage_mode "$ip_family_coverage" || {
+    printf 'invalid IP family coverage mode: %s\n' "$ip_family_coverage" >&2
     exit 2
   }
   random_attempt_timeout_seconds=$(validation_mode_attempt_timeout_seconds "$validation_mode") || {
@@ -631,6 +790,12 @@ start_run() {
   fi
   project_suffix=${run_id//[^a-zA-Z0-9]/}
   project=bnfs-soak-${project_suffix,,}
+  if ! create_ip_family_plan "$run_dir" "$ip_family_coverage"; then
+    printf 'unable to create IP family coverage plan\n' >&2
+    rm -f "$run_dir/ip-family-plan.tsv"
+    rmdir "$run_dir" 2>/dev/null || true
+    exit 1
+  fi
   printf '%s\n' "$run_dir" > "$CURRENT_FILE"
   write_metadata "$run_dir" \
     "run_id=$run_id" \
@@ -651,6 +816,8 @@ start_run() {
     "ca_port=$ca_port" \
     "billing_adversary_mode=$billing_adversary_mode" \
     "validation_mode=$validation_mode" \
+    "ip_family_coverage=$ip_family_coverage" \
+    "ip_family_plan_file=$run_dir/ip-family-plan.tsv" \
     "random_attempt_timeout_seconds=$random_attempt_timeout_seconds" \
     "random_worker_drain_timeout_seconds=$random_drain_timeout_seconds" \
     "compose_project=$project"
@@ -1515,20 +1682,22 @@ relay_can_reach_server_relay() {
 }
 
 random_reachable_server_line() {
-  local run_dir=$1 entry_relay=$2
-  [[ -s $run_dir/server-pool.tsv && $entry_relay =~ ^relay0[1-7]$ ]] || return 1
-  awk -F '\t' -v entry_relay="$entry_relay" '
+  local run_dir=$1 entry_relay=$2 entry_family=${3:-default}
+  [[ -s $run_dir/server-pool.tsv && $entry_relay =~ ^relay0[1-7]$ \
+    && $entry_family =~ ^(default|ipv4|ipv6|dual)$ ]] || return 1
+  awk -F '\t' -v entry_relay="$entry_relay" -v entry_family="$entry_family" '
     function reachable(entry, host) {
       return entry == host \
         || (entry == "relay01" && host ~ /^relay0[3-7]$/) \
         || (host == "relay01" && entry ~ /^relay0[3-7]$/)
     }
-    NR > 1 && NF == 3 && reachable(entry_relay, $2) { print }
+    NR > 1 && ((NF == 5 && $4 == entry_family) || (NF == 3 && entry_family == "default")) \
+      && reachable(entry_relay, $2) { print }
   ' "$run_dir/server-pool.tsv" | shuf -n 1
 }
 
 validate_client_entry_table() {
-  local table=${1:-} selected=${2:-} service_column=${3:-} relay_column=${4:-} role_column=${5:-0}
+  local table=${1:-} selected=${2:-} service_column=${3:-} relay_column=${4:-} role_column=${5:-0} run_dir=${6:-}
   local number service expected_relay actual_relay record_count
   [[ -s $table && $service_column =~ ^[1-9][0-9]*$ && $relay_column =~ ^[1-9][0-9]*$ \
     && $role_column =~ ^[0-9]+$ ]] || return 1
@@ -1540,6 +1709,9 @@ validate_client_entry_table() {
   for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
     printf -v service 'natclient%02d' "$number"
     expected_relay=$(client_entry_relay "$service" "$selected") || return 1
+    if [[ -n $run_dir ]]; then
+      expected_relay=$(service_ip_family_relay "$run_dir" "$service" "$expected_relay") || return 1
+    fi
     actual_relay=$(awk -F '\t' -v service="$service" -v service_column="$service_column" \
       -v relay_column="$relay_column" -v role_column="$role_column" '
       NR == 1 { next }
@@ -1570,7 +1742,7 @@ stop_random_nat_processes() {
 
 initialize_random_workload() {
   local run_dir=$1 ca_port=$2 selected=$3 max_inflight=$4 per_transfer_limit_mibps=$5 workload_limit_mibps=$6 scenario=random-workload
-  local number service relay node_id expected_node_id listen_port role count registration_count client_ingress_override
+  local number service relay relay_endpoint family node_id expected_node_id listen_port role count registration_count client_ingress_override
   mkdir -p "$RUNTIME_DIR/$scenario" "$run_dir/server-locks" \
     "$run_dir/inflight-slots" \
     "$run_dir/server-fresh" "$run_dir/transfer-records" "$run_dir/transfer-errors" \
@@ -1587,9 +1759,11 @@ initialize_random_workload() {
     for ((number = 1; number <= count; number++)); do
       printf -v service '%s%02d' "$role" "$number"
       if [[ $role == natserver ]]; then
-        relay=$(server_entry_relay "$service" "$selected") || return 1
+        relay=$(service_ip_family_relay "$run_dir" "$service" \
+          "$(server_entry_relay "$service" "$selected")") || return 1
       else
-        relay=$(client_entry_relay "$service" "$selected") || return 1
+        relay=$(service_ip_family_relay "$run_dir" "$service" \
+          "$(client_entry_relay "$service" "$selected")") || return 1
       fi
       mkdir -p "$PRIVATE_RUNTIME_DIR/$service"
       chmod 700 "$PRIVATE_RUNTIME_DIR/$service"
@@ -1601,32 +1775,39 @@ initialize_random_workload() {
     done
   done
   [[ $(tail -n +2 "$run_dir/nat-identities.tsv" | cut -f3 | sort -u | wc -l) -eq $((TOPOLOGY_NAT_SERVER_COUNT + TOPOLOGY_NAT_CLIENT_COUNT)) ]] || return 1
-  validate_client_entry_table "$run_dir/nat-identities.tsv" "$selected" 1 4 2 || return 1
+  validate_client_entry_table "$run_dir/nat-identities.tsv" "$selected" 1 4 2 "$run_dir" || return 1
 
-  printf 'server\tingress_relay\tnode_id\n' > "$run_dir/server-pool.tsv"
+  printf 'server\tingress_relay\trelay_endpoint\tip_family\tnode_id\n' > "$run_dir/server-pool.tsv"
   for ((number = 1; number <= TOPOLOGY_NAT_SERVER_COUNT; number++)); do
     printf -v service 'natserver%02d' "$number"
-    relay=$(server_entry_relay "$service" "$selected") || return 1
+    relay=$(service_ip_family_relay "$run_dir" "$service" "$(server_entry_relay "$service" "$selected")") || return 1
+    family=$(service_ip_family "$run_dir" "$service") || return 1
+    relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natserver "$relay") || return 1
     expected_node_id=$(awk -F '\t' -v service="$service" '$1==service {print $3}' "$run_dir/nat-identities.tsv")
     registration_count=$(relay_registration_count "$relay" "$expected_node_id") || return 1
-    node_id=$(start_tunnel_server "$service" "$relay:9000" "$scenario" 5 200 "$per_transfer_limit_mibps") || return 1
+    node_id=$(start_tunnel_server_for_ip_family "$run_dir" "$service" "$relay" "$scenario" \
+      5 200 "$per_transfer_limit_mibps") || return 1
     [[ $node_id == "$expected_node_id" ]] || return 1
     wait_relay_registration "$relay" "$node_id" "$registration_count" 20 || return 1
     wait_random_server_billing_ready "$service" "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS" || return 1
-    printf '%s\t%s\t%s\n' "$service" "$relay" "$node_id" >> "$run_dir/server-pool.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$service" "$relay" "$relay_endpoint" "$family" "$node_id" >> "$run_dir/server-pool.tsv"
     touch "$run_dir/server-fresh/$service"
   done
 
-  printf 'client\tingress_relay\tlisten_port\tnode_id\n' > "$run_dir/client-pool.tsv"
+  printf 'client\tingress_relay\trelay_endpoint\tip_family\tlisten_port\tnode_id\n' > "$run_dir/client-pool.tsv"
   for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
     printf -v service 'natclient%02d' "$number"
-    relay=$(client_entry_relay "$service" "$selected") || return 1
+    relay=$(service_ip_family_relay "$run_dir" "$service" "$(client_entry_relay "$service" "$selected")") || return 1
+    family=$(service_ip_family "$run_dir" "$service") || return 1
+    relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natclient "$relay") || return 1
     listen_port=$((18100 + number))
     node_id=$(awk -F '\t' -v service="$service" '$1==service {print $3}' "$run_dir/nat-identities.tsv")
     [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
-    printf '%s\t%s\t%s\t%s\n' "$service" "$relay" "$listen_port" "$node_id" >> "$run_dir/client-pool.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$service" "$relay" "$relay_endpoint" "$family" "$listen_port" "$node_id" >> "$run_dir/client-pool.tsv"
   done
-  validate_client_entry_table "$run_dir/client-pool.tsv" "$selected" 1 2 || return 1
+  validate_client_entry_table "$run_dir/client-pool.tsv" "$selected" 1 2 0 "$run_dir" || return 1
   client_ingress_override=$(awk -F '\t' '
     NR > 1 && $2 != "relay01" {
       if (overrides != "") overrides=overrides ","
@@ -1639,6 +1820,108 @@ initialize_random_workload() {
   printf 'mode=random_concurrent\nclient_count=%s\nserver_count=%s\nmax_inflight=%s\nworkload_limit_mibps=%s\nper_transfer_limit_mibps=%s\nrandom_ingress_default=relay01\nrandom_ingress_override=%s\n' \
     "$TOPOLOGY_NAT_CLIENT_COUNT" "$TOPOLOGY_NAT_SERVER_COUNT" "$max_inflight" \
     "$workload_limit_mibps" "$per_transfer_limit_mibps" "$client_ingress_override" >> "$run_dir/workload.env"
+}
+
+ip_family_address_gate() {
+  local service=$1 family=$2 expected_host=${3:-} ipv4_pattern= ipv6_pattern=
+  case $family in
+    ipv4) ipv4_pattern='10.253.41.' ;;
+    ipv6) ipv6_pattern='fd92:7b5e:4c31:42:' ;;
+    dual) ipv4_pattern='10.253.43.'; ipv6_pattern='fd92:7b5e:4c31:43:' ;;
+    *) return 1 ;;
+  esac
+  if [[ -n $ipv4_pattern ]] && ! dc exec -T "$service" ip -o -4 addr show 2>/dev/null | grep -Fq "$ipv4_pattern"; then
+    return 1
+  fi
+  if [[ -n $ipv6_pattern ]] && ! dc exec -T "$service" ip -o -6 addr show 2>/dev/null | grep -Fq "$ipv6_pattern"; then
+    return 1
+  fi
+  [[ -z $expected_host ]] && return 0
+  dc exec -T "$service" ip -o addr show 2>/dev/null | grep -Fq "$expected_host"
+}
+
+ip_family_relay_socket_gate() {
+  local service=$1 endpoint=$2 host deadline
+  host=${endpoint%:9000}
+  host=${host#[}
+  host=${host%]}
+  [[ -n $host ]] || return 1
+  deadline=$((SECONDS + 15))
+  while (( SECONDS < deadline )); do
+    if netns_exec "$service" ss -Htn state established 2>/dev/null | grep -Fq "$host"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+verify_ip_family_coverage() {
+  local run_dir=$1 plan_file family relay server client server_endpoint client_endpoint target_id listen_port
+  local transfer_id record_file actual_relay client_socket=fail server_socket=fail address_check=fail transfer_result=fail
+  plan_file=$(ip_family_plan_file "$run_dir" 2>/dev/null || true)
+  [[ -n $plan_file ]] || return 0
+  printf 'timestamp\tfamily\trelay\tnatserver\tnatclient\tclient_endpoint\tserver_endpoint\taddress_check\tclient_socket\tserver_socket\tsha256\tstatus\n' \
+    > "$run_dir/ip-family-coverage.tsv"
+  while IFS=$'\t' read -r -u 7 family relay server client; do
+    [[ $family != family ]] || continue
+    address_check=fail
+    client_socket=fail
+    server_socket=fail
+    transfer_result=fail
+    server_endpoint=$(service_relay_endpoint "$run_dir" "$server" natserver "$relay") || return 1
+    client_endpoint=$(service_relay_endpoint "$run_dir" "$client" natclient "$relay") || return 1
+    target_id=$(awk -F '\t' -v server="$server" '$1 == server { print $5; exit }' "$run_dir/server-pool.tsv")
+    listen_port=$(awk -F '\t' -v client="$client" '$1 == client { print $5; exit }' "$run_dir/client-pool.tsv")
+    [[ $target_id =~ ^[[:xdigit:]]{64}$ && $listen_port =~ ^[0-9]+$ ]] || return 1
+    if ip_family_address_gate "$relay" "$family" \
+      "$(case "$family" in ipv4) printf '10.253.41.250';; ipv6) printf 'fd92:7b5e:4c31:42::250';; dual) printf '10.253.43.250';; esac)" \
+      && ip_family_address_gate "$server" "$family" \
+      && ip_family_address_gate "$client" "$family" \
+      && ip_family_address_gate ca "$family" \
+        "$(case "$family" in ipv4) printf '10.253.41.251';; ipv6) printf 'fd92:7b5e:4c31:42::251';; dual) printf '10.253.43.251';; esac)"; then
+      address_check=pass
+    fi
+    if [[ $address_check == pass ]]; then
+      stop_nat_process "$client" tunclient || true
+      launch_tunnel_client_for_ip_family "$run_dir" "$client" "$relay" "$target_id" "$listen_port" random-workload || true
+      if wait_client_ready "$client" random-workload 70; then
+        ip_family_relay_socket_gate "$client" "$client_endpoint" && client_socket=pass
+        ip_family_relay_socket_gate "$server" "$server_endpoint" && server_socket=pass
+        actual_relay=$(wait_client_entry_relay "$client" 5 "$relay" 2>/dev/null || true)
+        transfer_id="ip-family-$family-$(date +%s%N)"
+        record_file=$run_dir/transfer-records/$transfer_id.tsv
+        if [[ $actual_relay == "$relay" ]] \
+          && random_transfer_once "$run_dir" random-workload "$server" "$client" "$actual_relay" \
+            "$listen_port" "$transfer_id" "$record_file" 1 "$(( $(date +%s) + 180 ))" \
+          && append_transfer_record "$run_dir" "$record_file"; then
+          transfer_result=pass
+        fi
+        rm -f "$record_file"
+      fi
+      stop_nat_process "$client" tunclient || true
+    fi
+    local status=fail
+    [[ $address_check == pass && $client_socket == pass && $server_socket == pass && $transfer_result == pass ]] && status=pass
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(date --iso-8601=seconds)" "$family" "$relay" "$server" "$client" \
+      "$client_endpoint" "$server_endpoint" "$address_check" "$client_socket" "$server_socket" \
+      "$transfer_result" "$status" >> "$run_dir/ip-family-coverage.tsv"
+    [[ $status == pass ]] || return 1
+  done 7< "$plan_file"
+}
+
+validate_ip_family_coverage() {
+  local run_dir=$1 plan_file
+  plan_file=$(ip_family_plan_file "$run_dir" 2>/dev/null || true)
+  [[ -n $plan_file ]] || return 0
+  awk -F '\t' '
+    NR == FNR { if (FNR > 1) expected[$1]=$2 "\\t" $3 "\\t" $4; next }
+    FNR == 1 { valid=($0 == "timestamp\tfamily\trelay\tnatserver\tnatclient\tclient_endpoint\tserver_endpoint\taddress_check\tclient_socket\tserver_socket\tsha256\tstatus"); next }
+    NF == 12 && expected[$2] == $3 "\\t" $4 "\\t" $5 && $8 == "pass" && $9 == "pass" \
+      && $10 == "pass" && $11 == "pass" && $12 == "pass" { passed[$2]=1 }
+    END { exit !(valid && passed["ipv4"] && passed["ipv6"] && passed["dual"]) }
+  ' "$plan_file" "$run_dir/ip-family-coverage.tsv"
 }
 
 record_profile_setup_failure() {
@@ -1662,7 +1945,7 @@ verify_profile3_tcp_cold_start() {
     record_profile_setup_failure "$run_dir" client_udp_drop_missing
     return 1
   fi
-  target_id=$(awk -F '\t' -v server="$server" '$1 == server { print $3; exit }' "$run_dir/server-pool.tsv")
+  target_id=$(awk -F '\t' -v server="$server" '$1 == server { print $5; exit }' "$run_dir/server-pool.tsv")
   if [[ ! $target_id =~ ^[[:xdigit:]]{64}$ ]]; then
     record_profile_setup_failure "$run_dir" server_pool_identity_missing_or_invalid
     return 1
@@ -1817,27 +2100,39 @@ wait_random_server_billing_ready() {
 
 recover_random_server_pool_after_relay_restart() {
   local run_dir=$1 affected_relay=$2
-  local server server_relay expected_node_id previous_count actual_node_id gate_server_line
+  local server server_relay server_endpoint server_family expected_node_id previous_count actual_node_id gate_server_line
   local recovered=0
   [[ $REAL_BILLING_GATE_SERVER =~ ^natserver[0-9]{2}$ ]] || return 1
   [[ -s $run_dir/server-pool.tsv ]] || return 1
   gate_server_line=$(awk -F '\t' -v server="$REAL_BILLING_GATE_SERVER" \
     '$1 == server { print; exit }' "$run_dir/server-pool.tsv") || return 1
-  IFS=$'\t' read -r server server_relay expected_node_id <<< "$gate_server_line"
+  IFS=$'\t' read -r server server_relay server_endpoint server_family expected_node_id <<< "$gate_server_line"
+  if [[ -z $expected_node_id && $server_endpoint =~ ^[[:xdigit:]]{64}$ ]]; then
+    expected_node_id=$server_endpoint
+    server_endpoint=$affected_relay:9000
+    server_family=default
+  fi
   [[ $server == "$REAL_BILLING_GATE_SERVER" && $server_relay == "$affected_relay" \
+    && $server_endpoint == "$affected_relay:9000" && $server_family == default \
     && $expected_node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
   rm -f "$run_dir/server-fresh/$server" || return 1
   wait_random_server_billing_ready "$server" "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS" || return 1
   recovered=1
 
-  while IFS=$'\t' read -r server server_relay expected_node_id; do
+  while IFS=$'\t' read -r server server_relay server_endpoint server_family expected_node_id; do
     [[ $server != server ]] || continue
+    if [[ -z $expected_node_id && $server_endpoint =~ ^[[:xdigit:]]{64}$ ]]; then
+      expected_node_id=$server_endpoint
+      server_endpoint=$server_relay:9000
+      server_family=default
+    fi
     [[ $server_relay == "$affected_relay" ]] || continue
-    [[ $server =~ ^natserver[0-9]{2}$ && $expected_node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    [[ $server =~ ^natserver[0-9]{2}$ && $server_endpoint && $server_family =~ ^(default|ipv4|ipv6|dual)$ \
+      && $expected_node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
     [[ $server != "$REAL_BILLING_GATE_SERVER" ]] || continue
     rm -f "$run_dir/server-fresh/$server" || return 1
     previous_count=$(relay_registration_count "$affected_relay" "$expected_node_id") || return 1
-    actual_node_id=$(restart_tunnel_server "$server" "$affected_relay:9000" random-workload \
+    actual_node_id=$(restart_tunnel_server_for_ip_family "$run_dir" "$server" "$affected_relay" random-workload \
       2>/dev/null </dev/null) || return 1
     [[ $actual_node_id == "$expected_node_id" ]] || return 1
     wait_relay_registration_generation "$affected_relay" "$expected_node_id" "$previous_count" \
@@ -1863,6 +2158,7 @@ validate_scenario_client_ingress_coverage() {
   for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
     printf -v client 'natclient%02d' "$number"
     expected_relay=$(client_entry_relay "$client" "$selected") || return 1
+    expected_relay=$(service_ip_family_relay "$run_dir" "$client" "$expected_relay") || return 1
     if ! awk -F '\t' -v client="$client" -v expected_relay="$expected_relay" '
       NR > 1 && $3 == client && $7 == 0 && $8 > 0 && $11 == "yes" {
         successes++
@@ -1888,6 +2184,7 @@ validate_random_workload_coverage() {
       return 1
     fi
     expected_relay=$(client_entry_relay "$client" "$selected") || return 1
+    expected_relay=$(service_ip_family_relay "$run_dir" "$client" "$expected_relay") || return 1
     if ! awk -F '\t' -v client="$client" -v expected_relay="$expected_relay" \
       -v validation_mode="$validation_mode" '
       function reachable(entry, host) {
@@ -2108,20 +2405,34 @@ release_transfer_slot() {
 }
 
 random_client_worker() {
-  local run_dir=$1 client=$2 relay=$3 listen_port=$4 deadline_epoch=$5 pause_seconds=$6 max_inflight=$7
-  local attempt_timeout_seconds=${8:-$DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS}
-  local failures=0 initial_delay server_line server server_relay target_id
+  local run_dir=$1 client=$2 relay=$3 relay_endpoint=$4 client_family=$5 listen_port=$6 deadline_epoch=$7 pause_seconds=$8 max_inflight=${9:-}
+  local attempt_timeout_seconds=${10:-$DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS}
+  local failures=0 initial_delay server_line server server_relay server_endpoint server_family target_id client_ca_endpoint
   local server_lock_fd transfer_id record_file transfer_ok cooldown actual_relay
   local requested_mib registration_count slot_rc append_ok client_ready rearm_ok now_epoch remaining_seconds TRANSFER_SLOT_FD=
   local attempt_started_ns attempt_deadline_epoch step_timeout transfer_rc attempt_timed_out
+  if [[ $relay_endpoint =~ ^[0-9]+$ ]]; then
+    attempt_timeout_seconds=$pause_seconds
+    max_inflight=$deadline_epoch
+    pause_seconds=$listen_port
+    deadline_epoch=$client_family
+    listen_port=$relay_endpoint
+    relay_endpoint=$relay:9000
+    client_family=default
+  fi
   is_positive_integer "$attempt_timeout_seconds" || return 1
+  [[ $relay =~ ^relay0[1-7]$ && $relay_endpoint && $client_family =~ ^(default|ipv4|ipv6|dual)$ ]] || return 1
+  [[ $(service_ip_family "$run_dir" "$client") == "$client_family" ]] || return 1
+  [[ $(service_relay_endpoint "$run_dir" "$client" natclient "$relay") == "$relay_endpoint" ]] || return 1
+  client_ca_endpoint=$(service_ca_endpoint "$run_dir" "$client" natclient) || return 1
   initial_delay=$(random_below "$((pause_seconds + 1))") || return 1
   (( initial_delay == 0 )) || sleep "$initial_delay"
 
   while (( $(date +%s) < deadline_epoch )); do
-    server_line=$(random_reachable_server_line "$run_dir" "$relay") || return 1
-    IFS=$'\t' read -r server server_relay target_id <<< "$server_line"
-    [[ -n $server && -n $server_relay && -n $target_id ]] || return 1
+    server_line=$(random_reachable_server_line "$run_dir" "$relay" "$client_family") || return 1
+    IFS=$'\t' read -r server server_relay server_endpoint server_family target_id <<< "$server_line"
+    [[ -n $server && -n $server_relay && -n $server_endpoint && $server_family == "$client_family" \
+      && -n $target_id ]] || return 1
     requested_mib=$(random_probe_size_mib) || return 1
     exec {server_lock_fd}> "$run_dir/server-locks/$server.lock"
     while ! flock -n "$server_lock_fd"; do
@@ -2162,7 +2473,8 @@ random_client_worker() {
         "$record_file" "$requested_mib" "$attempt_started_ns"
       attempt_timed_out=1
     else
-      launch_tunnel_client "$client" "$relay:9000" "$target_id" "$listen_port" random-workload
+      BNFS_CHAOS_NAT_CA_URL="$client_ca_endpoint" launch_tunnel_client \
+        "$client" "$relay_endpoint" "$target_id" "$listen_port" random-workload
       if ! step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 70); then
         write_timed_out_transfer "$client" "$relay" "$server" "$transfer_id" \
           "$record_file" "$requested_mib" "$attempt_started_ns"
@@ -2173,7 +2485,7 @@ random_client_worker() {
       && wait_client_ready "$client" random-workload "$step_timeout"; then
       client_ready=1
       if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 5); then
-        actual_relay=$(wait_client_entry_relay "$client" "$step_timeout" 2>/dev/null || true)
+        actual_relay=$(wait_client_entry_relay "$client" "$step_timeout" "$relay" 2>/dev/null || true)
       else
         actual_relay=
       fi
@@ -2194,13 +2506,13 @@ random_client_worker() {
         write_failed_transfer "$client" unknown "$server" "$transfer_id" "$record_file" 4 "$requested_mib"
       fi
     elif (( attempt_timed_out == 0 && $(date +%s) >= attempt_deadline_epoch )); then
-      actual_relay=$(wait_client_entry_relay "$client" 1 2>/dev/null || true)
+      actual_relay=$(wait_client_entry_relay "$client" 1 "$relay" 2>/dev/null || true)
       [[ -n $actual_relay ]] || actual_relay=$relay
       write_timed_out_transfer "$client" "$actual_relay" "$server" "$transfer_id" \
         "$record_file" "$requested_mib" "$attempt_started_ns"
       attempt_timed_out=1
     elif (( attempt_timed_out == 0 )); then
-      actual_relay=$(wait_client_entry_relay "$client" 2 2>/dev/null || true)
+      actual_relay=$(wait_client_entry_relay "$client" 2 "$relay" 2>/dev/null || true)
       [[ -n $actual_relay ]] || actual_relay=unknown
       write_failed_transfer "$client" "$actual_relay" "$server" "$transfer_id" "$record_file" 2 "$requested_mib"
     fi
@@ -2454,7 +2766,7 @@ finalize_run_terminal_result() {
 
 run_internal() {
   local run_dir=$1
-  local scenario duration cpu_limit memory_limit disk_limit sample_seconds probe_seconds max_inflight workload_limit_mibps per_transfer_limit_mibps dashboard_host dashboard_port ca_port billing_adversary_mode validation_mode random_attempt_timeout random_worker_drain_timeout enable_container_adversaries project
+  local scenario duration cpu_limit memory_limit disk_limit sample_seconds probe_seconds max_inflight workload_limit_mibps per_transfer_limit_mibps dashboard_host dashboard_port ca_port billing_adversary_mode validation_mode ip_family_coverage ip_family_plan_path random_attempt_timeout random_worker_drain_timeout enable_container_adversaries project
   source "$run_dir/metadata.env"
   scenario=${scenario:?}
   duration=${duration_seconds:?}
@@ -2471,12 +2783,21 @@ run_internal() {
   ca_port=${ca_port:?}
   billing_adversary_mode=${billing_adversary_mode:-$DEFAULT_BILLING_ADVERSARY_MODE}
   validation_mode=${validation_mode:-$DEFAULT_VALIDATION_MODE}
+  ip_family_coverage=${ip_family_coverage:-$DEFAULT_IP_FAMILY_COVERAGE}
+  ip_family_plan_path=${ip_family_plan_file:-$run_dir/ip-family-plan.tsv}
   random_attempt_timeout=${random_attempt_timeout_seconds:-}
   random_worker_drain_timeout=${random_worker_drain_timeout_seconds:-}
   [[ $(validation_mode_attempt_timeout_seconds "$validation_mode" 2>/dev/null || true) \
       == "$random_attempt_timeout" \
     && $(random_worker_drain_timeout_seconds "$random_attempt_timeout" 2>/dev/null || true) \
       == "$random_worker_drain_timeout" ]] || return 1
+  is_ip_family_coverage_mode "$ip_family_coverage" || return 1
+  if [[ $ip_family_coverage == random ]]; then
+    [[ $ip_family_plan_path == "$run_dir/ip-family-plan.tsv" ]] \
+      && validate_ip_family_plan "$ip_family_plan_path" || return 1
+  else
+    [[ ! -e $ip_family_plan_path ]] || return 1
+  fi
   enable_container_adversaries=1
   [[ $billing_adversary_mode != off ]] || enable_container_adversaries=0
   project=${compose_project:?}
@@ -2513,6 +2834,7 @@ run_internal() {
   export COMPOSE_PROJECT=$project
   export BNFS_CHAOS_IMAGE=${BNFS_CHAOS_IMAGE:-bnfs-local-chaos:latest}
   BNFS_CHAOS_ENABLE_CA=1 BNFS_CHAOS_ENABLE_ADVERSARIES="$enable_container_adversaries" BNFS_CHAOS_CA_HOST_PORT="$ca_port" \
+    BNFS_CHAOS_IP_FAMILY_PLAN_FILE="$ip_family_plan_path" \
     node "$ROOT_DIR/test/local-chaos/generate-compose.mjs" "$RUNTIME_DIR" > "$COMPOSE_FILE"
   source "$ROOT_DIR/test/local-chaos/lib.sh"
 
@@ -2617,6 +2939,8 @@ run_internal() {
             elif ! recover_random_server_pool_after_relay_restart \
               "$run_dir" "$REAL_BILLING_GATE_RELAY"; then
               detail=post_gate_server_pool_recovery_failed
+            elif ! verify_ip_family_coverage "$run_dir"; then
+              detail=ip_family_coverage_gate_failed
             elif ! inspect_resource_guard "$run_dir" "$guard_pid" "$guard_start" "$sample_seconds" \
               "$((duration + 900))" "$cpu_limit" "$memory_limit" "$disk_limit" "$(date +%s)"; then
               detail=$RESOURCE_GUARD_DETAIL
@@ -2675,8 +2999,8 @@ run_internal() {
                 rm -f "$run_dir/worker-pids.closed"
                 printf 'client\tpid\tstarttime\tpgid\ttoken\n' > "$run_dir/worker-pids.tsv"
                 while IFS= read -r client_line; do
-                  local worker_client worker_relay worker_port worker_node_id
-                  IFS=$'\t' read -r worker_client worker_relay worker_port worker_node_id <<< "$client_line"
+                  local worker_client worker_relay worker_endpoint worker_family worker_port worker_node_id
+                  IFS=$'\t' read -r worker_client worker_relay worker_endpoint worker_family worker_port worker_node_id <<< "$client_line"
                   worker_token=$(create_random_worker_token 2>/dev/null || true)
                   if [[ ! $worker_token =~ ^[[:xdigit:]]{32}$ ]]; then
                     worker_failed=1
@@ -2685,7 +3009,8 @@ run_internal() {
                   env BNFS_RANDOM_WORKER_TOKEN="$worker_token" \
                     setsid bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _registered_worker \
                     "$run_dir" "$worker_client" "$runner_pid" "$runner_start" \
-                    "$worker_relay" "$worker_port" "$deadline_epoch" "$probe_seconds" "$max_inflight" \
+                    "$worker_relay" "$worker_endpoint" "$worker_family" "$worker_port" \
+                    "$deadline_epoch" "$probe_seconds" "$max_inflight" \
                     "$random_attempt_timeout" \
                     > "$run_dir/workers/$worker_client.log" 2>&1 &
                   pid=$!
@@ -2871,6 +3196,9 @@ run_internal() {
                   elif ! validate_random_workload_coverage "$run_dir" "$scenario" "$validation_mode"; then
                     outcome=FAILED
                     detail=random_workload_coverage_failed
+                  elif ! validate_ip_family_coverage "$run_dir"; then
+                    outcome=FAILED
+                    detail=ip_family_coverage_gate_failed
                   elif [[ $billing_adversary_mode != off ]] \
                     && ! drain_mixed_adversary_path "$run_dir" "$mixed_path_pid" 90; then
                     outcome=FAILED
@@ -3102,9 +3430,10 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
       source "$ROOT_DIR/test/local-chaos/lib.sh"
       run_dir=${1:?run directory required}
       random_client_worker "$run_dir" "${2:?client required}" \
-        "${3:?relay required}" "${4:?listen port required}" "${5:?deadline required}" \
-        "${6:?pause required}" "${7:?max inflight required}" \
-        "${8:?attempt timeout required}"
+        "${3:?relay required}" "${4:?relay endpoint required}" "${5:?IP family required}" \
+        "${6:?listen port required}" "${7:?deadline required}" \
+        "${8:?pause required}" "${9:?max inflight required}" \
+        "${10:?attempt timeout required}"
       ;;
     _registered_worker) shift; registered_random_worker \
       "${1:?run directory required}" "${2:?client required}" \

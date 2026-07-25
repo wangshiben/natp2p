@@ -93,6 +93,9 @@ const expectedNetworkSet = new Set([
   "ca_host",
   "adversary_billing",
   "adversary_mixed_access",
+  "ip_family_ipv4",
+  "ip_family_ipv6",
+  "ip_family_dual",
   ...numbered("access_r", relayCount),
 ]);
 const billingProductionGateFailureDetails = new Set([
@@ -253,6 +256,7 @@ const publicRunDetails = new Set([
   "failure_watcher_status_missing",
   "failure_watcher_unhealthy_status",
   "initializing",
+  "ip_family_coverage_gate_failed",
   "mixed_path_controller_exited",
   "mixed_path_containment_unverified",
   "mixed_path_heartbeat_stale",
@@ -436,7 +440,7 @@ async function statusSnapshot(forceRefresh = false) {
 }
 
 async function buildStatus() {
-  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, clientTransfers, workers, workload, compose, containers, finalContainers, ca, serverPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath] = await Promise.all([
+  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, clientTransfers, workers, workload, compose, containers, finalContainers, ca, serverPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence] = await Promise.all([
     readEnv(path.join(runDir, "metadata.env")),
     readEnv(path.join(runDir, "status.env")),
     readText(path.join(runDir, "phase")),
@@ -456,6 +460,8 @@ async function buildStatus() {
     readBillingAdversary(path.join(runDir, "billing-adversary.json")),
     readBillingProductionGate(path.join(runDir, "billing-production-gate.json")),
     readMixedAdversaryPath(path.join(runDir, "mixed-adversary-path.json")),
+    readTsv(path.join(runDir, "ip-family-plan.tsv"), 4),
+    readTsv(path.join(runDir, "ip-family-coverage.tsv"), 12),
   ]);
 
   const containerMap = new Map(containers.map((item) => [item.service, item]));
@@ -480,6 +486,7 @@ async function buildStatus() {
   };
   const activeNatServices = [topologyWorkload.server, topologyWorkload.client].filter(Boolean);
   const firewalls = await inspectNatFirewalls(activeNatServices, containerMap);
+  const ipFamilyCoverage = publicIPFamilyCoverage(ipFamilyPlan, ipFamilyEvidence);
   const topology = await buildTopology({
     compose,
     metadata,
@@ -535,6 +542,7 @@ async function buildStatus() {
     billingAdversary,
     billingProductionGate,
     mixedPath,
+    ipFamilyCoverage,
     ca,
     summary: {
       coreExpected: core.length,
@@ -2703,7 +2711,63 @@ function publicMetadata(value) {
   if (["enforce", "report", "off"].includes(value.billing_adversary_mode)) {
     result.billing_adversary_mode = value.billing_adversary_mode;
   }
+  if (["off", "random"].includes(value.ip_family_coverage)) {
+    result.ip_family_coverage = value.ip_family_coverage;
+  }
   return result;
+}
+
+function publicIPFamilyCoverage(planRows, evidenceRows) {
+  const families = ["ipv4", "ipv6", "dual"];
+  const assignments = new Map();
+  for (const row of planRows) {
+    const family = String(row?.family ?? "");
+    const relay = String(row?.relay ?? "");
+    const natserver = String(row?.natserver ?? "");
+    const natclient = String(row?.natclient ?? "");
+    if (!families.includes(family) || assignments.has(family)
+      || !/^relay0[3-7]$/.test(relay) || !/^natserver(?:0[1-9]|1[0-3])$/.test(natserver)
+      || !/^natclient0[1-6]$/.test(natclient)) continue;
+    assignments.set(family, { family, relay, natserver, natclient });
+  }
+  const evidence = new Map();
+  for (const row of evidenceRows) {
+    const family = String(row?.family ?? "");
+    const assignment = assignments.get(family);
+    if (!assignment || String(row?.relay ?? "") !== assignment.relay
+      || String(row?.natserver ?? "") !== assignment.natserver
+      || String(row?.natclient ?? "") !== assignment.natclient) continue;
+    const state = ["address_check", "client_socket", "server_socket", "sha256", "status"]
+      .every((key) => row?.[key] === "pass") ? "PASS" : "FAIL";
+    evidence.set(family, {
+      family,
+      timestamp: publicTimestamp(row?.timestamp),
+      addressCheck: row?.address_check === "pass",
+      clientSocket: row?.client_socket === "pass",
+      serverSocket: row?.server_socket === "pass",
+      sha256: row?.sha256 === "pass",
+      state,
+    });
+  }
+  const plan = families.map((family) => assignments.get(family)).filter(Boolean);
+  const results = plan.map((assignment) => ({
+    ...assignment,
+    ...(evidence.get(assignment.family) ?? {
+      timestamp: "",
+      addressCheck: false,
+      clientSocket: false,
+      serverSocket: false,
+      sha256: false,
+      state: "PENDING",
+    }),
+  }));
+  return {
+    enabled: plan.length === families.length,
+    required: families.length,
+    passed: results.filter((item) => item.state === "PASS").length,
+    healthy: results.length === families.length && results.every((item) => item.state === "PASS"),
+    results,
+  };
 }
 
 function publicRunStatus(value) {
