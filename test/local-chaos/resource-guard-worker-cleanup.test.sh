@@ -145,7 +145,7 @@ run_stop_case() {
 }
 
 run_case() {
-  local name=$1 mismatch=$2
+  local name=$1 mismatch=$2 worker_label=${3:-natclient01}
   local run_dir=$test_root/$name
   local runner_pid runner_start worker_pid worker_start token guard_pid guard_start guard_rc
   mkdir -p "$run_dir"
@@ -160,8 +160,8 @@ run_case() {
   worker_start=$(awk '{print $22}' "/proc/$worker_pid/stat")
   (( mismatch == 0 )) || worker_start=$((worker_start + 1))
   printf 'client\tpid\tstarttime\tpgid\ttoken\n' > "$run_dir/worker-pids.tsv"
-  printf 'natclient01\t%s\t%s\t%s\t%s\n' \
-    "$worker_pid" "$worker_start" "$worker_pid" "$token" >> "$run_dir/worker-pids.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$worker_label" "$worker_pid" "$worker_start" "$worker_pid" "$token" >> "$run_dir/worker-pids.tsv"
   if (( mismatch == 0 )); then
     mkdir -p "$run_dir/transfer-records"
     printf 'timestamp\ttransfer_id\tclient\tingress_relay\tserver\trequested_mib\trc\tbytes\tseconds\tmib_per_second\tsha256_ok\texpected_sha\tactual_sha\n' \
@@ -389,6 +389,7 @@ run_deadline_cleanup_failure_case() {
 run_inspector_case
 run_stop_case
 run_case verified 0
+run_case batch-scheduler 0 batch-scheduler
 run_case identity-mismatch 1
 run_token_drop_case
 run_watched_identity_loss_case

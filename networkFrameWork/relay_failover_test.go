@@ -241,6 +241,68 @@ func TestReconnectSurvivalKeepsEstablishedStreamAlive(t *testing.T) {
 	}
 }
 
+func TestPersistentReconnectSurvivalContinuesPastFiniteLimit(t *testing.T) {
+	dual := newDualStreamWithPump("node", "connection", false)
+	defer dual.Close()
+	original := newHealthyReconnectStream()
+	if err := dual.attach(streamTransportTCP, original); err != nil {
+		t.Fatal(err)
+	}
+
+	attempts := 0
+	dual.SetReconnectDialer(streamTransportTCP, func(context.Context) (network.Stream, error) {
+		attempts++
+		if attempts <= maxReconnectAttempts {
+			return nil, errors.New("relay unavailable")
+		}
+		return newHealthyReconnectStream(), nil
+	})
+	if !EnablePersistentReconnectSurvival(dual) {
+		t.Fatal("DualStream should support persistent reconnect survival")
+	}
+	dual.detach(streamTransportTCP, original)
+	dual.reconnectMu.Lock()
+	dial := dual.reconnectDialers[streamTransportTCP]
+	dual.reconnectMu.Unlock()
+	dual.runReconnectWithBackoff(streamTransportTCP, dial, 0, 0)
+
+	if attempts != maxReconnectAttempts+1 {
+		t.Fatalf("persistent reconnect attempts = %d, want %d", attempts, maxReconnectAttempts+1)
+	}
+	if !dual.HasStream(streamTransportTCP) {
+		t.Fatal("persistent reconnect did not attach the recovered leg")
+	}
+	dual.reconnectMu.Lock()
+	disabled := dual.reconnectDisabled[streamTransportTCP]
+	dual.reconnectMu.Unlock()
+	if disabled {
+		t.Fatal("successful persistent reconnect must not disable the leg")
+	}
+}
+
+func TestFiniteReconnectStillStopsAtAttemptLimit(t *testing.T) {
+	dual := newDualStreamWithPump("node", "connection", false)
+	attempts := 0
+	dual.SetReconnectDialer(streamTransportTCP, func(context.Context) (network.Stream, error) {
+		attempts++
+		return nil, errors.New("relay unavailable")
+	})
+	dual.reconnectMu.Lock()
+	dial := dual.reconnectDialers[streamTransportTCP]
+	dual.reconnectMu.Unlock()
+	dual.runReconnectWithBackoff(streamTransportTCP, dial, 0, 0)
+
+	if attempts != maxReconnectAttempts {
+		t.Fatalf("finite reconnect attempts = %d, want %d", attempts, maxReconnectAttempts)
+	}
+	dual.reconnectMu.Lock()
+	disabled := dual.reconnectDisabled[streamTransportTCP]
+	dual.reconnectMu.Unlock()
+	if !disabled {
+		t.Fatal("finite reconnect should disable the leg after its attempt limit")
+	}
+}
+
 func TestSuccessfulReconnectPromotesVerifiedLeg(t *testing.T) {
 	dual := newDualStreamWithPump("node", "connection", false)
 	defer dual.Close()

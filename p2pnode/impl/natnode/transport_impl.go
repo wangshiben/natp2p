@@ -68,6 +68,18 @@ func (t *NATTransport) Register(ctx context.Context, relayAddr string, publicKey
 	return networkFrameWork.TryRegisterRelayStreamWithSign(publicKeyHex, relayAddr, t.signJSON)
 }
 
+// RegisterAtRelay bypasses the single-active Relay failover policy and registers
+// at exactly relayAddr. Persistent service listeners use this path so multiple
+// independent carriers cannot accidentally converge on CurrentRelay().
+func (t *NATTransport) RegisterAtRelay(ctx context.Context, relayAddr string, publicKeyHex string) (network.Stream, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	return networkFrameWork.TryRegisterRelayStreamWithSign(publicKeyHex, relayAddr, t.signJSON)
+}
+
 // Dial 经指定 relay 连接到目标节点（dual: KCP + TCP 双 leg）。
 // 返回原始流（首条 hello 已发送）和连接 ID。
 func (t *NATTransport) Dial(ctx context.Context, relayAddr string, targetID p2pnode.NodeID) (network.Stream, string, error) {

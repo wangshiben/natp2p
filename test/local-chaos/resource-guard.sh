@@ -362,7 +362,8 @@ close_and_load_worker_registry() {
   while IFS=$'\t' read -r client pid starttime group_id token extra; do
     [[ -n $client || -n $pid || -n $starttime || -n $group_id || -n $token || -n $extra ]] \
       || continue
-    if [[ ! $client =~ ^natclient0[1-6]$ || ! $pid =~ ^[1-9][0-9]*$ \
+    if [[ ($client != batch-scheduler && $client != malicious-natclient \
+        && ! $client =~ ^natclient0[1-6]$) || ! $pid =~ ^[1-9][0-9]*$ \
       || ! $starttime =~ ^[1-9][0-9]*$ || $group_id != "$pid" \
       || ! $token =~ ^[[:xdigit:]]{32}$ || -n $extra \
       || -n ${seen_clients[$client]:-} || -n ${seen_pids[$pid]:-} \

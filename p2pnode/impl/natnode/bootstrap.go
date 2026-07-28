@@ -149,6 +149,11 @@ func (n *NATNode) setRelayCandidates(candidates []string) {
 	for _, address := range candidates {
 		n.knownRelays[address] = struct{}{}
 	}
+	for address, entry := range n.registeredRelays {
+		if entry != nil && entry.pinned {
+			n.entryRelays[address] = struct{}{}
+		}
+	}
 	n.mu.Unlock()
 }
 

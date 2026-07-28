@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"io"
 	"math/rand"
 	"sync"
 	"testing"
@@ -224,6 +225,110 @@ func TestMux_EmptyStream(t *testing.T) {
 		t.Fatalf("空流应收 0 字节, 得 %d", len(got))
 	}
 	t.Log("✔ 空流 finalSeq=0 正常关闭")
+}
+
+func TestMux_ConcurrentStreams(t *testing.T) {
+	const streamCount = 8
+
+	clientConnection, serverConnection := newPipePair(0)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	clientSession := NewSession(ctx, clientConnection, true)
+	serverSession := NewSession(ctx, serverConnection, false)
+	defer clientSession.Close()
+	defer serverSession.Close()
+
+	payloads := make(map[byte][]byte, streamCount)
+	for index := 0; index < streamCount; index++ {
+		payload := make([]byte, 256*1024)
+		payload[0] = byte(index + 1)
+		for offset := 1; offset < len(payload); offset++ {
+			payload[offset] = byte((index + offset) % 251)
+		}
+		payloads[payload[0]] = payload
+	}
+
+	received := make(chan []byte, streamCount)
+	serverErr := make(chan error, 1)
+	go func() {
+		var readers sync.WaitGroup
+		for range streamCount {
+			stream, err := serverSession.Accept()
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				payload, err := io.ReadAll(stream)
+				if err != nil {
+					serverErr <- err
+					return
+				}
+				received <- payload
+			}()
+		}
+		readers.Wait()
+		serverErr <- nil
+	}()
+
+	start := make(chan struct{})
+	writerErr := make(chan error, streamCount)
+	var writers sync.WaitGroup
+	for _, payload := range payloads {
+		payload := payload
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			stream, err := clientSession.OpenStream()
+			if err == nil {
+				_, err = stream.Write(payload)
+				closeErr := stream.Close()
+				if err == nil {
+					err = closeErr
+				}
+			}
+			writerErr <- err
+		}()
+	}
+	close(start)
+	writers.Wait()
+	close(writerErr)
+	for err := range writerErr {
+		if err != nil {
+			t.Fatalf("并发打开或写入子流失败: %v", err)
+		}
+	}
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("服务端并发接收子流失败: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("并发子流传输超时")
+	}
+
+	seen := make(map[byte]bool, streamCount)
+	for range streamCount {
+		payload := <-received
+		if len(payload) == 0 {
+			t.Fatal("收到空的并发子流")
+		}
+		expected, ok := payloads[payload[0]]
+		if !ok {
+			t.Fatalf("收到未知子流标识: %d", payload[0])
+		}
+		if seen[payload[0]] {
+			t.Fatalf("子流 %d 被重复接收", payload[0])
+		}
+		if !bytes.Equal(payload, expected) {
+			t.Fatalf("子流 %d 内容不一致", payload[0])
+		}
+		seen[payload[0]] = true
+	}
 }
 
 func TestMux_DataBeforeOpenMaterializesStream(t *testing.T) {

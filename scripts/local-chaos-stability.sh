@@ -13,8 +13,8 @@ DEFAULT_MEMORY_LIMIT=40
 DEFAULT_DISK_LIMIT=40
 DEFAULT_SAMPLE_SECONDS=5
 DEFAULT_PROBE_SECONDS=60
-DEFAULT_MAX_INFLIGHT=2
-DEFAULT_DASHBOARD_HOST=127.0.0.1
+DEFAULT_MAX_INFLIGHT=1
+DEFAULT_DASHBOARD_HOST=0.0.0.0
 DEFAULT_DASHBOARD_PORT=8911
 DEFAULT_CA_PORT=19100
 DEFAULT_SOAK_CREDIT_BYTES=2199023255552
@@ -41,6 +41,16 @@ PROFILE_SETUP_NAT_KEY_DIR=/artifacts/.private/$PROFILE_SETUP_PRIVATE_SUBDIR
 TOPOLOGY_RELAY_COUNT=7
 TOPOLOGY_NAT_SERVER_COUNT=13
 TOPOLOGY_NAT_CLIENT_COUNT=6
+MALICIOUS_NAT_CLIENT=malicious-natclient
+MALICIOUS_RANDOM_NAT_SERVER=malicious-random-natserver
+RANDOM_CLIENT_POOL_COUNT=$((TOPOLOGY_NAT_CLIENT_COUNT + 1))
+RANDOM_MULTI_CLIENT_PERCENT=60
+RANDOM_MULTI_CLIENT_MIN=2
+RANDOM_MULTI_CLIENT_MAX=4
+RANDOM_STREAM_LIMIT_KIBPS=5120
+RANDOM_BATCH_CLIENT_START_STAGGER_SECONDS=30
+RANDOM_BATCH_MIXED_PATH_QUIET_SAMPLES=3
+RANDOM_BATCH_MIXED_PATH_QUIET_TIMEOUT_SECONDS=45
 RANDOM_WORKER_PIDS=()
 RANDOM_WORKER_STARTTIMES=()
 RANDOM_WORKER_PGIDS=()
@@ -78,9 +88,9 @@ run/start options:
   --disk-limit PCT              max Docker/artifact filesystem usage (default: 40)
   --sample-seconds N            resource sample interval (default: 5)
   --probe-seconds N             end-to-end file probe interval (default: 60)
-  --max-inflight N              max concurrent transfer setups/downloads (default: 2)
-  --workload-limit-mibps N      aggregate transfer budget; 0 disables (default: 5)
-  --dashboard-host HOST         dashboard bind host (default: 127.0.0.1)
+  --max-inflight N              concurrent random batches; currently must be 1 (default: 1)
+  --workload-limit-mibps N      per-stream transfer ceiling; 0 disables (default: 5)
+  --dashboard-host HOST         dashboard bind host (default: 0.0.0.0)
   --dashboard-port PORT         dashboard port (default: 8911)
   --ca-port PORT                loopback CA port (default: 19100)
   --billing-adversary MODE      enforce|report|off (default: enforce)
@@ -291,7 +301,8 @@ registered_random_worker() {
   local worker_pid=$$ worker_start worker_group
   worker_start=$(process_starttime "$worker_pid" 2>/dev/null || true)
   worker_group=$(process_group_id "$worker_pid" 2>/dev/null || true)
-  [[ $client =~ ^natclient0[1-6]$ && $token =~ ^[[:xdigit:]]{32}$ \
+  [[ $client == batch-scheduler || $client =~ ^natclient0[1-6]$ || $client == "$MALICIOUS_NAT_CLIENT" ]] || return 1
+  [[ $token =~ ^[[:xdigit:]]{32}$ \
     && $worker_start =~ ^[1-9][0-9]*$ && $worker_group == "$worker_pid" ]] || return 1
 
   exec 8> "$registry_lock"
@@ -312,6 +323,9 @@ registered_random_worker() {
     "$client" "$worker_pid" "$worker_start" "$worker_group" "$token" >> "$registry"
   flock -u 8
   exec 8>&-
+  if [[ $client == batch-scheduler ]]; then
+    exec bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _batch_worker "$run_dir" "$@"
+  fi
   exec bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _worker "$run_dir" "$client" "$@"
 }
 
@@ -725,17 +739,17 @@ start_run() {
   for value in "$duration" "$sample_seconds" "$probe_seconds" "$max_inflight"; do
     is_positive_integer "$value" || { printf 'expected positive integer: %s\n' "$value" >&2; exit 2; }
   done
+  (( max_inflight == 1 )) || {
+    printf 'max-inflight must be 1 for the coordinated random batch scheduler\n' >&2
+    exit 2
+  }
   is_nonnegative_integer "$workload_limit_mibps" || {
     printf 'expected non-negative integer: %s\n' "$workload_limit_mibps" >&2
     exit 2
   }
-  if (( workload_limit_mibps > 0 && max_inflight > workload_limit_mibps )); then
-    printf 'max-inflight must not exceed workload-limit-mibps when limiting is enabled\n' >&2
-    exit 2
-  fi
   local per_transfer_limit_mibps=0
   if (( workload_limit_mibps > 0 )); then
-    per_transfer_limit_mibps=$((workload_limit_mibps / max_inflight))
+    per_transfer_limit_mibps=$workload_limit_mibps
   fi
   for value in "$dashboard_port" "$ca_port"; do
     is_port "$value" || { printf 'invalid TCP port: %s\n' "$value" >&2; exit 2; }
@@ -1648,6 +1662,10 @@ configure_profile() {
 
 server_entry_relay() {
   local service=$1 selected=${2:-} number relay_number
+  if [[ $service == "$MALICIOUS_RANDOM_NAT_SERVER" ]]; then
+    printf 'relay03\n'
+    return 0
+  fi
   number=${service#natserver}
   case "$number" in
     01|03|04|05) relay_number=3 ;;
@@ -1663,6 +1681,10 @@ server_entry_relay() {
 
 client_entry_relay() {
   local service=${1:-} selected=${2:-} number
+  if [[ $service == "$MALICIOUS_NAT_CLIENT" ]]; then
+    printf 'relay01\n'
+    return 0
+  fi
   [[ $service =~ ^natclient([0-9]{2})$ ]] || return 1
   number=$((10#${BASH_REMATCH[1]}))
   (( number >= 1 && number <= TOPOLOGY_NAT_CLIENT_COUNT )) || return 1
@@ -1705,7 +1727,11 @@ validate_client_entry_table() {
     NR > 1 && (role_column == 0 || $role_column == "natclient") { count++ }
     END { print count + 0 }
   ' "$table") || return 1
-  (( record_count == TOPOLOGY_NAT_CLIENT_COUNT )) || return 1
+  if (( role_column == 0 )); then
+    (( record_count == TOPOLOGY_NAT_CLIENT_COUNT || record_count == RANDOM_CLIENT_POOL_COUNT )) || return 1
+  else
+    (( record_count == TOPOLOGY_NAT_CLIENT_COUNT )) || return 1
+  fi
   for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
     printf -v service 'natclient%02d' "$number"
     expected_relay=$(client_entry_relay "$service" "$selected") || return 1
@@ -1734,10 +1760,13 @@ stop_random_nat_processes() {
   while IFS= read -r service; do
     stop_nat_process "$service" tunclient || return 1
   done < <(numbered_service_names natclient "$TOPOLOGY_NAT_CLIENT_COUNT")
+  stop_nat_process "$MALICIOUS_NAT_CLIENT" tunclient || return 1
   while IFS= read -r service; do
     stop_nat_process "$service" tunserver || return 1
     stop_nat_process "$service" httpfileserver || return 1
   done < <(numbered_service_names natserver "$TOPOLOGY_NAT_SERVER_COUNT")
+  stop_nat_process "$MALICIOUS_RANDOM_NAT_SERVER" tunserver || return 1
+  stop_nat_process "$MALICIOUS_RANDOM_NAT_SERVER" httpfileserver || return 1
 }
 
 initialize_random_workload() {
@@ -1774,7 +1803,27 @@ initialize_random_workload() {
       printf '%s\t%s\t%s\t%s\tyes\n' "$service" "$role" "$node_id" "$relay" >> "$run_dir/nat-identities.tsv"
     done
   done
-  [[ $(tail -n +2 "$run_dir/nat-identities.tsv" | cut -f3 | sort -u | wc -l) -eq $((TOPOLOGY_NAT_SERVER_COUNT + TOPOLOGY_NAT_CLIENT_COUNT)) ]] || return 1
+  service=$MALICIOUS_RANDOM_NAT_SERVER
+  relay=$(server_entry_relay "$service" "$selected") || return 1
+  mkdir -p "$PRIVATE_RUNTIME_DIR/$service"
+  chmod 700 "$PRIVATE_RUNTIME_DIR/$service"
+  ensure_key "$PRIVATE_RUNTIME_DIR/$service/$service.key"
+  node_id=$(node_id_from_private_key "$PRIVATE_RUNTIME_DIR/$service/$service.key") || return 1
+  [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  credit_node "$ca_port" "$node_id" "$DEFAULT_SOAK_CREDIT_BYTES" || return 1
+  printf '%s\tmalicious-natserver\t%s\t%s\tyes\n' \
+    "$service" "$node_id" "$relay" >> "$run_dir/nat-identities.tsv"
+  service=$MALICIOUS_NAT_CLIENT
+  relay=$(client_entry_relay "$service" "$selected") || return 1
+  mkdir -p "$PRIVATE_RUNTIME_DIR/$service"
+  chmod 700 "$PRIVATE_RUNTIME_DIR/$service"
+  ensure_key "$PRIVATE_RUNTIME_DIR/$service/$service.key"
+  node_id=$(node_id_from_private_key "$PRIVATE_RUNTIME_DIR/$service/$service.key") || return 1
+  [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  credit_node "$ca_port" "$node_id" "$DEFAULT_SOAK_CREDIT_BYTES" || return 1
+  printf '%s\t%s\t%s\t%s\tyes\n' \
+    "$service" malicious-natclient "$node_id" "$relay" >> "$run_dir/nat-identities.tsv"
+  [[ $(tail -n +2 "$run_dir/nat-identities.tsv" | cut -f3 | sort -u | wc -l) -eq $((TOPOLOGY_NAT_SERVER_COUNT + RANDOM_CLIENT_POOL_COUNT + 1)) ]] || return 1
   validate_client_entry_table "$run_dir/nat-identities.tsv" "$selected" 1 4 2 "$run_dir" || return 1
 
   printf 'server\tingress_relay\trelay_endpoint\tip_family\tnode_id\n' > "$run_dir/server-pool.tsv"
@@ -1794,6 +1843,20 @@ initialize_random_workload() {
       "$service" "$relay" "$relay_endpoint" "$family" "$node_id" >> "$run_dir/server-pool.tsv"
     touch "$run_dir/server-fresh/$service"
   done
+  service=$MALICIOUS_RANDOM_NAT_SERVER
+  relay=$(server_entry_relay "$service" "$selected") || return 1
+  family=$(service_ip_family "$run_dir" "$service") || return 1
+  relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natserver "$relay") || return 1
+  expected_node_id=$(awk -F '\t' -v service="$service" '$1==service {print $3}' "$run_dir/nat-identities.tsv")
+  registration_count=$(relay_registration_count "$relay" "$expected_node_id") || return 1
+  node_id=$(start_tunnel_server_for_ip_family "$run_dir" "$service" "$relay" "$scenario" \
+    5 200 "$per_transfer_limit_mibps") || return 1
+  [[ $node_id == "$expected_node_id" ]] || return 1
+  wait_relay_registration "$relay" "$node_id" "$registration_count" 20 || return 1
+  wait_random_server_billing_ready "$service" "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS" || return 1
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$service" "$relay" "$relay_endpoint" "$family" "$node_id" >> "$run_dir/server-pool.tsv"
+  touch "$run_dir/server-fresh/$service"
 
   printf 'client\tingress_relay\trelay_endpoint\tip_family\tlisten_port\tnode_id\n' > "$run_dir/client-pool.tsv"
   for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
@@ -1807,7 +1870,21 @@ initialize_random_workload() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$service" "$relay" "$relay_endpoint" "$family" "$listen_port" "$node_id" >> "$run_dir/client-pool.tsv"
   done
+  service=$MALICIOUS_NAT_CLIENT
+  relay=$(client_entry_relay "$service" "$selected") || return 1
+  family=$(service_ip_family "$run_dir" "$service") || return 1
+  relay_endpoint=$(service_relay_endpoint "$run_dir" "$service" natclient "$relay") || return 1
+  listen_port=18107
+  node_id=$(awk -F '\t' -v service="$service" '$1==service {print $3}' "$run_dir/nat-identities.tsv")
+  [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$service" "$relay" "$relay_endpoint" "$family" "$listen_port" "$node_id" >> "$run_dir/client-pool.tsv"
   validate_client_entry_table "$run_dir/client-pool.tsv" "$selected" 1 2 0 "$run_dir" || return 1
+  awk -F '\t' -v service="$MALICIOUS_NAT_CLIENT" '
+    $1 == service && $2 == "relay01" && $4 == "default" && $5 == 18107 \
+      && length($6) == 64 && $6 ~ /^[[:xdigit:]]+$/ { found=1 }
+    END { exit !found }
+  ' "$run_dir/client-pool.tsv" || return 1
   client_ingress_override=$(awk -F '\t' '
     NR > 1 && $2 != "relay01" {
       if (overrides != "") overrides=overrides ","
@@ -1817,9 +1894,18 @@ initialize_random_workload() {
   ' "$run_dir/client-pool.tsv") || return 1
   [[ -n $client_ingress_override ]] || return 1
 
-  printf 'mode=random_concurrent\nclient_count=%s\nserver_count=%s\nmax_inflight=%s\nworkload_limit_mibps=%s\nper_transfer_limit_mibps=%s\nrandom_ingress_default=relay01\nrandom_ingress_override=%s\n' \
-    "$TOPOLOGY_NAT_CLIENT_COUNT" "$TOPOLOGY_NAT_SERVER_COUNT" "$max_inflight" \
-    "$workload_limit_mibps" "$per_transfer_limit_mibps" "$client_ingress_override" >> "$run_dir/workload.env"
+  printf 'mode=random_batch\nclient_count=%s\nnormal_client_count=%s\nmalicious_client_count=1\nserver_count=%s\nnormal_server_count=%s\nmalicious_server_count=1\nmax_inflight_batches=%s\nworkload_limit_mibps=%s\nper_transfer_limit_mibps=%s\nbatch_limit_1_client_kibps=%s\nbatch_limit_2_clients_kibps=%s\nbatch_limit_3_clients_kibps=%s\nbatch_limit_4_clients_kibps=%s\nbatch_client_start_stagger_seconds=%s\nbatch_mixed_path_quiet_samples=%s\nbatch_mixed_path_quiet_timeout_seconds=%s\nmulti_client_probability_pct=%s\nmulti_client_min=%s\nmulti_client_max=%s\nselection_order=server_then_mode_then_clients\nrandom_ingress_default=relay01\nrandom_ingress_override=%s\n' \
+    "$RANDOM_CLIENT_POOL_COUNT" "$TOPOLOGY_NAT_CLIENT_COUNT" "$((TOPOLOGY_NAT_SERVER_COUNT + 1))" "$TOPOLOGY_NAT_SERVER_COUNT" "$max_inflight" \
+    "$workload_limit_mibps" "$per_transfer_limit_mibps" \
+    "$(random_batch_transfer_limit_kibps 1 "$workload_limit_mibps")" \
+    "$(random_batch_transfer_limit_kibps 2 "$workload_limit_mibps")" \
+    "$(random_batch_transfer_limit_kibps 3 "$workload_limit_mibps")" \
+    "$(random_batch_transfer_limit_kibps 4 "$workload_limit_mibps")" \
+    "$RANDOM_BATCH_CLIENT_START_STAGGER_SECONDS" \
+    "$RANDOM_BATCH_MIXED_PATH_QUIET_SAMPLES" \
+    "$RANDOM_BATCH_MIXED_PATH_QUIET_TIMEOUT_SECONDS" \
+    "$RANDOM_MULTI_CLIENT_PERCENT" \
+    "$RANDOM_MULTI_CLIENT_MIN" "$RANDOM_MULTI_CLIENT_MAX" "$client_ingress_override" >> "$run_dir/workload.env"
 }
 
 ip_family_address_gate() {
@@ -2054,6 +2140,50 @@ wait_relay_registration_generation() {
   return 1
 }
 
+wait_random_server_listener_idle() {
+  local server=$1 timeout_seconds=${2:-$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS}
+  local status_file=$PRIVATE_RUNTIME_DIR/$server/service-listener.json
+  local deadline observation previous_observation= stable_samples=0
+  [[ $server =~ ^natserver(0[1-9]|1[0-3])$ || $server == "$MALICIOUS_RANDOM_NAT_SERVER" ]] || return 1
+  deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline )); do
+    observation=$(node -e '
+      const fs = require("node:fs");
+      const file = process.argv[1];
+      const expectedService = process.argv[2];
+      let value;
+      try {
+        value = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {
+        process.exit(1);
+      }
+      const observed = Date.parse(value?.observedAt ?? "");
+      const now = Date.now();
+      if (value?.schemaVersion !== 1 || value?.service !== expectedService
+        || value?.carrierConnected !== true || value?.activeSessions !== 0
+        || value?.acceptQueueDepth !== 0 || !Array.isArray(value?.sessions)
+        || value.sessions.length !== 0 || !Number.isFinite(observed)
+        || observed > now + 5000 || now - observed > 5000) process.exit(1);
+      process.stdout.write(new Date(observed).toISOString());
+    ' "$status_file" "$server" 2>/dev/null) || observation=
+    if [[ -n $observation ]]; then
+      if [[ $observation != "$previous_observation" ]]; then
+        stable_samples=$((stable_samples + 1))
+        previous_observation=$observation
+      fi
+      if (( stable_samples >= POST_GATE_SERVER_RECOVERY_STABLE_SAMPLES )); then
+        return 0
+      fi
+    else
+      stable_samples=0
+      previous_observation=
+    fi
+    sleep 0.25
+  done
+  log_step "$server 的持久 ServiceListener 未完成会话回收"
+  return 1
+}
+
 random_server_tunnel_process_count() {
   local server=$1 count
   count=$(dc exec -T "$server" pgrep -x tunserver 2>/dev/null | wc -l) || return 1
@@ -2127,7 +2257,8 @@ recover_random_server_pool_after_relay_restart() {
       server_family=default
     fi
     [[ $server_relay == "$affected_relay" ]] || continue
-    [[ $server =~ ^natserver[0-9]{2}$ && $server_endpoint && $server_family =~ ^(default|ipv4|ipv6|dual)$ \
+    [[ ($server =~ ^natserver[0-9]{2}$ || $server == "$MALICIOUS_RANDOM_NAT_SERVER") \
+      && $server_endpoint && $server_family =~ ^(default|ipv4|ipv6|dual)$ \
       && $expected_node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
     [[ $server != "$REAL_BILLING_GATE_SERVER" ]] || continue
     rm -f "$run_dir/server-fresh/$server" || return 1
@@ -2217,6 +2348,15 @@ validate_random_workload_coverage() {
     fi
   done < <(numbered_service_names natclient "$TOPOLOGY_NAT_CLIENT_COUNT")
   if [[ $validation_mode == full ]]; then
+    if ! awk -F '\t' -v client="$MALICIOUS_NAT_CLIENT" '
+      NR > 1 && $3 == client && $4 ~ /^relay0[1-7]$/ && $7 == 0 && $8 > 0 && $11 == "yes" { found=1 }
+      END { exit !found }
+    ' "$run_dir/transfers.tsv"; then
+      log_step "$MALICIOUS_NAT_CLIENT 未完成任何一条 SHA-256 正确的随机传输"
+      return 1
+    fi
+  fi
+  if [[ $validation_mode == full ]]; then
     if ! awk -F '\t' '
       NR == FNR { if (FNR > 1) expected[$1]=1; next }
       FNR > 1 && $4 ~ /^relay0[1-7]$/ && $7 == 0 && $8 > 0 && $11 == "yes" { reached[$5]=1 }
@@ -2226,7 +2366,7 @@ validate_random_workload_coverage() {
         exit missing != 0
       }
     ' "$run_dir/server-pool.tsv" "$run_dir/transfers.tsv"; then
-      log_step "随机负载尚未成功覆盖完整 $TOPOLOGY_NAT_SERVER_COUNT NatServer 池"
+      log_step "随机负载尚未成功覆盖完整 $((TOPOLOGY_NAT_SERVER_COUNT + 1)) NatServer 池"
       return 1
     fi
   elif ! awk -F '\t' '
@@ -2246,7 +2386,57 @@ validate_random_workload_coverage() {
     return 1
   fi
   validate_scenario_client_ingress_coverage "$run_dir" "$selected" || return 1
+  validate_random_batch_evidence "$run_dir" "$validation_mode" || return 1
   return 0
+}
+
+validate_random_batch_evidence() {
+  local run_dir=$1 validation_mode=${2:-$DEFAULT_VALIDATION_MODE}
+  [[ $validation_mode == smoke || $validation_mode == full ]] || return 1
+  [[ -s $run_dir/random-batches.tsv ]] || return 1
+  awk -F '\t' -v validation_mode="$validation_mode" -v malicious_client="$MALICIOUS_NAT_CLIENT" \
+    -v malicious_server="$MALICIOUS_RANDOM_NAT_SERVER" '
+    NR == 1 {
+      valid=($0 == "timestamp\tbatch_id\tselected_server\tserver_pool_includes_malicious\tserver_malicious\tmode\trequested_clients\tselected_clients\tclient_pool_includes_malicious\tmalicious_client_selected\tstatus\ttarget_pairs\tsucceeded\tfailed")
+      next
+    }
+    {
+      count=split($8, clients, ",")
+      target_count=split($12, targets, ",")
+      row_valid=($2 ~ /^batch-[0-9]+-[0-9]+$/ \
+        && ($3 ~ /^natserver(0[1-9]|1[0-3])$/ || $3 == malicious_server) \
+        && $4 == "true" && (($5 == "true") == ($3 == malicious_server)) \
+        && ($6 == "single" || $6 == "multi") && $7 ~ /^[1-4]$/ \
+        && count == $7 && target_count == $7 && $9 == "true" \
+        && ($10 == "true" || $10 == "false") \
+        && ($11 == "RUNNING" || $11 == "PASS" || $11 == "FAIL") \
+        && $13 ~ /^[0-9]+$/ && $14 ~ /^[0-9]+$/)
+      if ($6 == "single" && $7 != 1) row_valid=0
+      if ($6 == "multi" && ($7 < 2 || $7 > 4)) row_valid=0
+      malicious_found=0
+      delete unique
+      for (idx=1; idx<=count; idx++) {
+        if (!(clients[idx] ~ /^natclient0[1-6]$/ || clients[idx] == malicious_client) || unique[clients[idx]]++) row_valid=0
+        if (clients[idx] == malicious_client) malicious_found=1
+        target_parts=split(targets[idx], target, "→")
+        if (target_parts != 2 || target[1] != clients[idx] || target[2] != $3) row_valid=0
+      }
+      if (($10 == "true") != malicious_found) row_valid=0
+      if (!row_valid) invalid=1
+      if ($11 == "PASS") {
+        passed++
+        if ($6 == "multi") multi_passed++
+        if ($6 == "single") single_passed++
+        if (malicious_found) malicious_passed++
+        if ($3 == malicious_server) malicious_server_passed++
+      }
+    }
+    END {
+      if (!valid || invalid || passed == 0) exit 1
+      if (validation_mode == "full" && (!multi_passed || !single_passed \
+        || !malicious_passed || !malicious_server_passed)) exit 1
+    }
+  ' "$run_dir/random-batches.tsv"
 }
 
 append_transfer_record() {
@@ -2376,6 +2566,288 @@ random_below() {
   printf '%s\n' "$((value % upper))"
 }
 
+random_batch_client_count() {
+  local probability_roll=${1:-} size_roll=${2:-}
+  if [[ -z $probability_roll ]]; then
+    probability_roll=$(random_below 100) || return 1
+  fi
+  [[ $probability_roll =~ ^[0-9]+$ ]] && (( probability_roll < 100 )) || return 1
+  if (( probability_roll >= RANDOM_MULTI_CLIENT_PERCENT )); then
+    printf '1\n'
+    return 0
+  fi
+  if [[ -z $size_roll ]]; then
+    size_roll=$(random_below "$((RANDOM_MULTI_CLIENT_MAX - RANDOM_MULTI_CLIENT_MIN + 1))") || return 1
+  fi
+  [[ $size_roll =~ ^[0-9]+$ ]] \
+    && (( size_roll <= RANDOM_MULTI_CLIENT_MAX - RANDOM_MULTI_CLIENT_MIN )) || return 1
+  printf '%s\n' "$((RANDOM_MULTI_CLIENT_MIN + size_roll))"
+}
+
+random_batch_transfer_limit_kibps() {
+  local client_count=$1 workload_limit_mibps=$2 requested_limit
+  [[ $client_count =~ ^[1-4]$ ]] || return 1
+  is_nonnegative_integer "$workload_limit_mibps" || return 1
+  (( workload_limit_mibps > 0 )) || { printf '0\n'; return 0; }
+  requested_limit=$((workload_limit_mibps * 1024))
+  (( requested_limit <= RANDOM_STREAM_LIMIT_KIBPS )) || requested_limit=$RANDOM_STREAM_LIMIT_KIBPS
+  printf '%s\n' "$requested_limit"
+}
+
+random_batch_client_start_stagger_seconds() {
+  local client_count=$1
+  [[ $client_count =~ ^[1-4]$ ]] || return 1
+  if (( client_count == 1 )); then
+    printf '0\n'
+  else
+    printf '%s\n' "$RANDOM_BATCH_CLIENT_START_STAGGER_SECONDS"
+  fi
+}
+
+wait_random_batch_mixed_path_quiet() {
+  local run_dir=$1 deadline_epoch=$2
+  local required_samples=${3:-$RANDOM_BATCH_MIXED_PATH_QUIET_SAMPLES}
+  local timeout_seconds=${4:-$RANDOM_BATCH_MIXED_PATH_QUIET_TIMEOUT_SECONDS}
+  local status_file=$run_dir/mixed-adversary-path.status
+  local now_epoch wait_deadline status quiet_samples=0
+  [[ -d $run_dir && $deadline_epoch =~ ^[1-9][0-9]*$ ]] || return 1
+  is_positive_integer "$required_samples" || return 1
+  is_positive_integer "$timeout_seconds" || return 1
+  [[ -e $status_file ]] || return 0
+  now_epoch=$(date +%s)
+  (( now_epoch < deadline_epoch )) || return 1
+  wait_deadline=$((now_epoch + timeout_seconds))
+  (( wait_deadline <= deadline_epoch )) || wait_deadline=$deadline_epoch
+  while (( now_epoch < wait_deadline )); do
+    status=$(mixed_path_field "$status_file" status 2>/dev/null || true)
+    case $status in
+      RUNNING)
+        quiet_samples=$((quiet_samples + 1))
+        (( quiet_samples >= required_samples )) && return 0
+        ;;
+      STARTING|MIGRATING|'')
+        quiet_samples=0
+        ;;
+      FAILED|DEGRADED|STOPPED)
+        return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    sleep 1
+    now_epoch=$(date +%s)
+  done
+  return 1
+}
+
+validate_random_client_pool() {
+  local pool_file=$1
+  [[ -s $pool_file ]] || return 1
+  awk -F '\t' -v malicious="$MALICIOUS_NAT_CLIENT" -v expected="$RANDOM_CLIENT_POOL_COUNT" '
+    NR == 1 {
+      valid=($0 == "client\tingress_relay\trelay_endpoint\tip_family\tlisten_port\tnode_id")
+      next
+    }
+    NF != 6 || !($1 ~ /^natclient0[1-6]$/ || $1 == malicious) \
+      || $2 !~ /^relay0[1-7]$/ || $3 == "" || $4 !~ /^(default|ipv4|ipv6|dual)$/ \
+      || $5 !~ /^[0-9]+$/ || length($6) != 64 || $6 !~ /^[[:xdigit:]]+$/ || seen[$1]++ { valid=0; next }
+    $1 == malicious { malicious_count++ }
+    END { exit !(valid && length(seen) == expected && malicious_count == 1) }
+  ' "$pool_file"
+}
+
+validate_random_server_pool() {
+  local pool_file=$1 expected=$((TOPOLOGY_NAT_SERVER_COUNT + 1))
+  [[ -s $pool_file ]] || return 1
+  awk -F '\t' -v malicious="$MALICIOUS_RANDOM_NAT_SERVER" -v expected="$expected" '
+    NR == 1 {
+      valid=($0 == "server\tingress_relay\trelay_endpoint\tip_family\tnode_id")
+      next
+    }
+    NF != 5 || !(($1 ~ /^natserver(0[1-9]|1[0-3])$/) || $1 == malicious) \
+      || $2 !~ /^relay0[1-7]$/ || $3 == "" || $4 !~ /^(default|ipv4|ipv6|dual)$/ \
+      || length($5) != 64 || $5 !~ /^[[:xdigit:]]+$/ || seen[$1]++ { valid=0; next }
+    $1 == malicious { malicious_count++ }
+    END { exit !(valid && length(seen) == expected && malicious_count == 1) }
+  ' "$pool_file"
+}
+
+random_batch_server_line() {
+  local run_dir=$1 selection_roll=${2:-} count
+  validate_random_server_pool "$run_dir/server-pool.tsv" || return 1
+  count=$(awk 'END { print NR - 1 }' "$run_dir/server-pool.tsv") || return 1
+  (( count > 0 )) || return 1
+  if [[ -z $selection_roll ]]; then
+    selection_roll=$(random_below "$count") || return 1
+  fi
+  [[ $selection_roll =~ ^[0-9]+$ ]] && (( selection_roll < count )) || return 1
+  awk -v selected="$((selection_roll + 2))" 'NR == selected { print; exit }' \
+    "$run_dir/server-pool.tsv"
+}
+
+random_clients_reaching_server() {
+  local run_dir=$1 server_line=$2
+  local server server_relay server_endpoint server_family target_id
+  IFS=$'\t' read -r server server_relay server_endpoint server_family target_id <<< "$server_line"
+  [[ -s $run_dir/client-pool.tsv && -n $server && $server_relay =~ ^relay0[1-7]$ \
+    && $server_endpoint && $server_family =~ ^(default|ipv4|ipv6|dual)$ \
+    && $target_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  awk -F '\t' -v server_relay="$server_relay" '
+    function reachable(entry, host) {
+      return entry == host \
+        || (entry == "relay01" && host ~ /^relay0[3-7]$/) \
+        || (host == "relay01" && entry ~ /^relay0[3-7]$/)
+    }
+    NR > 1 && NF == 6 && reachable($2, server_relay) { print }
+  ' "$run_dir/client-pool.tsv"
+}
+
+append_random_batch_event() {
+  local run_dir=$1 timestamp=$2 batch_id=$3 selected_server=$4 server_malicious=$5 mode=$6
+  local requested_clients=$7 selected_clients=$8 malicious_client_selected=$9 status=${10}
+  local target_pairs=${11} succeeded=${12} failed=${13}
+  local lock_fd
+  exec {lock_fd}>> "$run_dir/random-batches.lock" || return 1
+  flock -x "$lock_fd" || { exec {lock_fd}>&-; return 1; }
+  printf '%s\t%s\t%s\ttrue\t%s\t%s\t%s\t%s\ttrue\t%s\t%s\t%s\t%s\t%s\n' \
+    "$timestamp" "$batch_id" "$selected_server" "$server_malicious" "$mode" \
+    "$requested_clients" "$selected_clients" "$malicious_client_selected" "$status" \
+    "$target_pairs" "$succeeded" "$failed" \
+    >> "$run_dir/random-batches.tsv"
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+}
+
+random_batch_worker() {
+  local run_dir=$1 deadline_epoch=$2 pause_seconds=$3 max_inflight_batches=$4
+  local attempt_timeout_seconds=$5 workload_limit_mibps=$6
+  local client_count batch_id mode eligible_file selected_file assignment_file selected_clients malicious_selected
+  local server_line target_pairs per_client_limit_kibps start_stagger_seconds launched_clients
+  local child_pid child_failed eligible_count server_malicious
+  local selected_server selected_server_malicious
+  local client_line client relay relay_endpoint family listen_port node_id
+  local server server_relay server_endpoint server_family target_id
+  local succeeded failed cooldown now_epoch remaining_seconds
+  local -a selected_lines=() child_pids=()
+  is_positive_integer "$deadline_epoch" || return 1
+  is_positive_integer "$pause_seconds" || return 1
+  is_positive_integer "$max_inflight_batches" || return 1
+  is_positive_integer "$attempt_timeout_seconds" || return 1
+  is_nonnegative_integer "$workload_limit_mibps" || return 1
+  validate_random_client_pool "$run_dir/client-pool.tsv" || return 1
+  validate_random_server_pool "$run_dir/server-pool.tsv" || return 1
+  mkdir -p "$run_dir/random-batches" "$run_dir/workers"
+
+  while (( $(date +%s) < deadline_epoch )); do
+    batch_id="batch-$(date +%s%N)-$(random_below 1000000)"
+    server_line=$(random_batch_server_line "$run_dir") || return 1
+    IFS=$'\t' read -r server server_relay server_endpoint server_family target_id <<< "$server_line"
+    [[ -n $server && $target_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    server_malicious=false
+    [[ $server == "$MALICIOUS_RANDOM_NAT_SERVER" ]] && server_malicious=true
+    selected_server=$server
+    selected_server_malicious=$server_malicious
+    eligible_file=$run_dir/random-batches/$batch_id.eligible-clients.tsv
+    selected_file=$run_dir/random-batches/$batch_id.clients.tsv
+    assignment_file=$run_dir/random-batches/$batch_id.assignments.tsv
+    random_clients_reaching_server "$run_dir" "$server_line" > "$eligible_file" || return 1
+    eligible_count=$(wc -l < "$eligible_file")
+    client_count=$(random_batch_client_count) || return 1
+    if (( eligible_count < client_count )); then
+      rm -f "$eligible_file"
+      sleep 1
+      continue
+    fi
+    mapfile -t selected_lines < <(shuf -n "$client_count" "$eligible_file")
+    (( ${#selected_lines[@]} == client_count )) || return 1
+    printf '%s\n' "${selected_lines[@]}" > "$selected_file"
+    selected_clients=$(cut -f1 "$selected_file" | paste -sd, -)
+    [[ $selected_clients ]] || return 1
+    malicious_selected=false
+    grep -q "^$MALICIOUS_NAT_CLIENT"$'\t' "$selected_file" && malicious_selected=true
+    mode=single
+    (( client_count == 1 )) || mode=multi
+    : > "$assignment_file"
+    while IFS= read -r client_line; do
+      IFS=$'\t' read -r client relay relay_endpoint family listen_port node_id <<< "$client_line"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$client" "$relay" "$relay_endpoint" "$family" "$listen_port" "$node_id" \
+        "$server" "$server_relay" "$server_endpoint" "$server_family" "$target_id" \
+        >> "$assignment_file"
+    done < "$selected_file"
+    target_pairs=$(awk -F '\t' '{ if (pairs != "") pairs=pairs ","; pairs=pairs $1 "→" $7 } END { print pairs }' "$assignment_file")
+    [[ $target_pairs ]] || return 1
+    append_random_batch_event "$run_dir" "$(date --iso-8601=seconds)" "$batch_id" \
+      "$selected_server" "$selected_server_malicious" "$mode" "$client_count" "$selected_clients" \
+      "$malicious_selected" RUNNING "$target_pairs" 0 0 || return 1
+
+    per_client_limit_kibps=$(random_batch_transfer_limit_kibps \
+      "$client_count" "$workload_limit_mibps") || return 1
+    start_stagger_seconds=$(random_batch_client_start_stagger_seconds "$client_count") || return 1
+    launched_clients=0
+    child_failed=0
+    child_pids=()
+    while IFS=$'\t' read -r client relay relay_endpoint family listen_port node_id \
+      server server_relay server_endpoint server_family target_id; do
+      if ! wait_random_batch_mixed_path_quiet "$run_dir" "$deadline_epoch"; then
+        child_failed=1
+        break
+      fi
+      server_line=$(printf '%s\t%s\t%s\t%s\t%s' \
+        "$server" "$server_relay" "$server_endpoint" "$server_family" "$target_id")
+      BNFS_RANDOM_BATCH_ID="$batch_id" BNFS_RANDOM_BATCH_MEMBER=1 \
+        BNFS_RANDOM_SERVER_LINE="$server_line" \
+        BNFS_RANDOM_TRANSFER_LIMIT_KIBPS="$per_client_limit_kibps" \
+        bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _worker "$run_dir" "$client" \
+          "$relay" "$relay_endpoint" "$family" "$listen_port" "$deadline_epoch" 1 \
+          "$client_count" "$attempt_timeout_seconds" 1 \
+          > "$run_dir/workers/$batch_id-$client.log" 2>&1 < /dev/null &
+      child_pids+=("$!")
+      launched_clients=$((launched_clients + 1))
+      if (( launched_clients < client_count && start_stagger_seconds > 0 )); then
+        sleep "$start_stagger_seconds"
+      fi
+    done < "$assignment_file"
+    for child_pid in "${child_pids[@]}"; do
+      wait "$child_pid" || child_failed=1
+    done
+    if ! wait_random_server_listener_idle "$selected_server" \
+      "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS"; then
+      child_failed=1
+    elif ! wait_random_server_billing_ready "$selected_server" \
+      "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS"; then
+      child_failed=1
+    fi
+    read -r succeeded failed < <(awk -F '\t' -v prefix="$batch_id-" '
+      NR > 1 && index($2, prefix) == 1 {
+        if ($7 == 0 && $8 > 0 && $11 == "yes") succeeded++
+        else failed++
+      }
+      END { print succeeded + 0, failed + 0 }
+    ' "$run_dir/transfers.tsv")
+    if (( child_failed == 0 && succeeded == client_count && failed == 0 )); then
+      append_random_batch_event "$run_dir" "$(date --iso-8601=seconds)" "$batch_id" \
+        "$selected_server" "$selected_server_malicious" "$mode" "$client_count" "$selected_clients" \
+        "$malicious_selected" PASS "$target_pairs" \
+        "$succeeded" "$failed" || return 1
+    else
+      append_random_batch_event "$run_dir" "$(date --iso-8601=seconds)" "$batch_id" \
+        "$selected_server" "$selected_server_malicious" "$mode" "$client_count" "$selected_clients" \
+        "$malicious_selected" FAIL "$target_pairs" \
+        "$succeeded" "$failed" || true
+      return 1
+    fi
+    rm -f "$eligible_file" "$selected_file" "$assignment_file"
+    now_epoch=$(date +%s)
+    (( now_epoch < deadline_epoch )) || return 0
+    cooldown=$(( $(random_below "$pause_seconds") + 1 )) || return 1
+    remaining_seconds=$((deadline_epoch - now_epoch))
+    (( cooldown <= remaining_seconds )) || cooldown=$remaining_seconds
+    (( cooldown == 0 )) || sleep "$cooldown"
+  done
+}
+
 acquire_transfer_slot() {
   local run_dir=$1 max_inflight=$2 deadline_epoch=$3 slot slot_fd
   while (( $(date +%s) < deadline_epoch )); do
@@ -2407,9 +2879,10 @@ release_transfer_slot() {
 random_client_worker() {
   local run_dir=$1 client=$2 relay=$3 relay_endpoint=$4 client_family=$5 listen_port=$6 deadline_epoch=$7 pause_seconds=$8 max_inflight=${9:-}
   local attempt_timeout_seconds=${10:-$DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS}
+  local max_attempts=${11:-0} attempt_count=0
   local failures=0 initial_delay server_line server server_relay server_endpoint server_family target_id client_ca_endpoint
-  local server_lock_fd transfer_id record_file transfer_ok cooldown actual_relay
-  local requested_mib registration_count slot_rc append_ok client_ready rearm_ok now_epoch remaining_seconds TRANSFER_SLOT_FD=
+  local server_lock_fd transfer_id record_file transfer_ok cooldown actual_relay server_lock_name
+  local requested_mib slot_rc append_ok client_ready rearm_ok now_epoch remaining_seconds TRANSFER_SLOT_FD=
   local attempt_started_ns attempt_deadline_epoch step_timeout transfer_rc attempt_timed_out
   if [[ $relay_endpoint =~ ^[0-9]+$ ]]; then
     attempt_timeout_seconds=$pause_seconds
@@ -2421,20 +2894,26 @@ random_client_worker() {
     client_family=default
   fi
   is_positive_integer "$attempt_timeout_seconds" || return 1
+  is_nonnegative_integer "$max_attempts" || return 1
   [[ $relay =~ ^relay0[1-7]$ && $relay_endpoint && $client_family =~ ^(default|ipv4|ipv6|dual)$ ]] || return 1
   [[ $(service_ip_family "$run_dir" "$client") == "$client_family" ]] || return 1
   [[ $(service_relay_endpoint "$run_dir" "$client" natclient "$relay") == "$relay_endpoint" ]] || return 1
   client_ca_endpoint=$(service_ca_endpoint "$run_dir" "$client" natclient) || return 1
-  initial_delay=$(random_below "$((pause_seconds + 1))") || return 1
+  initial_delay=0
+  [[ ${BNFS_RANDOM_BATCH_MEMBER:-0} == 1 ]] || initial_delay=$(random_below "$((pause_seconds + 1))") || return 1
   (( initial_delay == 0 )) || sleep "$initial_delay"
 
   while (( $(date +%s) < deadline_epoch )); do
-    server_line=$(random_reachable_server_line "$run_dir" "$relay" "$client_family") || return 1
+    server_line=${BNFS_RANDOM_SERVER_LINE:-}
+    [[ -n $server_line ]] || server_line=$(random_reachable_server_line "$run_dir" "$relay" "$client_family") || return 1
     IFS=$'\t' read -r server server_relay server_endpoint server_family target_id <<< "$server_line"
-    [[ -n $server && -n $server_relay && -n $server_endpoint && $server_family == "$client_family" \
+    [[ -n $server && -n $server_relay && -n $server_endpoint \
+      && $server_family =~ ^(default|ipv4|ipv6|dual)$ \
       && -n $target_id ]] || return 1
     requested_mib=$(random_probe_size_mib) || return 1
-    exec {server_lock_fd}> "$run_dir/server-locks/$server.lock"
+    server_lock_name=$server
+    [[ -z ${BNFS_RANDOM_BATCH_ID:-} ]] || server_lock_name=$server-$client
+    exec {server_lock_fd}> "$run_dir/server-locks/$server_lock_name.lock"
     while ! flock -n "$server_lock_fd"; do
       if (( $(date +%s) >= deadline_epoch )); then
         exec {server_lock_fd}>&-
@@ -2453,6 +2932,9 @@ random_client_worker() {
     fi
 
     transfer_id="$(date +%s%N)-$client"
+    if [[ ${BNFS_RANDOM_BATCH_ID:-} =~ ^batch-[0-9]+-[0-9]+$ ]]; then
+      transfer_id=${BNFS_RANDOM_BATCH_ID}-$(date +%s%N)-$client
+    fi
     record_file=$run_dir/transfer-records/$transfer_id.tsv
     attempt_started_ns=$(date +%s%N)
     attempt_deadline_epoch=$(( $(date +%s) + attempt_timeout_seconds ))
@@ -2516,18 +2998,14 @@ random_client_worker() {
       [[ -n $actual_relay ]] || actual_relay=unknown
       write_failed_transfer "$client" "$actual_relay" "$server" "$transfer_id" "$record_file" 2 "$requested_mib"
     fi
-    registration_count=
-    if (( client_ready == 1 && attempt_timed_out == 0 )); then
-      registration_count=$(relay_registration_count "$server_relay" "$target_id") || rearm_ok=0
-    fi
     if ! stop_nat_process "$client" tunclient; then
       rearm_ok=0
     fi
-    if (( client_ready == 1 && rearm_ok == 1 && attempt_timed_out == 0 )); then
+    if [[ ${BNFS_RANDOM_BATCH_MEMBER:-0} != 1 ]] \
+      && (( rearm_ok == 1 && attempt_timed_out == 0 )); then
       if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" \
         "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS"); then
-        if ! wait_relay_registration_generation "$server_relay" "$target_id" \
-          "$registration_count" "$step_timeout"; then
+        if ! wait_random_server_listener_idle "$server" "$step_timeout"; then
           rearm_ok=0
           (( $(date +%s) < attempt_deadline_epoch )) || attempt_timed_out=1
         fi
@@ -2536,7 +3014,8 @@ random_client_worker() {
         attempt_timed_out=1
       fi
     fi
-    if (( rearm_ok == 1 && attempt_timed_out == 0 )); then
+    if [[ ${BNFS_RANDOM_BATCH_MEMBER:-0} != 1 ]] \
+      && (( rearm_ok == 1 && attempt_timed_out == 0 )); then
       if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" \
         "$POST_GATE_SERVER_RECOVERY_TIMEOUT_SECONDS"); then
         if ! wait_random_server_billing_ready "$server" "$step_timeout"; then
@@ -2567,6 +3046,11 @@ random_client_worker() {
     else
       failures=$((failures + 1))
       (( failures < 3 )) || return 1
+    fi
+    attempt_count=$((attempt_count + 1))
+    if (( max_attempts > 0 && attempt_count >= max_attempts )); then
+      (( transfer_ok == 1 )) && return 0
+      return 1
     fi
     now_epoch=$(date +%s)
     (( now_epoch < deadline_epoch )) || return 0
@@ -2811,6 +3295,8 @@ run_internal() {
     > "$run_dir/large-probes.tsv"
   printf 'timestamp\ttransfer_id\tclient\tingress_relay\tserver\trequested_mib\trc\tbytes\tseconds\tmib_per_second\tsha256_ok\texpected_sha\tactual_sha\n' \
     > "$run_dir/transfers.tsv"
+  printf 'timestamp\tbatch_id\tselected_server\tserver_pool_includes_malicious\tserver_malicious\tmode\trequested_clients\tselected_clients\tclient_pool_includes_malicious\tmalicious_client_selected\tstatus\ttarget_pairs\tsucceeded\tfailed\n' \
+    > "$run_dir/random-batches.tsv"
   local stop_requested=0 guard_pid= guard_start= dashboard_pid= dashboard_start= failure_watcher_pid= billing_adversary_pid= mixed_path_pid= outcome=FAILED detail=initializing
   local failure_watcher_degraded_since=0 failure_watcher_lag_since=0
   local dashboard_status_failed_since=0 dashboard_status_consecutive_failures=0
@@ -2984,7 +3470,7 @@ run_internal() {
                 detail=$RESOURCE_GUARD_DETAIL
               fi
               if (( billing_adversary_ready == 1 )); then
-                local started_epoch deadline_epoch client_line worker_failed=0 pid
+                local started_epoch deadline_epoch worker_failed=0 pid
                 local worker_start worker_group worker_index worker_token
                 local random_workers_ok=1 random_workers_quiesced=0
                 local random_worker_terminalization_failed=0 random_worker_failure_detail=
@@ -2998,20 +3484,16 @@ run_internal() {
                 clear_random_worker_tracking
                 rm -f "$run_dir/worker-pids.closed"
                 printf 'client\tpid\tstarttime\tpgid\ttoken\n' > "$run_dir/worker-pids.tsv"
-                while IFS= read -r client_line; do
-                  local worker_client worker_relay worker_endpoint worker_family worker_port worker_node_id
-                  IFS=$'\t' read -r worker_client worker_relay worker_endpoint worker_family worker_port worker_node_id <<< "$client_line"
-                  worker_token=$(create_random_worker_token 2>/dev/null || true)
-                  if [[ ! $worker_token =~ ^[[:xdigit:]]{32}$ ]]; then
-                    worker_failed=1
-                    continue
-                  fi
+                local worker_client=batch-scheduler
+                worker_token=$(create_random_worker_token 2>/dev/null || true)
+                if [[ ! $worker_token =~ ^[[:xdigit:]]{32}$ ]]; then
+                  worker_failed=1
+                else
                   env BNFS_RANDOM_WORKER_TOKEN="$worker_token" \
                     setsid bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _registered_worker \
                     "$run_dir" "$worker_client" "$runner_pid" "$runner_start" \
-                    "$worker_relay" "$worker_endpoint" "$worker_family" "$worker_port" \
                     "$deadline_epoch" "$probe_seconds" "$max_inflight" \
-                    "$random_attempt_timeout" \
+                    "$random_attempt_timeout" "$workload_limit_mibps" \
                     > "$run_dir/workers/$worker_client.log" 2>&1 &
                   pid=$!
                   if track_random_worker "$pid" "$worker_token"; then
@@ -3027,9 +3509,8 @@ run_internal() {
                     wait "$pid" 2>/dev/null || true
                     worker_failed=1
                   fi
-                done < <(tail -n +2 "$run_dir/client-pool.tsv")
-                if (( ${#RANDOM_WORKER_PIDS[@]} != TOPOLOGY_NAT_CLIENT_COUNT \
-                  || worker_failed == 1 )); then
+                fi
+                if (( ${#RANDOM_WORKER_PIDS[@]} != 1 || worker_failed == 1 )); then
                   outcome=FAILED
                   detail=random_worker_start_failed
                 else
@@ -3433,7 +3914,14 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         "${3:?relay required}" "${4:?relay endpoint required}" "${5:?IP family required}" \
         "${6:?listen port required}" "${7:?deadline required}" \
         "${8:?pause required}" "${9:?max inflight required}" \
-        "${10:?attempt timeout required}"
+        "${10:?attempt timeout required}" "${11:-0}"
+      ;;
+    _batch_worker)
+      shift
+      source "$ROOT_DIR/test/local-chaos/lib.sh"
+      random_batch_worker "${1:?run directory required}" "${2:?deadline required}" \
+        "${3:?pause required}" "${4:?max inflight batches required}" \
+        "${5:?attempt timeout required}" "${6:?workload limit required}"
       ;;
     _registered_worker) shift; registered_random_worker \
       "${1:?run directory required}" "${2:?client required}" \

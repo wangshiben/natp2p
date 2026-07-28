@@ -25,7 +25,9 @@ mock_node_id_for_service() {
   local service=$1 character= index node_id=
   case "$service" in
     natserver01) character=a ;;
+    malicious-random-natserver) character=e ;;
     natclient0[1-6]) character=${service#natclient0} ;;
+    malicious-natclient) character=7 ;;
     *) return 1 ;;
   esac
   for ((index = 0; index < 64; index++)); do
@@ -90,7 +92,7 @@ run_case() {
 
   initialize_random_workload "$run_dir" 19100 "$selected" 2 5 10 \
     || fail "scenario $selected initialization failed"
-  [[ $readiness_checks -eq $TOPOLOGY_NAT_SERVER_COUNT ]] \
+  [[ $readiness_checks -eq $((TOPOLOGY_NAT_SERVER_COUNT + 1)) ]] \
     || fail "scenario $selected skipped initial Server readiness checks"
 
   for ((number = 1; number <= TOPOLOGY_NAT_CLIENT_COUNT; number++)); do
@@ -104,6 +106,10 @@ run_case() {
     [[ $pool_relay == "$expected_relay" ]] \
       || fail "scenario $selected pool relay mismatch for $service"
   done
+  [[ $(table_relay_for_client "$run_dir/client-pool.tsv" malicious-natclient 2) == relay01 ]] \
+    || fail "scenario $selected malicious NatClient relay mismatch"
+  validate_random_client_pool "$run_dir/client-pool.tsv" \
+    || fail "scenario $selected random Client pool omitted the malicious node"
 
   actual_override=$(awk -F= '$1 == "random_ingress_override" { print $2 }' "$run_dir/workload.env")
   [[ $actual_override == "$expected_override" ]] \
@@ -203,6 +209,8 @@ printf 'server\tingress_relay\tnode_id\n' > "$reachable_coverage_dir/server-pool
 printf 'natserver01\trelay02\t%s\n' "$(printf 'a%.0s' {1..64})" >> "$reachable_coverage_dir/server-pool.tsv"
 printf 'natserver02\trelay03\t%s\n' "$(printf 'b%.0s' {1..64})" >> "$reachable_coverage_dir/server-pool.tsv"
 printf 'natserver03\trelay06\t%s\n' "$(printf 'c%.0s' {1..64})" >> "$reachable_coverage_dir/server-pool.tsv"
+printf 'malicious-random-natserver\trelay03\t%s\n' "$(printf 'e%.0s' {1..64})" \
+  >> "$reachable_coverage_dir/server-pool.tsv"
 printf 'timestamp\ttransfer_id\tclient\tingress_relay\tserver\trequested_mib\trc\tbytes\tseconds\tmib_per_second\tsha256_ok\texpected_sha\tactual_sha\n' \
   > "$reachable_coverage_dir/transfers.tsv"
 for number in $(seq 1 "$TOPOLOGY_NAT_CLIENT_COUNT"); do
@@ -217,6 +225,15 @@ for number in $(seq 1 "$TOPOLOGY_NAT_CLIENT_COUNT"); do
       "$service" "$service" >> "$reachable_coverage_dir/transfers.tsv"
   fi
 done
+printf '2026-07-20T00:00:00+08:00\tmalicious-transfer\tmalicious-natclient\trelay01\tnatserver02\t100\t0\t104857600\t20.0\t5.0\tyes\texpected\tactual\n' \
+  >> "$reachable_coverage_dir/transfers.tsv"
+printf '2026-07-20T00:00:30+08:00\tmalicious-server-transfer\tnatclient01\trelay01\tmalicious-random-natserver\t100\t0\t104857600\t20.0\t5.0\tyes\texpected\tactual\n' \
+  >> "$reachable_coverage_dir/transfers.tsv"
+{
+  printf 'timestamp\tbatch_id\tselected_server\tserver_pool_includes_malicious\tserver_malicious\tmode\trequested_clients\tselected_clients\tclient_pool_includes_malicious\tmalicious_client_selected\tstatus\ttarget_pairs\tsucceeded\tfailed\n'
+  printf '2026-07-20T00:00:00+08:00\tbatch-1-1\tmalicious-random-natserver\ttrue\ttrue\tmulti\t2\tnatclient01,malicious-natclient\ttrue\ttrue\tPASS\tnatclient01→malicious-random-natserver,malicious-natclient→malicious-random-natserver\t2\t0\n'
+  printf '2026-07-20T00:01:00+08:00\tbatch-2-2\tnatserver03\ttrue\tfalse\tsingle\t1\tnatclient02\ttrue\tfalse\tPASS\tnatclient02→natserver03\t1\t0\n'
+} > "$reachable_coverage_dir/random-batches.tsv"
 validate_random_workload_coverage "$reachable_coverage_dir" 2 \
   || fail 'valid one-hop reachable coverage was rejected'
 

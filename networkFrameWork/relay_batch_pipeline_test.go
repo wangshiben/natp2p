@@ -267,6 +267,53 @@ func TestPullFrameBatchReturnsBufferedShortBatchWithoutWaiting(t *testing.T) {
 	}
 }
 
+func TestPullFrameBatchDrainsBufferedFrameAfterStreamStops(t *testing.T) {
+	for iteration := 0; iteration < 100; iteration++ {
+		input := make(chan *network.Frame, 1)
+		want := relayBatchFrames(1, 8, 1, "conn-final-ack")[0]
+		input <- want
+		streamDone := make(chan struct{})
+		close(streamDone)
+		var pending *network.Frame
+
+		frames, err := pullFrameBatch(
+			context.Background(),
+			streamDone,
+			func() error { return errors.New("stream stopped") },
+			input,
+			&pending,
+			32,
+			32<<10,
+		)
+		if err != nil || len(frames) != 1 || frames[0] != want {
+			t.Fatalf("iteration %d final buffered pull = (%v, %v), want final frame", iteration, frames, err)
+		}
+	}
+}
+
+func TestPullFrameBatchDrainsBufferedFrameBeforeCancellation(t *testing.T) {
+	input := make(chan *network.Frame, 1)
+	want := relayBatchFrames(1, 8, 1, "conn-cancelled-final-ack")[0]
+	input <- want
+	streamDone := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var pending *network.Frame
+
+	frames, err := pullFrameBatch(
+		ctx,
+		streamDone,
+		func() error { return errors.New("stream stopped") },
+		input,
+		&pending,
+		32,
+		32<<10,
+	)
+	if err != nil || len(frames) != 1 || frames[0] != want {
+		t.Fatalf("cancelled final buffered pull = (%v, %v), want final frame", frames, err)
+	}
+}
+
 func TestPullFrameBatchHonorsCancellationWhileWaitingForFirstFrame(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

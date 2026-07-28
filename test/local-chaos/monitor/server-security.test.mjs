@@ -345,7 +345,8 @@ test("Dashboard exposes only whitelisted malicious node runtime and activity", a
       ]);
       assert.deepEqual(status.maliciousNodes.map((node) => node.actor), ["natserver", "relay"]);
       assert.deepEqual(Object.keys(status.maliciousNodes[0]).sort(), [
-        "actor", "health", "latestActivity", "probe", "restartCount", "running", "service",
+        "actor", "health", "ipFamily", "ipType", "latestActivity", "networkStack", "probe",
+        "restartCount", "running", "service", "transportStack",
       ]);
       assert.deepEqual(status.maliciousNodes[0].probe, {
         status: "RUNNING",
@@ -569,6 +570,8 @@ test("Dashboard includes malicious activity in transfer cards and topology", asy
     byClient: {
       natclient01: {
         summary: { totalTransfers: 1, succeeded: 1, failed: 0 },
+        ipType: "IPv6",
+        transportStack: "KCP/UDP + TCP 故障切换",
         recent: [{
           timestamp: "2026-07-20T10:00:00Z",
           ingress_relay: "relay01",
@@ -579,7 +582,22 @@ test("Dashboard includes malicious activity in transfer cards and topology", asy
           requested_mib: 1,
           rc: "0",
           sha256_ok: "yes",
+          serverIPType: "IPv4 + IPv6 双栈",
+          transportStack: "KCP/UDP + TCP 故障切换",
+          networkStack: "IPv6 → IPv4 + IPv6 双栈 · KCP/UDP + TCP 故障切换",
         }],
+      },
+    },
+    byServer: {
+      natserver01: {
+        summary: { totalTransfers: 2, succeeded: 2, failed: 0 },
+        ipType: "IPv4 + IPv6 双栈",
+        networkStack: "IPv4 + IPv6 双栈 · KCP/UDP + TCP 故障切换",
+        distinctClients: 2,
+        recentClients: ["natclient01", "natclient02"],
+        lastTransferAt: "2026-07-20T10:00:00Z",
+        lastClient: "natclient02",
+        lastIngressRelay: "relay01",
       },
     },
   };
@@ -680,6 +698,62 @@ test("Dashboard includes malicious activity in transfer cards and topology", asy
   assert.match(transferMarkup, /SHA-256 PASS/);
   assert.match(transferMarkup, /真实正常分区接入/);
   assert.match(transferMarkup, /已阻断并隔离/);
+  const serverTimelineMarkup = elements.get("serverTransferTimeline").innerHTML;
+  assert.match(serverTimelineMarkup, /NatServer 被随机命中的时间线|natserver01/);
+  assert.match(serverTimelineMarkup, /IPv4 \+ IPv6 双栈/);
+  assert.match(serverTimelineMarkup, /natclient02 → relay01 → natserver01/);
+  assert.match(serverTimelineMarkup, /不同 Client 2/);
+  context.randomBatches = {
+    policy: {
+      multiClientProbabilityPct: 60,
+      multiClientMin: 2,
+      multiClientMax: 4,
+      clientStartStaggerSeconds: 30,
+      mixedPathQuietSamples: 3,
+      mixedPathQuietTimeoutSeconds: 45,
+      rateLimitsKiBps: [
+        { clients: 1, kibps: 5120 },
+        { clients: 2, kibps: 5120 },
+        { clients: 3, kibps: 5120 },
+        { clients: 4, kibps: 5120 },
+      ],
+    },
+    summary: { totalBatches: 1, multiClientBatches: 1, maliciousSelectedBatches: 1, maliciousServerBatches: 1, failedBatches: 0 },
+    recent: [{
+      timestamp: "2026-07-20T10:04:00Z",
+      batchID: "batch-1-1",
+      selectedServer: "malicious-random-natserver",
+      serverMalicious: true,
+      mode: "multi",
+      requestedClients: 2,
+      selectedClients: ["natclient01", "malicious-natclient"],
+      maliciousSelected: true,
+      status: "PASS",
+      targets: [{ client: "natclient01", server: "malicious-random-natserver" }, { client: "malicious-natclient", server: "malicious-random-natserver" }],
+      succeeded: 2,
+      failed: 0,
+    }],
+  };
+  vm.runInContext("renderRandomBatches(randomBatches)", context);
+  assert.match(elements.get("randomBatchSummary").innerHTML, /多 Client 概率<strong>60%/);
+  assert.match(elements.get("randomBatchSummary").innerHTML, /建连错峰<strong>30 秒 \/ Client/);
+  assert.match(elements.get("randomBatchSummary").innerHTML, /迁移静默窗<strong>连续 3 秒稳定/);
+  assert.match(elements.get("randomBatchSummary").innerHTML, /4 Client × 5 MiB\/s/);
+  assert.match(elements.get("randomBatchList").innerHTML, /malicious-natclient/);
+  assert.match(elements.get("randomBatchList").innerHTML, /步骤 0 · 本批目标 Server/);
+  assert.match(elements.get("randomBatchList").innerHTML, /malicious-random-natserver（恶意）/);
+  assert.match(elements.get("randomBatchList").innerHTML, /含恶意节点/);
+
+  context.sessionTopology = vm.runInContext(`normalizeTopology({nodes:[]}, [], [], [], {}, {
+    sessions:[{connectionID:'1234abcd',client:'natclient02',clientRelay:'relay01',
+      serverRelay:'relay03',server:'natserver03'}]
+  })`, context);
+  assert.equal(context.sessionTopology.links.some((link) => link.source === "natclient02"
+    && link.target === "relay01" && link.kind === "service-session"), true);
+  assert.equal(context.sessionTopology.links.some((link) => link.source === "relay01"
+    && link.target === "relay03" && link.kind === "service-session"), true);
+  assert.equal(context.sessionTopology.links.some((link) => link.source === "relay03"
+    && link.target === "natserver03" && link.kind === "service-session"), true);
 
   context.topology = vm.runInContext(
     "normalizeTopology({nodes:[{id:'ca',role:'ca',running:true,health:'healthy'}]}, [], maliciousNodes, maliciousEvents, mixedPath)",
@@ -1371,6 +1445,185 @@ test("Dashboard whitelists schema2 production gate evidence failure codes", asyn
         assert.equal(encoded.includes(secret), false);
       });
     }
+  } finally {
+    await fs.rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("Dashboard exposes time-based many-client random targets with IP and stack metadata", async () => {
+  const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-random-targets-"));
+  const secretEndpoint = "private-relay-endpoint.example:9000";
+  const secretNodeID = "e".repeat(64);
+  try {
+    await fs.writeFile(path.join(runDir, "server-pool.tsv"), [
+      "server\tingress_relay\trelay_endpoint\tip_family\tnode_id",
+      `natserver03\trelay03\t${secretEndpoint}\tdefault\t${secretNodeID}`,
+      `natserver04\trelay04\t${secretEndpoint}\tipv6\t${secretNodeID}`,
+      "",
+    ].join("\n"));
+    await fs.writeFile(path.join(runDir, "client-pool.tsv"), [
+      "client\tingress_relay\trelay_endpoint\tip_family\tlisten_port\tnode_id",
+      `natclient01\trelay03\t${secretEndpoint}\tdefault\t18101\t${secretNodeID}`,
+      `natclient02\trelay03\t${secretEndpoint}\tdefault\t18102\t${secretNodeID}`,
+      `natclient03\trelay04\t${secretEndpoint}\tipv6\t18103\t${secretNodeID}`,
+      `malicious-natclient\trelay03\t${secretEndpoint}\tdefault\t18107\t${secretNodeID}`,
+      "",
+    ].join("\n"));
+    await fs.writeFile(path.join(runDir, "ip-family-plan.tsv"), [
+      "family\trelay\tnatserver\tnatclient",
+      "ipv4\trelay03\tnatserver05\tnatclient04",
+      "ipv6\trelay04\tnatserver04\tnatclient03",
+      "dual\trelay05\tnatserver06\tnatclient05",
+      "",
+    ].join("\n"));
+    await fs.writeFile(path.join(runDir, "transfers.tsv"), [
+      "timestamp\ttransfer_id\tclient\tingress_relay\tserver\trequested_mib\trc\tbytes\tseconds\tmib_per_second\tsha256_ok\texpected_sha\tactual_sha",
+      "2026-07-20T10:00:00Z\ttransfer-1\tnatclient01\trelay03\tnatserver03\t5\t0\t5242880\t1\t5\tyes\ta\ta",
+      "2026-07-20T10:03:00Z\ttransfer-2\tnatclient02\trelay03\tnatserver03\t5\t0\t5242880\t1\t5\tyes\tb\tb",
+      "2026-07-20T10:06:00Z\ttransfer-3\tnatclient03\trelay04\tnatserver04\t5\t0\t5242880\t1\t5\tyes\tc\tc",
+      "",
+    ].join("\n"));
+    await fs.writeFile(path.join(runDir, "random-batches.tsv"), [
+      "timestamp\tbatch_id\tselected_server\tserver_pool_includes_malicious\tserver_malicious\tmode\trequested_clients\tselected_clients\tclient_pool_includes_malicious\tmalicious_client_selected\tstatus\ttarget_pairs\tsucceeded\tfailed",
+      "2026-07-20T10:03:00Z\tbatch-100-1\tmalicious-random-natserver\ttrue\ttrue\tmulti\t2\tnatclient01,malicious-natclient\ttrue\ttrue\tRUNNING\tnatclient01→malicious-random-natserver,malicious-natclient→malicious-random-natserver\t0\t0",
+      "2026-07-20T10:06:00Z\tbatch-100-1\tmalicious-random-natserver\ttrue\ttrue\tmulti\t2\tnatclient01,malicious-natclient\ttrue\ttrue\tPASS\tnatclient01→malicious-random-natserver,malicious-natclient→malicious-random-natserver\t2\t0",
+      "",
+    ].join("\n"));
+    await fs.writeFile(path.join(runDir, "workload.env"), [
+      "batch_limit_1_client_kibps=5120",
+      "batch_limit_2_clients_kibps=5120",
+      "batch_limit_3_clients_kibps=5120",
+      "batch_limit_4_clients_kibps=5120",
+      "batch_client_start_stagger_seconds=30",
+      "batch_mixed_path_quiet_samples=3",
+      "batch_mixed_path_quiet_timeout_seconds=45",
+      "",
+    ].join("\n"));
+
+    await withDashboard(runDir, async (port) => {
+      const response = await dashboardFetch(`http://127.0.0.1:${port}/api/status?fresh=1`);
+      assert.equal(response.status, 200);
+      const encoded = await response.text();
+      const status = JSON.parse(encoded);
+      const server = status.clientTransfers.byServer.natserver03;
+      assert.equal(server.summary.totalTransfers, 2);
+      assert.equal(server.summary.succeeded, 2);
+      assert.equal(server.distinctClients, 2);
+      assert.deepEqual(server.recentClients, ["natclient01", "natclient02"]);
+      assert.equal(server.lastTransferAt, "2026-07-20T10:03:00Z");
+      assert.equal(server.lastClient, "natclient02");
+      assert.equal(server.lastIngressRelay, "relay03");
+      assert.equal(server.ipType, "IPv4（默认网络）");
+      assert.equal(server.transportStack, "KCP/UDP + TCP 故障切换");
+      const ipv6Transfer = status.clientTransfers.byClient.natclient03.recent[0];
+      assert.equal(ipv6Transfer.clientIPType, "IPv6");
+      assert.equal(ipv6Transfer.serverIPType, "IPv6");
+      assert.equal(ipv6Transfer.networkStack, "IPv6 · KCP/UDP + TCP 故障切换");
+      assert.equal(status.nodes.find((node) => node.service === "relay04").ipType, "IPv6");
+      assert.equal(status.topology.nodes.find((node) => node.service === "natserver04").networkStack,
+        "IPv6 · KCP/UDP + TCP 故障切换");
+      assert.equal(status.topology.nodes.find((node) => node.service === "malicious-random-natserver").role,
+        "natserver");
+      assert.equal(status.clientTransfers.byServer["malicious-random-natserver"].server,
+        "malicious-random-natserver");
+      assert.deepEqual(status.randomBatches.policy, {
+        multiClientProbabilityPct: 60,
+        multiClientMin: 2,
+        multiClientMax: 4,
+        clientStartStaggerSeconds: 30,
+        mixedPathQuietSamples: 3,
+        mixedPathQuietTimeoutSeconds: 45,
+        rateLimitsKiBps: [
+          { clients: 1, kibps: 5120 },
+          { clients: 2, kibps: 5120 },
+          { clients: 3, kibps: 5120 },
+          { clients: 4, kibps: 5120 },
+        ],
+      });
+      assert.equal(status.randomBatches.summary.multiClientBatches, 1);
+      assert.equal(status.randomBatches.summary.maliciousSelectedBatches, 1);
+      assert.equal(status.randomBatches.summary.maliciousServerBatches, 1);
+      assert.equal(status.randomBatches.recent[0].selectedServer, "malicious-random-natserver");
+      assert.equal(status.randomBatches.recent[0].serverMalicious, true);
+      assert.deepEqual(status.randomBatches.recent[0].selectedClients,
+        ["natclient01", "malicious-natclient"]);
+      assert.equal(status.randomBatches.recent[0].targets[1].client, "malicious-natclient");
+      assert.equal(encoded.includes(secretEndpoint), false);
+      assert.equal(encoded.includes(secretNodeID), false);
+
+      const page = await dashboardFetch(`http://127.0.0.1:${port}/`);
+      const html = await page.text();
+      assert.equal(html.includes('id="serverTransferTimeline"'), true);
+      assert.equal(html.includes("NatServer 被随机命中的时间线"), true);
+      assert.equal(html.includes("Server IP 类型"), true);
+      assert.equal(html.includes("传输协议"), true);
+      assert.equal(html.includes('id="randomBatchList"'), true);
+      assert.equal(html.includes("多 Client 概率"), true);
+    });
+  } finally {
+    await fs.rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("Dashboard exposes only whitelisted concurrent service sessions", async () => {
+  const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-service-sessions-"));
+  const privateRoot = path.join(runDir, "private");
+  const clientNodeID = "a".repeat(64);
+  const serverNodeID = "b".repeat(64);
+  const secret = "/private/service-listener.key";
+  try {
+    await fs.mkdir(path.join(privateRoot, "natserver03"), { recursive: true });
+    await fs.writeFile(path.join(runDir, "nat-identities.tsv"), [
+      "service\trole\tnode_id\tingress_relay\tcredited",
+      `natclient02\tnatclient\t${clientNodeID}\trelay01\tyes`,
+      `natserver03\tnatserver\t${serverNodeID}\trelay03\tyes`,
+    ].join("\n") + "\n");
+    await fs.writeFile(path.join(privateRoot, "natserver03", "service-listener.json"), JSON.stringify({
+      schemaVersion: 1,
+      observedAt: new Date().toISOString(),
+      service: "natserver03",
+      nodeId: serverNodeID.slice(0, 16),
+      relayAddress: "10.253.41.250:9000",
+      carrierConnected: true,
+      carrierGeneration: 3,
+      activeSessions: 1,
+      maxSessions: 8,
+      acceptQueueDepth: 0,
+      acceptQueue: 8,
+      acceptedTotal: 11,
+      rejectedTotal: 2,
+      sessions: [{ connectionId: "1234abcd", peerId: clientNodeID.slice(0, 16), privateKey: secret }],
+      privateKey: secret,
+      fullNodeID: serverNodeID,
+    }));
+
+    await withDashboard(runDir, async (port) => {
+      const response = await dashboardFetch(`http://127.0.0.1:${port}/api/status`);
+      assert.equal(response.status, 200);
+      const encoded = await response.text();
+      const status = JSON.parse(encoded).serviceSessions;
+      assert.equal(status.available, true);
+      assert.deepEqual(status.summary, {
+        listeners: 1,
+        freshListeners: 1,
+        connectedCarriers: 1,
+        activeSessions: 1,
+        maxSessions: 8,
+        acceptedTotal: 11,
+        rejectedTotal: 2,
+      });
+      assert.deepEqual(status.sessions, [{
+        connectionID: "1234abcd",
+        client: "natclient02",
+        clientRelay: "relay01",
+        server: "natserver03",
+        relay: "relay03",
+        serverRelay: "relay03",
+      }]);
+      assert.equal(encoded.includes(secret), false);
+      assert.equal(encoded.includes(clientNodeID), false);
+      assert.equal(encoded.includes(serverNodeID), false);
+    }, { env: { PRIVATE_RUNTIME_DIR: privateRoot } });
   } finally {
     await fs.rm(runDir, { recursive: true, force: true });
   }

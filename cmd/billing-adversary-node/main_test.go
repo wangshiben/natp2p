@@ -251,6 +251,28 @@ func TestRelayReplayBaselineRetriesOnlyTransientSetupFailures(t *testing.T) {
 	}
 }
 
+func TestValidateAttackSchedule(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		offset   time.Duration
+		wantErr  bool
+	}{
+		{name: "no offset", interval: time.Minute},
+		{name: "staggered actors", interval: time.Minute, offset: 30 * time.Second},
+		{name: "interval too short", interval: 500 * time.Millisecond, wantErr: true},
+		{name: "negative offset", interval: time.Minute, offset: -time.Second, wantErr: true},
+		{name: "offset reaches interval", interval: time.Minute, offset: time.Minute, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateAttackSchedule(test.interval, test.offset); (err != nil) != test.wantErr {
+				t.Fatalf("validateAttackSchedule() error=%v, wantErr=%v", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func newRelayFeeOverrideTestNode(t *testing.T, balance *atomic.Int64, natHandler http.HandlerFunc) (*attackerNode, identityWire, billingvoucher.VoucherBody) {
 	t.Helper()
 	caServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

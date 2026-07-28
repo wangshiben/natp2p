@@ -6,9 +6,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const host = process.env.HOST ?? "127.0.0.1";
+const host = process.env.HOST ?? "0.0.0.0";
 const port = integer(process.env.PORT, 8911);
 const runDir = path.resolve(process.env.RUN_DIR ?? ".");
+const privateRuntimeDir = path.resolve(process.env.PRIVATE_RUNTIME_DIR ?? path.join(runDir, "runtime", ".private"));
 const composeProject = process.env.COMPOSE_PROJECT ?? "";
 const composeFile = path.resolve(process.env.COMPOSE_FILE ?? path.join(runDir, "runtime", "compose.json"));
 const caPort = integer(process.env.CA_PORT, 19100);
@@ -16,7 +17,10 @@ const htmlPath = new URL("./index.html", import.meta.url);
 const relayCount = 7;
 const natServerCount = 13;
 const natClientCount = 6;
-const transferClients = numbered("natclient", natClientCount);
+const maliciousNatClient = "malicious-natclient";
+const maliciousRandomNatServer = "malicious-random-natserver";
+const transferClients = [...numbered("natclient", natClientCount), maliciousNatClient];
+const transferServers = [...numbered("natserver", natServerCount), maliciousRandomNatServer];
 const failureRetentionLimit = 50;
 const transferColumns = [
   "timestamp",
@@ -37,6 +41,8 @@ const expectedServices = [
   ...numbered("relay", relayCount),
   ...numbered("natserver", natServerCount),
   ...numbered("natclient", natClientCount),
+  maliciousRandomNatServer,
+  maliciousNatClient,
 ];
 const maliciousNodeCatalog = Object.freeze([
   Object.freeze({ service: "malicious-natserver", actor: "natserver" }),
@@ -440,7 +446,7 @@ async function statusSnapshot(forceRefresh = false) {
 }
 
 async function buildStatus() {
-  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, clientTransfers, workers, workload, compose, containers, finalContainers, ca, serverPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence] = await Promise.all([
+  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, rawClientTransfers, randomBatches, workers, workload, compose, containers, finalContainers, ca, serverPool, clientPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence, natIdentities] = await Promise.all([
     readEnv(path.join(runDir, "metadata.env")),
     readEnv(path.join(runDir, "status.env")),
     readText(path.join(runDir, "phase")),
@@ -449,6 +455,7 @@ async function buildStatus() {
     readTsv(path.join(runDir, "probes.tsv"), 30),
     readTsv(path.join(runDir, "large-probes.tsv"), 30),
     readClientTransfers(path.join(runDir, "transfers.tsv")),
+    readRandomBatches(path.join(runDir, "random-batches.tsv")),
     readWorkerStatus(path.join(runDir, "worker-pids.tsv")),
     readEnv(path.join(runDir, "workload.env")),
     readJson(composeFile),
@@ -456,13 +463,33 @@ async function buildStatus() {
     readTsv(path.join(runDir, "containers-final.tsv"), 100),
     probeCA(),
     readTsv(path.join(runDir, "server-pool.tsv"), 100),
+    readTsv(path.join(runDir, "client-pool.tsv"), 100),
     readFailureWatcher(path.join(runDir, "failure-watcher.json")),
     readBillingAdversary(path.join(runDir, "billing-adversary.json")),
     readBillingProductionGate(path.join(runDir, "billing-production-gate.json")),
     readMixedAdversaryPath(path.join(runDir, "mixed-adversary-path.json")),
     readTsv(path.join(runDir, "ip-family-plan.tsv"), 4),
     readTsv(path.join(runDir, "ip-family-coverage.tsv"), 12),
+    readTsv(path.join(runDir, "nat-identities.tsv"), 64),
   ]);
+  const serviceSessions = await readServiceSessions(privateRuntimeDir, natIdentities);
+  const nodeProfiles = buildNodeProfiles(serverPool, clientPool, ipFamilyPlan);
+  const clientTransfers = enrichClientTransfers(rawClientTransfers, nodeProfiles);
+  randomBatches.policy.rateLimitsKiBps = [1, 2, 3, 4].map((clients) => ({
+    clients,
+    kibps: publicNonNegativeInteger(
+      integer(workload[`batch_limit_${clients}_client${clients === 1 ? "" : "s"}_kibps`], 0),
+    ),
+  }));
+  randomBatches.policy.clientStartStaggerSeconds = publicNonNegativeInteger(
+    integer(workload.batch_client_start_stagger_seconds, 0),
+  );
+  randomBatches.policy.mixedPathQuietSamples = publicNonNegativeInteger(
+    integer(workload.batch_mixed_path_quiet_samples, 0),
+  );
+  randomBatches.policy.mixedPathQuietTimeoutSeconds = publicNonNegativeInteger(
+    integer(workload.batch_mixed_path_quiet_timeout_seconds, 0),
+  );
 
   const containerMap = new Map(containers.map((item) => [item.service, item]));
   const nodes = expectedServices.map((service) => containerMap.get(service) ?? missingContainer(service));
@@ -494,6 +521,8 @@ async function buildStatus() {
     nodes,
     firewalls,
     mixedPath,
+    serviceSessions,
+    nodeProfiles,
   });
   const failureAnalysis = await buildFailureAnalysis({
     failures: transferLogCache.failures,
@@ -504,7 +533,7 @@ async function buildStatus() {
     serverPool,
     compose,
   });
-  const publicNodes = nodes.map(publicRuntimeNode);
+  const publicNodes = nodes.map((node) => publicRuntimeNode(node, nodeProfiles.get(node.service)));
   const publicPhaseValue = publicPhase(phase);
   const maliciousRuntimeMap = publicRunOutcomes.has(publicPhaseValue)
     ? finalMaliciousRuntimeMap(finalContainers)
@@ -536,12 +565,14 @@ async function buildStatus() {
       history: largeProbes.map(publicProbe),
     },
     clientTransfers,
+    randomBatches,
     workers,
     failureAnalysis,
     failureWatcher,
     billingAdversary,
     billingProductionGate,
     mixedPath,
+    serviceSessions,
     ipFamilyCoverage,
     ca,
     summary: {
@@ -559,21 +590,196 @@ async function buildStatus() {
   };
 }
 
+async function readServiceSessions(privateRoot, identities) {
+  const clientByPrefix = new Map();
+  const serverRelayByService = new Map();
+  for (const identity of identities) {
+    const client = knownService(identity.service, "natclient");
+    const server = knownService(identity.service, "natserver");
+    const relay = knownService(identity.ingress_relay, "relay");
+    const nodeID = String(identity.node_id ?? "").toLowerCase();
+    if (client && relay && /^[0-9a-f]{64}$/.test(nodeID)) {
+      clientByPrefix.set(nodeID.slice(0, 16), { service: client, relay });
+    }
+    if (server && relay) serverRelayByService.set(server, relay);
+  }
+  const listeners = (await Promise.all(transferServers.map(async (service) => {
+    const raw = await readJson(path.join(privateRoot, service, "service-listener.json"));
+    if (!raw || raw.schemaVersion !== 1) return null;
+    const reportedService = knownService(raw.service, "natserver");
+    if (reportedService !== service) return null;
+    const relay = knownService(normalizeRelayReference(raw.relayAddress), "relay")
+      || serverRelayByService.get(service) || "";
+	const carriers = Array.isArray(raw.carriers) ? raw.carriers.slice(0, 3).map((carrier) => {
+	  const carrierRelay = knownService(normalizeRelayReference(carrier?.relayAddress), "relay");
+	  return carrierRelay ? {
+	    relay: carrierRelay,
+	    connected: carrier?.connected === true,
+	    carrierGeneration: publicNonNegativeInteger(carrier?.carrierGeneration),
+	    activeSessions: publicNonNegativeInteger(carrier?.activeSessions),
+	  } : null;
+	}).filter(Boolean) : [];
+	if (carriers.length === 0 && relay) {
+	  carriers.push({
+	    relay,
+	    connected: raw.carrierConnected === true,
+	    carrierGeneration: publicNonNegativeInteger(raw.carrierGeneration),
+	    activeSessions: publicNonNegativeInteger(raw.activeSessions),
+	  });
+	}
+    const observedAt = publicTimestamp(raw.observedAt);
+    const sessions = Array.isArray(raw.sessions) ? raw.sessions.slice(0, 64).map((session) => {
+      const connectionID = /^[0-9a-f]{8}$/i.test(String(session?.connectionId ?? ""))
+        ? String(session.connectionId).toLowerCase()
+        : "";
+      const peerPrefix = /^[0-9a-f]{16}$/i.test(String(session?.peerId ?? ""))
+        ? String(session.peerId).toLowerCase()
+        : "";
+      const client = clientByPrefix.get(peerPrefix);
+	  const sessionRelay = knownService(normalizeRelayReference(session?.relayAddress), "relay") || relay;
+      return connectionID && client
+		? { connectionID, client: client.service, clientRelay: client.relay, relay: sessionRelay }
+        : null;
+    }).filter(Boolean) : [];
+    return {
+      service,
+      relay,
+	  carriers,
+      observedAt,
+      fresh: observedAt !== "" && Date.now() - Date.parse(observedAt) <= 5000,
+      carrierConnected: raw.carrierConnected === true,
+      carrierGeneration: publicNonNegativeInteger(raw.carrierGeneration),
+      activeSessions: publicNonNegativeInteger(raw.activeSessions),
+      maxSessions: publicNonNegativeInteger(raw.maxSessions),
+      acceptQueueDepth: publicNonNegativeInteger(raw.acceptQueueDepth),
+      acceptQueue: publicNonNegativeInteger(raw.acceptQueue),
+      acceptedTotal: publicNonNegativeInteger(raw.acceptedTotal),
+      rejectedTotal: publicNonNegativeInteger(raw.rejectedTotal),
+      sessions,
+    };
+  }))).filter(Boolean);
+  const sessions = listeners.flatMap((listener) => listener.sessions.map((session) => ({
+    ...session,
+    server: listener.service,
+	relay: session.relay || listener.relay,
+	serverRelay: session.relay || listener.relay,
+  })));
+  return {
+    available: listeners.length > 0,
+    observedAt: listeners.map((listener) => listener.observedAt).filter(Boolean).sort().at(-1) ?? "",
+    listeners,
+    sessions,
+    summary: {
+      listeners: listeners.length,
+      freshListeners: listeners.filter((listener) => listener.fresh).length,
+	  connectedCarriers: listeners.reduce((sum, listener) => sum
+	    + listener.carriers.filter((carrier) => carrier.connected).length, 0),
+      activeSessions: listeners.reduce((sum, listener) => sum + listener.activeSessions, 0),
+      maxSessions: listeners.reduce((sum, listener) => sum + listener.maxSessions, 0),
+      acceptedTotal: listeners.reduce((sum, listener) => sum + listener.acceptedTotal, 0),
+      rejectedTotal: listeners.reduce((sum, listener) => sum + listener.rejectedTotal, 0),
+    },
+  };
+}
+
 async function readWorkerStatus(file) {
-  const aliveByClient = new Map(transferClients.map((client) => [client, false]));
   const text = await readText(file);
+  const schedulerRow = text.split(/\r?\n/).map((line) => line.split("\t"))
+    .find(([worker]) => worker === "batch-scheduler");
+  if (schedulerRow) {
+    const [, pidText, starttime] = schedulerRow;
+    const alive = /^[1-9][0-9]*$/.test(pidText ?? "") && /^[1-9][0-9]*$/.test(starttime ?? "")
+      && await processIdentityAlive(integer(pidText, 0), starttime);
+    return {
+      mode: "batch-scheduler",
+      expected: 1,
+      running: alive ? 1 : 0,
+      healthy: alive,
+      clients: [{ client: "batch-scheduler", alive }],
+    };
+  }
+  const legacyClients = text.split(/\r?\n/).some((line) => line.startsWith(`${maliciousNatClient}\t`))
+    ? transferClients
+    : numbered("natclient", natClientCount);
+  const aliveByClient = new Map(legacyClients.map((client) => [client, false]));
   await Promise.all(text.split(/\r?\n/).map(async (line) => {
     const [client, pidText, starttime] = line.split("\t");
     if (!aliveByClient.has(client) || !/^[1-9][0-9]*$/.test(pidText ?? "")
       || !/^[1-9][0-9]*$/.test(starttime ?? "")) return;
     if (await processIdentityAlive(integer(pidText, 0), starttime)) aliveByClient.set(client, true);
   }));
-  const clients = transferClients.map((client) => ({ client, alive: aliveByClient.get(client) === true }));
+  const clients = legacyClients.map((client) => ({ client, alive: aliveByClient.get(client) === true }));
   return {
-    expected: transferClients.length,
+    expected: legacyClients.length,
     running: clients.filter((worker) => worker.alive).length,
     healthy: clients.every((worker) => worker.alive),
     clients,
+  };
+}
+
+async function readRandomBatches(file) {
+  const rows = await readTsv(file, 200);
+  const byID = new Map();
+  for (const row of rows) {
+    const batchID = /^batch-[0-9]+-[0-9]+$/.test(String(row?.batch_id ?? ""))
+      ? String(row.batch_id) : "";
+    const selectedServer = validService(row?.selected_server, "natserver")
+      ? String(row.selected_server) : "";
+    const serverMalicious = selectedServer === maliciousRandomNatServer;
+    const selectedClients = String(row?.selected_clients ?? "").split(",")
+      .filter((client, index, clients) => transferClients.includes(client) && clients.indexOf(client) === index);
+    const requestedClients = integer(row?.requested_clients, 0);
+    const mode = row?.mode === "single" || row?.mode === "multi" ? row.mode : "";
+    const status = ["RUNNING", "PASS", "FAIL"].includes(row?.status) ? row.status : "";
+    const validCount = mode === "single" ? requestedClients === 1 : mode === "multi"
+      && requestedClients >= 2 && requestedClients <= 4;
+    if (!batchID || !selectedServer || !mode || !status || !validCount
+      || selectedClients.length !== requestedClients
+      || row?.server_pool_includes_malicious !== "true"
+      || row?.client_pool_includes_malicious !== "true"
+      || (row?.server_malicious === "true") !== serverMalicious) continue;
+    const maliciousSelected = selectedClients.includes(maliciousNatClient);
+    if ((row?.malicious_client_selected === "true") !== maliciousSelected) continue;
+    const targets = String(row?.target_pairs ?? "").split(",").map((pair) => {
+      const [client, server, extra] = pair.split("→");
+      return extra === undefined && transferClients.includes(client) && validService(server, "natserver")
+        ? { client, server } : null;
+    }).filter(Boolean);
+    if (targets.length !== requestedClients
+      || targets.some((target, index) => target.client !== selectedClients[index]
+        || target.server !== selectedServer)) continue;
+    byID.set(batchID, {
+      timestamp: publicTimestamp(row.timestamp),
+      batchID,
+      selectedServer,
+      serverMalicious,
+      mode,
+      requestedClients,
+      selectedClients,
+      serverPoolIncludesMalicious: true,
+      clientPoolIncludesMalicious: true,
+      maliciousSelected,
+      status,
+      targets,
+      succeeded: Math.max(0, integer(row.succeeded, 0)),
+      failed: Math.max(0, integer(row.failed, 0)),
+    });
+  }
+  const batches = [...byID.values()];
+  const recent = batches.sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)).slice(0, 20);
+  return {
+    available: rows.length > 0,
+    policy: { multiClientProbabilityPct: 60, multiClientMin: 2, multiClientMax: 4 },
+    summary: {
+      totalBatches: byID.size,
+      multiClientBatches: batches.filter((batch) => batch.mode === "multi").length,
+      singleClientBatches: batches.filter((batch) => batch.mode === "single").length,
+      maliciousSelectedBatches: batches.filter((batch) => batch.maliciousSelected).length,
+      maliciousServerBatches: batches.filter((batch) => batch.serverMalicious).length,
+      activeBatches: batches.filter((batch) => batch.status === "RUNNING").length,
+      failedBatches: batches.filter((batch) => batch.status === "FAIL").length,
+    },
+    recent,
   };
 }
 
@@ -694,7 +900,7 @@ function parseFirewallRules(output) {
   return rules;
 }
 
-async function buildTopology({ compose, metadata, workload, nodes, firewalls, mixedPath }) {
+async function buildTopology({ compose, metadata, workload, nodes, firewalls, mixedPath, nodeProfiles }) {
   const serviceSpecs = compose?.services && typeof compose.services === "object" ? compose.services : {};
   const networkSpecs = compose?.networks && typeof compose.networks === "object" ? compose.networks : {};
   const nodeMap = new Map(nodes.map((node) => [node.service, node]));
@@ -714,6 +920,7 @@ async function buildTopology({ compose, metadata, workload, nodes, firewalls, mi
 
   const topologyNodes = serviceNames.map((service) => {
     const runtime = nodeMap.get(service) ?? missingContainer(service);
+    const profile = nodeProfiles.get(service) ?? buildNodeProfile(service, "default");
     return {
       id: service,
       service,
@@ -722,6 +929,7 @@ async function buildTopology({ compose, metadata, workload, nodes, firewalls, mi
       health: publicRuntimeStatus(runtime.health),
       networks: memberships.get(service) ?? [],
       active: activeServices.has(service),
+      ...profile,
     };
   });
 
@@ -1290,6 +1498,11 @@ function emptyTransferLogCache(file, identity = "") {
       summary: emptyTransferStats(),
       recent: [],
     }])),
+    servers: new Map(transferServers.map((server) => [server, {
+      summary: emptyTransferStats(),
+      recent: [],
+      clients: new Set(),
+    }])),
   };
 }
 
@@ -1322,6 +1535,13 @@ async function consumeTransferLog(cache, appendedText) {
     clientState.recent.unshift(transfer);
     if (clientState.recent.length > 10) clientState.recent.length = 10;
     updateTransferStats(clientState.summary, transfer);
+    const serverState = cache.servers.get(transfer.server);
+    if (serverState) {
+      serverState.recent.unshift(transfer);
+      if (serverState.recent.length > 10) serverState.recent.length = 10;
+      serverState.clients.add(parsed.client);
+      updateTransferStats(serverState.summary, transfer);
+    }
     updateTransferStats(cache.summary, transfer);
     updateIngressStats(cache.ingressStats, transfer);
     if (!transferSucceeded(transfer)) await recordFailure(cache, transfer);
@@ -1463,13 +1683,101 @@ function transferLogSnapshot(cache) {
   const summary = publicTransferStats(cache.summary);
   summary.clientCount = transferClients.length;
   summary.activeClients = transferClients.filter((client) => cache.clients.get(client).summary.totalTransfers > 0).length;
+  const byServer = Object.fromEntries(transferServers.map((server) => {
+    const state = cache.servers.get(server);
+    const recent = state.recent.map(publicRecentTransfer);
+    return [server, {
+      server,
+      summary: publicTransferStats(state.summary),
+      distinctClients: state.clients.size,
+      recentClients: [...state.clients].filter((client) => validService(client, "natclient")).sort(serviceSort),
+      lastTransferAt: publicTimestamp(state.summary.latestTimestamp),
+      lastClient: recent[0]?.client ?? "",
+      lastIngressRelay: recent[0]?.ingress_relay ?? "",
+      recent,
+    }];
+  }));
   return {
     source: "transfer_records",
     available: cache.available,
     updatedAt: publicTimestamp(cache.updatedAt),
     summary,
     byClient,
+    byServer,
   };
+}
+
+function buildNodeProfiles(serverRows, clientRows, planRows) {
+  const families = new Map(expectedServices.map((service) => [service, "default"]));
+  for (const row of planRows) {
+    const family = publicIPFamily(row?.family);
+    if (family === "default") continue;
+    for (const [field, role] of [["relay", "relay"], ["natserver", "natserver"], ["natclient", "natclient"]]) {
+      const service = knownService(row?.[field], role);
+      if (service) families.set(service, family);
+    }
+  }
+  for (const [rows, role, field] of [[serverRows, "natserver", "server"], [clientRows, "natclient", "client"]]) {
+    for (const row of rows) {
+      const service = knownService(row?.[field], role);
+      if (service) families.set(service, publicIPFamily(row?.ip_family));
+    }
+  }
+  return new Map([...families].map(([service, family]) => [service, buildNodeProfile(service, family)]));
+}
+
+function buildNodeProfile(service, family) {
+  const role = roleOf(service);
+  const ipFamily = publicIPFamily(family);
+  const ipType = {
+    default: "IPv4（默认网络）",
+    ipv4: "IPv4",
+    ipv6: "IPv6",
+    dual: "IPv4 + IPv6 双栈",
+  }[ipFamily];
+  const transportStack = role === "ca" || role === "index"
+    ? "HTTP/TCP"
+    : role === "diagnostic"
+      ? "诊断网络"
+      : "KCP/UDP + TCP 故障切换";
+  return {
+    ipFamily,
+    ipType,
+    transportStack,
+    networkStack: `${ipType} · ${transportStack}`,
+  };
+}
+
+function publicIPFamily(value) {
+  const family = String(value ?? "");
+  return ["ipv4", "ipv6", "dual"].includes(family) ? family : "default";
+}
+
+function enrichClientTransfers(snapshot, profiles) {
+  const enrichTransfer = (transfer) => {
+    const clientProfile = profiles.get(transfer.client) ?? buildNodeProfile(transfer.client, "default");
+    const serverProfile = profiles.get(transfer.server) ?? buildNodeProfile(transfer.server, "default");
+    return {
+      ...transfer,
+      clientIPType: clientProfile.ipType,
+      serverIPType: serverProfile.ipType,
+      transportStack: clientProfile.transportStack,
+      networkStack: clientProfile.ipType === serverProfile.ipType
+        ? clientProfile.networkStack
+        : `${clientProfile.ipType} → ${serverProfile.ipType} · ${clientProfile.transportStack}`,
+    };
+  };
+  const byClient = Object.fromEntries(transferClients.map((client) => {
+    const state = snapshot.byClient?.[client] ?? { summary: publicTransferStats(emptyTransferStats()), recent: [] };
+    const profile = profiles.get(client) ?? buildNodeProfile(client, "default");
+    return [client, { ...state, ...profile, recent: state.recent.map(enrichTransfer) }];
+  }));
+  const byServer = Object.fromEntries(transferServers.map((server) => {
+    const state = snapshot.byServer?.[server] ?? {};
+    const profile = profiles.get(server) ?? buildNodeProfile(server, "default");
+    return [server, { ...state, server, ...profile, recent: (state.recent ?? []).map(enrichTransfer) }];
+  }));
+  return { ...snapshot, byClient, byServer };
 }
 
 function publicRecentTransfer(transfer) {
@@ -2777,7 +3085,7 @@ function publicRunStatus(value) {
   };
 }
 
-function publicRuntimeNode(value) {
+function publicRuntimeNode(value, profile = buildNodeProfile(String(value.service ?? ""), "default")) {
   const service = String(value.service ?? "");
   const role = roleOf(service);
   return {
@@ -2787,6 +3095,7 @@ function publicRuntimeNode(value) {
     running: value.running === true,
     health: publicRuntimeStatus(value.health),
     restartCount: Math.max(0, integer(value.restartCount, 0)),
+    ...profile,
   };
 }
 
@@ -2817,6 +3126,7 @@ function publicMaliciousNodes(containerMap, containerProbe) {
     return {
       service,
       actor,
+      ...buildNodeProfile(service, "default"),
       running: runtime.running === true,
       health: publicRuntimeStatus(runtime.health),
       restartCount: Math.max(0, integer(runtime.restartCount, 0)),
@@ -3004,6 +3314,8 @@ function missingContainer(service) {
 }
 
 function roleOf(service) {
+  if (service === maliciousNatClient) return "natclient";
+  if (service === maliciousRandomNatServer) return "natserver";
   if (service === "malicious-natserver" || service === "malicious-relay") return service;
   if (service === "mixed-path-probe") return "natclient";
   if (!expectedServiceSet.has(service)) return "diagnostic";

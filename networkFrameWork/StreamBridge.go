@@ -272,3 +272,19 @@ func LegTransport(s network.Stream) string {
 	}
 	return "tcp"
 }
+
+// ActiveLegCount reports the currently attached physical legs of a stream.
+// Service health snapshots use it to distinguish a reconnecting carrier from
+// one that still has an actual TCP/KCP path.
+func ActiveLegCount(stream network.Stream) int {
+	if stream == nil {
+		return 0
+	}
+	if dual, ok := stream.(*DualStream); ok {
+		return len(dual.legStreams())
+	}
+	if tcp, ok := stream.(*TcpStream); ok && tcp.IsClosed() {
+		return 0
+	}
+	return 1
+}

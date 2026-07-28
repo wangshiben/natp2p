@@ -345,7 +345,8 @@ export -f dc is_positive_integer deadline_step_timeout_seconds write_transfer_re
 
 timeout_record=$run_dir/transfer-records/self-timeout.tsv
 timeout_deadline=$(( $(date +%s) + 2 ))
-if random_transfer_once "$run_dir" random-workload natserver01 natclient01 relay01 18101 \
+if BNFS_RANDOM_TRANSFER_LIMIT_KIBPS=512 random_transfer_once \
+  "$run_dir" random-workload natserver01 natclient01 relay01 18101 \
   self-timeout "$timeout_record" 100 "$timeout_deadline"; then
   fail 'deadline-limited transfer unexpectedly succeeded'
 else
@@ -354,6 +355,8 @@ fi
 [[ $timeout_rc == 28 ]] || fail "deadline-limited transfer returned rc=$timeout_rc"
 grep -Eq -- "--max-time '[12]'" "$timeout_command_file" \
   || fail 'curl did not receive the remaining attempt budget'
+grep -q -- "--limit-rate '512k'" "$timeout_command_file" \
+  || fail 'curl did not receive the KiB/s CPU safety rate'
 awk -F '\t' 'NF == 13 && $2 == "self-timeout" && $7 == 28 && $10 == "0.000" && $11 == "no" { found=1 } END { exit !found }' \
   "$timeout_record" || fail 'self-timeout did not persist a real timeout record'
 append_transfer_record "$run_dir" "$timeout_record" || fail 'self-timeout record append failed'

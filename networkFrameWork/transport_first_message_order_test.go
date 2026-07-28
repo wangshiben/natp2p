@@ -597,6 +597,40 @@ func expectNoTestMessage(t *testing.T, stream network.Stream, timeout time.Durat
 	}
 }
 
+func TestCrossRelayBridgeFailureDoesNotAcknowledgeFirstMessage(t *testing.T) {
+	cover := NewTransportCover()
+	bridgeErr := errors.New("target registration is not ready")
+	cover.SetMissingGroupHandler(func(network.Stream, *network.Message) error {
+		return bridgeErr
+	})
+	firstMessage := &network.Message{
+		Header: &network.Header{
+			NodeId:        "missing-target",
+			NodeIdVersion: 1,
+			ConnectionId:  "cross-relay-failed-bridge",
+		},
+		Payload: []byte("client-public-key"),
+	}
+
+	_, sendDone, listenDone := newTestBusinessLeg(t, cover, firstMessage)
+	select {
+	case err := <-listenDone:
+		if !errors.Is(err, bridgeErr) {
+			t.Fatalf("bridge dispatch error = %v, want %v", err, bridgeErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bridge failure was not returned")
+	}
+	select {
+	case err := <-sendDone:
+		if err == nil {
+			t.Fatal("failed bridge acknowledged the client's first message")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client first-message send did not observe bridge failure")
+	}
+}
+
 func TestRelayFirstMessageGatePreservesOrderAcrossServerLegs(t *testing.T) {
 	relayConnectionA, serverConnectionA := net.Pipe()
 	serverGate := newStagedWriteGateConn(serverConnectionA)

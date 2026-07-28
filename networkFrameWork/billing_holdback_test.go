@@ -648,6 +648,37 @@ func TestBillingHoldbackDrainsReverseSendWindowInSequence(t *testing.T) {
 	}
 }
 
+func TestBillingHoldbackDrainsDeferredSequenceAcrossConnections(t *testing.T) {
+	var calls atomic.Int32
+	var nextSequence atomic.Uint64
+	nextSequence.Store(1)
+	config := holdbackTestConfig(func(_ context.Context, record *BillableRecord) error {
+		calls.Add(1)
+		if record.Sequence != nextSequence.Load() {
+			return ErrBillableRecordDeferred
+		}
+		nextSequence.Add(1)
+		return nil
+	})
+	state := newForwardHookState(config, "server-cross-connection")
+	future := holdbackTestSequenceFrames(
+		t, 302, 2, "conn-b", "/p2p/message", holdbackTestE2ERecord(64, 32), true, 128,
+	)
+	if ready, err := holdbackTestForwardMessage(state, future); err != nil || len(ready) != 0 {
+		t.Fatalf("future delivery = (%d, %v)", len(ready), err)
+	}
+	first := holdbackTestSequenceFrames(
+		t, 301, 1, "conn-a", "/p2p/message", holdbackTestE2ERecord(64, 31), true, 128,
+	)
+	ready, err := holdbackTestForwardMessage(state, first)
+	if err != nil || len(ready) != len(first)+len(future) {
+		t.Fatalf("cross-connection drain = (%d, %v), want %d frames", len(ready), err, len(first)+len(future))
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("billing hook calls = %d, want 3", calls.Load())
+	}
+}
+
 func TestBillingHoldbackDeduplicatesDeferredRetransmit(t *testing.T) {
 	var calls atomic.Int32
 	var nextSequence atomic.Uint64

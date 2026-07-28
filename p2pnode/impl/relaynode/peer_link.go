@@ -301,8 +301,9 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 			reply.IndexSign = pl.owner.selfCertJSON() // 回程 HELLO 也带 indexSign, 供对端离线验签
 			_ = pl.send(reply)
 		}
+		pl.owner.syncHostRoutes(pl)
 	case ctrlFind:
-		hosts := pl.owner.hostsLocally(cm.Target)
+		hosts := pl.owner.hostsLocally(cm.Target) || len(pl.owner.transitRouteNextHops(cm.Target, pl.peerIdentity())) > 0
 		resp := &controlMessage{Type: ctrlFindResp, ReqID: cm.ReqID, Target: cm.Target, Hosts: hosts}
 		if hosts {
 			resp.Addr = pl.owner.getAddr()
@@ -310,6 +311,10 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 		_ = pl.send(resp)
 	case ctrlFindResp:
 		pl.owner.deliverFindResp(pl, cm)
+	case ctrlHostRoutes:
+		pl.owner.receiveHostRoutes(pl, cm.Routes)
+	case ctrlHostWithdraw:
+		pl.owner.receiveHostWithdrawals(pl, cm.Withdrawals)
 	default:
 		logx.Infof("[relaynode] 未知控制消息类型: %s", cm.Type)
 	}

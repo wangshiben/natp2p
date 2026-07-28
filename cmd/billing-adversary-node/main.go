@@ -57,15 +57,16 @@ var scenariosByRole = map[string][]string{
 }
 
 type configuration struct {
-	role       string
-	listen     string
-	caURL      string
-	peerURL    string
-	stateDir   string
-	seed       string
-	interval   time.Duration
-	runOnce    bool
-	httpClient *http.Client
+	role         string
+	listen       string
+	caURL        string
+	peerURL      string
+	stateDir     string
+	seed         string
+	interval     time.Duration
+	attackOffset time.Duration
+	runOnce      bool
+	httpClient   *http.Client
 }
 
 type attackerNode struct {
@@ -225,13 +226,14 @@ func parseConfiguration() (configuration, error) {
 	stateDir := flag.String("state-dir", "/state", "private persistent state directory")
 	seed := flag.String("seed", "bnfs-container-adversary-v1", "deterministic scheduling seed")
 	interval := flag.Duration("interval", 15*time.Second, "random attack interval")
+	attackOffset := flag.Duration("attack-offset", 0, "delay before the first random attack")
 	runOnce := flag.Bool("once", false, "run initial coverage and exit")
 	flag.Parse()
 
 	config := configuration{
 		role: *role, listen: *listen, caURL: strings.TrimRight(*caURL, "/"),
 		peerURL: strings.TrimRight(*peerURL, "/"), stateDir: *stateDir,
-		seed: *seed, interval: *interval, runOnce: *runOnce,
+		seed: *seed, interval: *interval, attackOffset: *attackOffset, runOnce: *runOnce,
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 	}
 	if _, ok := scenariosByRole[config.role]; !ok {
@@ -240,8 +242,8 @@ func parseConfiguration() (configuration, error) {
 	if config.listen == "" || config.peerURL == "" || config.caURL == "" || config.seed == "" {
 		return configuration{}, errors.New("listen, peer, CA and seed are required")
 	}
-	if config.interval < time.Second || config.interval > time.Hour {
-		return configuration{}, errors.New("interval must be between 1s and 1h")
+	if err := validateAttackSchedule(config.interval, config.attackOffset); err != nil {
+		return configuration{}, err
 	}
 	if err := validateHTTPServiceURL(config.caURL); err != nil {
 		return configuration{}, fmt.Errorf("CA URL: %w", err)
@@ -253,6 +255,16 @@ func parseConfiguration() (configuration, error) {
 		return configuration{}, errors.New("invalid state directory")
 	}
 	return config, nil
+}
+
+func validateAttackSchedule(interval, attackOffset time.Duration) error {
+	if interval < time.Second || interval > time.Hour {
+		return errors.New("interval must be between 1s and 1h")
+	}
+	if attackOffset < 0 || attackOffset >= interval {
+		return errors.New("attack offset must be non-negative and less than interval")
+	}
+	return nil
 }
 
 func validateHTTPServiceURL(value string) error {
@@ -358,9 +370,9 @@ func (node *attackerNode) run(context context.Context) error {
 		return node.publish()
 	}
 
-	attackTicker := time.NewTicker(node.config.interval)
+	attackTimer := time.NewTimer(node.config.interval + node.config.attackOffset)
 	heartbeatTicker := time.NewTicker(2 * time.Second)
-	defer attackTicker.Stop()
+	defer attackTimer.Stop()
 	defer heartbeatTicker.Stop()
 	for {
 		select {
@@ -376,11 +388,12 @@ func (node *attackerNode) run(context context.Context) error {
 			if err := node.publish(); err != nil {
 				return err
 			}
-		case <-attackTicker.C:
+		case <-attackTimer.C:
 			scenarios := scenariosByRole[node.config.role]
 			if err := node.execute(context, scenarios[node.random.Intn(len(scenarios))]); err != nil {
 				return err
 			}
+			attackTimer.Reset(node.config.interval)
 		}
 	}
 }

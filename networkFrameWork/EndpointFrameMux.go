@@ -25,18 +25,21 @@ import (
 // 出方向：per‑conn 流写出的帧（已自带 ConnectionId 戳）经 muxConn.Write 还原后，写到当前
 // preferred leg，写失败回退到另一条 leg。多条逻辑连接并发写共享物理连接，由 writeMu 串行化整帧。
 type EndpointFrameMux struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	dual     *DualStream
-	adapters []*TcpFrameAdapter // 每条底层 leg 一个（KCP / TCP）
+	ctx        context.Context
+	cancel     context.CancelFunc
+	dual       *DualStream
+	adapters   []*TcpFrameAdapter // 每条底层 leg 一个（KCP / TCP）
+	adapterSet map[*TcpStream]struct{}
 
 	// outCh + 单写者 goroutine：所有逻辑连接的出帧按入队顺序 FIFO 写出（按到达公平），
 	// 写者在阻塞的 conn.Write 上等待时不持有任何调用方共享的锁，故一条流的慢写不会
 	// 卡住别的流的握手写——这是避免单连接多路复用 head-of-line 阻塞的关键。
 	outCh chan *network.Frame
 
-	mu    sync.Mutex
-	conns map[string]*muxConn
+	mu        sync.Mutex
+	conns     map[string]*muxConn
+	inbound   map[muxFrameKey]muxInboundRoute
+	startOnce sync.Once
 
 	// onNew 在首次见到某 ConnectionId 时被调用（持锁外），上层据此 spawn per‑conn handler。
 	onNew func(connId string, conn net.Conn)
@@ -52,32 +55,17 @@ func NewEndpointFrameMux(stream network.Stream, onNew func(connId string, conn n
 	}
 	ctx, cancel := context.WithCancel(dual.ctx)
 	m := &EndpointFrameMux{
-		ctx:    ctx,
-		cancel: cancel,
-		dual:   dual,
-		conns:  make(map[string]*muxConn),
-		onNew:  onNew,
-		outCh:  make(chan *network.Frame, 1024),
+		ctx:        ctx,
+		cancel:     cancel,
+		dual:       dual,
+		adapterSet: make(map[*TcpStream]struct{}),
+		conns:      make(map[string]*muxConn),
+		inbound:    make(map[muxFrameKey]muxInboundRoute),
+		onNew:      onNew,
+		outCh:      make(chan *network.Frame, 1024),
 	}
 
-	// 把当前已 attach 的每条 leg 接成原始帧适配器。
-	legs := dual.legStreams()
-	for _, leg := range legs {
-		if leg == nil {
-			continue
-		}
-		tcp := tcpStreamFromStream(leg)
-		if tcp == nil {
-			continue
-		}
-		tcp.SetPureForwarder(true) // 只 tap 原始帧、不本地组包/ACK；同时卸载帧大小回调（复用腿不发起）
-		adapter := NewTcpFrameAdapter(tcp)
-		if adapter == nil {
-			continue
-		}
-		m.adapters = append(m.adapters, adapter)
-	}
-	if len(m.adapters) == 0 {
+	if len(m.attachCurrentLegs()) == 0 {
 		cancel()
 		return nil, errors.New("endpoint frame mux: no tcp leg available")
 	}
@@ -86,11 +74,18 @@ func NewEndpointFrameMux(stream network.Stream, onNew func(connId string, conn n
 
 // Start 启动单写者 goroutine 与每条 leg 的读循环（demux）。非阻塞。
 func (m *EndpointFrameMux) Start() {
-	go m.writeLoop()
-	for _, a := range m.adapters {
-		go m.readLeg(a)
-	}
+	m.startOnce.Do(func() {
+		go m.writeLoop()
+		m.attachCurrentLegs()
+		for _, adapter := range m.snapshotAdapters() {
+			go m.readLeg(adapter)
+		}
+		go m.watchLegs()
+	})
 }
+
+// Done 在承载注册流关闭或 Close 被调用后关闭。
+func (m *EndpointFrameMux) Done() <-chan struct{} { return m.ctx.Done() }
 
 // writeLoop 是唯一的出帧写者：按入队顺序把帧写到 preferred leg（失败回退另一条）。
 // 阻塞的 conn.Write 只卡住本 goroutine，不持有任何调用方共享的锁，故不会让一条流的
@@ -101,14 +96,24 @@ func (m *EndpointFrameMux) writeLoop() {
 		case <-m.ctx.Done():
 			return
 		case f := <-m.outCh:
-			ordered := m.orderedAdapters()
-			for _, a := range ordered {
-				if err := a.HandleFrame(m.ctx, f); err != nil {
-					continue
-				}
-				break
-			}
+			m.writeFrame(f)
 		}
+	}
+}
+
+func (m *EndpointFrameMux) writeFrame(frame *network.Frame) {
+	adapters, routeKey, routed := m.orderedAdaptersForFrame(frame)
+	for _, adapter := range adapters {
+		if err := adapter.HandleFrame(m.ctx, frame); err != nil {
+			if routed {
+				m.forgetInboundRoute(routeKey, adapter)
+			}
+			continue
+		}
+		if routed {
+			m.completeInboundRoute(routeKey, adapter, frame)
+		}
+		return
 	}
 }
 
@@ -119,28 +124,127 @@ func (m *EndpointFrameMux) Close() {
 	for _, c := range m.conns {
 		c.Close()
 	}
+	m.conns = make(map[string]*muxConn)
+	m.inbound = make(map[muxFrameKey]muxInboundRoute)
 	m.mu.Unlock()
 }
 
+// CloseConnection 只回收一个逻辑会话，不影响其它 connectionID 或注册载体。
+func (m *EndpointFrameMux) CloseConnection(connID string) {
+	m.removeConn(connID)
+}
+
+func (m *EndpointFrameMux) watchLegs() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, adapter := range m.attachCurrentLegs() {
+			go m.readLeg(adapter)
+		}
+	}
+}
+
+// attachCurrentLegs 将 carrier 新出现的重连 leg 纳入帧解复用；返回本次新增的适配器。
+func (m *EndpointFrameMux) attachCurrentLegs() []*TcpFrameAdapter {
+	legs := m.dual.legStreams()
+	added := make([]*TcpFrameAdapter, 0, len(legs))
+	for _, leg := range legs {
+		tcp := tcpStreamFromStream(leg)
+		if tcp == nil || tcp.IsClosed() {
+			continue
+		}
+
+		m.mu.Lock()
+		_, exists := m.adapterSet[tcp]
+		m.mu.Unlock()
+		if exists {
+			continue
+		}
+
+		tcp.SetPureForwarder(true)
+		adapter := NewTcpFrameAdapter(tcp)
+		if adapter == nil {
+			continue
+		}
+
+		m.mu.Lock()
+		if _, exists := m.adapterSet[tcp]; !exists {
+			m.adapterSet[tcp] = struct{}{}
+			m.adapters = append(m.adapters, adapter)
+			added = append(added, adapter)
+		}
+		m.mu.Unlock()
+	}
+	return added
+}
+
+func (m *EndpointFrameMux) snapshotAdapters() []*TcpFrameAdapter {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*TcpFrameAdapter(nil), m.adapters...)
+}
+
 func (m *EndpointFrameMux) readLeg(a *TcpFrameAdapter) {
+	defer m.removeAdapter(a)
 	for {
 		f, err := a.NextFrame(m.ctx)
 		if err != nil {
 			return
 		}
-		m.dispatch(f)
+		m.dispatchFromAdapter(a, f)
 	}
+}
+
+func (m *EndpointFrameMux) removeAdapter(expected *TcpFrameAdapter) {
+	if expected == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.adapterSet, expected.stream)
+	for index, adapter := range m.adapters {
+		if adapter == expected {
+			m.adapters = append(m.adapters[:index], m.adapters[index+1:]...)
+			break
+		}
+	}
+	for key, route := range m.inbound {
+		if route.adapter == expected {
+			delete(m.inbound, key)
+		}
+	}
+	m.mu.Unlock()
 }
 
 // dispatch 把一帧按 ConnectionId 投递到对应逻辑连接的缓冲；新连接先回调 onNew。
 func (m *EndpointFrameMux) dispatch(f *network.Frame) {
+	m.dispatchFromAdapter(nil, f)
+}
+
+func (m *EndpointFrameMux) dispatchFromAdapter(adapter *TcpFrameAdapter, f *network.Frame) {
 	connId := f.ConnectionId
 	if connId == "" {
-		// 没有 connectionId 无法归属——理论上 callee 收到的业务帧都带戳，留日志兜底。
+		// carrier 自身的保活 ACK 不属于任何逻辑会话，正常静默消费；其它无归属帧保留告警。
+		if f.FrameType == network.FrameTypeAck {
+			return
+		}
 		logx.Warnf("[EndpointMux] 丢弃无 connectionId 的帧: msgId=%d seq=%d type=%d", f.MessageId, f.SeqId, f.FrameType)
 		return
 	}
 	m.mu.Lock()
+	if adapter != nil && (f.FrameType == network.FrameTypeData || f.FrameType == network.FrameTypeRetransmit) {
+		if m.inbound == nil {
+			m.inbound = make(map[muxFrameKey]muxInboundRoute)
+		}
+		m.inbound[muxFrameKey{connectionID: connId, messageID: f.MessageId}] = muxInboundRoute{
+			adapter: adapter,
+			total:   f.TotalFrames,
+		}
+	}
 	c := m.conns[connId]
 	isNew := c == nil
 	if isNew {
@@ -169,6 +273,11 @@ func (m *EndpointFrameMux) removeConn(connId string) {
 	m.mu.Lock()
 	c := m.conns[connId]
 	delete(m.conns, connId)
+	for key := range m.inbound {
+		if key.connectionID == connId {
+			delete(m.inbound, key)
+		}
+	}
 	m.mu.Unlock()
 	if c != nil {
 		c.Close()
@@ -188,10 +297,14 @@ func (m *EndpointFrameMux) writeShared(f *network.Frame) error {
 
 // orderedAdapters 返回按 preferred 协议优先排序的 leg 适配器。
 func (m *EndpointFrameMux) orderedAdapters() []*TcpFrameAdapter {
+	adapters := m.snapshotAdapters()
+	if m.dual == nil {
+		return adapters
+	}
 	preferred := m.dual.preferredTransport()
-	ordered := make([]*TcpFrameAdapter, 0, len(m.adapters))
+	ordered := make([]*TcpFrameAdapter, 0, len(adapters))
 	var rest []*TcpFrameAdapter
-	for _, a := range m.adapters {
+	for _, a := range adapters {
 		if transportOfStream(a.stream) == preferred {
 			ordered = append(ordered, a)
 		} else {
@@ -199,6 +312,58 @@ func (m *EndpointFrameMux) orderedAdapters() []*TcpFrameAdapter {
 		}
 	}
 	return append(ordered, rest...)
+}
+
+type muxFrameKey struct {
+	connectionID string
+	messageID    uint64
+}
+
+type muxInboundRoute struct {
+	adapter *TcpFrameAdapter
+	total   uint32
+}
+
+func (m *EndpointFrameMux) orderedAdaptersForFrame(frame *network.Frame) ([]*TcpFrameAdapter, muxFrameKey, bool) {
+	ordered := m.orderedAdapters()
+	if frame == nil || frame.FrameType != network.FrameTypeAck || frame.ConnectionId == "" {
+		return ordered, muxFrameKey{}, false
+	}
+	key := muxFrameKey{connectionID: frame.ConnectionId, messageID: frame.MessageId}
+	m.mu.Lock()
+	route, exists := m.inbound[key]
+	m.mu.Unlock()
+	if !exists || route.adapter == nil {
+		return ordered, key, false
+	}
+	for index, adapter := range ordered {
+		if adapter != route.adapter {
+			continue
+		}
+		if index > 0 {
+			copy(ordered[1:index+1], ordered[:index])
+			ordered[0] = adapter
+		}
+		return ordered[:1], key, true
+	}
+	m.forgetInboundRoute(key, route.adapter)
+	return nil, key, true
+}
+
+func (m *EndpointFrameMux) forgetInboundRoute(key muxFrameKey, expected *TcpFrameAdapter) {
+	m.mu.Lock()
+	if route, exists := m.inbound[key]; exists && route.adapter == expected {
+		delete(m.inbound, key)
+	}
+	m.mu.Unlock()
+}
+
+func (m *EndpointFrameMux) completeInboundRoute(key muxFrameKey, expected *TcpFrameAdapter, frame *network.Frame) {
+	m.mu.Lock()
+	if route, exists := m.inbound[key]; exists && route.adapter == expected && isFullFrameAck(frame, route.total) {
+		delete(m.inbound, key)
+	}
+	m.mu.Unlock()
 }
 
 // transportOfStream 判断某 TcpStream 属于哪种协议 leg（按底层连接 RemoteAddr 网络类型）。

@@ -109,9 +109,11 @@ type TcpStream struct {
 	// 原子 Load/Store 既消除字段本身的竞争，又建立 happens-before —— 保证读到的 EncrypSuite
 	// 是「构造完成」的（否则 readLoop 可能读到尚未初始化完成的 E2E 会话）。
 	// 经 getCrypto/setCrypto 访问，禁止直接读写。
-	crypto     atomic.Pointer[network.EncrypSuite]
-	frameIdGen network.FrameIdGenerator
-	assembler  *network.FrameAssembler
+	crypto           atomic.Pointer[network.EncrypSuite]
+	recordObserverMu sync.RWMutex
+	recordObserver   network.OutboundRecordObserver
+	frameIdGen       network.FrameIdGenerator
+	assembler        *network.FrameAssembler
 
 	streamCtx    context.Context
 	streamCancel context.CancelFunc
@@ -661,9 +663,22 @@ func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network
 		return errors.New("send message: message is nil")
 	}
 	if crypto := t.getCrypto(); crypto != nil {
-		if _, err := network.SealMessagePayload(crypto, message, messageID); err != nil {
+		sealedMessageID, err := network.SealMessagePayload(crypto, message, messageID)
+		if err != nil {
 			return err
 		}
+		if message.Header != nil && message.Header.BillingSequence != 0 {
+			t.recordObserverMu.RLock()
+			observer := t.recordObserver
+			t.recordObserverMu.RUnlock()
+			if observer != nil {
+				if err := observer(cloneMessage(message), append([]byte(nil), sealedMessageID...)); err != nil {
+					return fmt.Errorf("TcpStream billing record rejected: %w", err)
+				}
+			}
+		}
+	} else if message.Header != nil && message.Header.BillingSequence != 0 {
+		return errors.New("TcpStream billing record requires E2E encryption")
 	}
 	messageId := t.frameIdGen.Next()
 
@@ -751,6 +766,12 @@ func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network
 			timeout = maxAckTimeout
 		}
 	}
+}
+
+func (t *TcpStream) SetOutboundRecordObserver(observer network.OutboundRecordObserver) {
+	t.recordObserverMu.Lock()
+	t.recordObserver = observer
+	t.recordObserverMu.Unlock()
 }
 
 // waitAck 等待 tracker 收齐 ACK。语义为「无进展超时」：timeout 是「距上次 ACK 进展」的
@@ -1144,7 +1165,8 @@ func isKeepAliveFrame(f *network.Frame) bool {
 }
 
 func (t *TcpStream) handleData(f *network.Frame) error {
-	if t.pureForwarder.Load() && t.firstMsgAcked.Load() && f.MessageId == t.firstMsgID {
+	if t.pureForwarder.Load() && t.firstMsgAcked.Load() && f.MessageId == t.firstMsgID &&
+		f.ConnectionId == t.getConnectionId() {
 		return t.sendAck(f.MessageId, f.TotalFrames, network.FullAckRange(f.TotalFrames))
 	}
 	localKeepAlive := t.pureForwarder.Load() && isKeepAliveFrame(f)

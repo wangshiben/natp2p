@@ -111,5 +111,53 @@ func TestEndpointMuxDispatch(t *testing.T) {
 	}
 }
 
+func TestEndpointMuxReturnsAckOnInboundCarrierLeg(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstLocal, firstRemote := net.Pipe()
+	defer firstLocal.Close()
+	defer firstRemote.Close()
+	secondLocal, secondRemote := net.Pipe()
+	defer secondLocal.Close()
+	defer secondRemote.Close()
+
+	first := &TcpFrameAdapter{stream: newTcpStream("server", "", firstLocal)}
+	second := &TcpFrameAdapter{stream: newTcpStream("server", "", secondLocal)}
+	mux := &EndpointFrameMux{
+		ctx:        ctx,
+		adapters:   []*TcpFrameAdapter{first, second},
+		adapterSet: map[*TcpStream]struct{}{first.stream: {}, second.stream: {}},
+		conns:      make(map[string]*muxConn),
+		inbound:    make(map[muxFrameKey]muxInboundRoute),
+		onNew:      func(string, net.Conn) {},
+	}
+
+	incoming := &network.Frame{
+		MessageId: 17, SeqId: 0, TotalFrames: 1, FrameType: network.FrameTypeData,
+		ConnectionId: "service-session",
+	}
+	mux.dispatchFromAdapter(second, incoming)
+	ack, err := network.BuildAckFrame(incoming.MessageId, incoming.TotalFrames, network.FullAckRange(incoming.TotalFrames))
+	if err != nil {
+		t.Fatalf("BuildAckFrame: %v", err)
+	}
+	ack.ConnectionId = incoming.ConnectionId
+
+	read := make(chan *network.Frame, 1)
+	go func() {
+		frame, _ := network.ReadFrame(secondRemote)
+		read <- frame
+	}()
+	mux.writeFrame(ack)
+	got := <-read
+	if got == nil || got.FrameType != network.FrameTypeAck || got.MessageId != incoming.MessageId {
+		t.Fatalf("inbound carrier ACK = %+v", got)
+	}
+	if len(mux.inbound) != 0 {
+		t.Fatalf("completed ACK retained %d inbound routes", len(mux.inbound))
+	}
+}
+
 // 编译期确保 muxConn 实现 net.Conn。
 var _ net.Conn = (*muxConn)(nil)

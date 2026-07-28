@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestRelayFailoverRetriesEachAddressFiveTimes(t *testing.T) {
+func TestRelayFailoverRetriesEachAddressFiveTimesThenCycles(t *testing.T) {
 	state := newRelayFailoverState("relay-a:9000")
 	state.setCandidates([]string{"relay-a:9000", "relay-b:9000", "relay-c:9000"})
 
@@ -27,8 +27,16 @@ func TestRelayFailoverRetriesEachAddressFiveTimes(t *testing.T) {
 		}
 	}
 
+	target, err := state.currentTarget()
+	if err != nil || target.address != "relay-a:9000" {
+		t.Fatalf("全部候选暂时失败后应回到首个候选重试: target=%+v err=%v", target, err)
+	}
+}
+
+func TestRelayFailoverEmptyCandidatesAreExhausted(t *testing.T) {
+	state := newRelayFailoverState("")
 	if _, err := state.currentTarget(); !errors.Is(err, errRelayCandidatesExhausted) {
-		t.Fatalf("候选耗尽后应返回明确错误，实际 %v", err)
+		t.Fatalf("空候选应返回明确错误，实际 %v", err)
 	}
 }
 

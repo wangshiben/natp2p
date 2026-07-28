@@ -1172,6 +1172,19 @@ func (d *DualStream) setPersistentReconnectDialer(kind streamTransport, dial str
 	d.setReconnectDialer(kind, dial, true)
 }
 
+func (d *DualStream) enablePersistentReconnectSurvival() {
+	d.reconnectMu.Lock()
+	for kind, dial := range d.reconnectDialers {
+		if dial == nil {
+			continue
+		}
+		d.reconnectPersistent[kind] = true
+		d.reconnectDisabled[kind] = false
+	}
+	d.reconnectMu.Unlock()
+	d.EnableReconnectSurvival()
+}
+
 func (d *DualStream) setReconnectDialer(kind streamTransport, dial streamReconnectDialer, persistent bool) {
 	if kind == streamTransportUnknown {
 		return
@@ -1238,6 +1251,10 @@ func transportName(kind streamTransport) string {
 }
 
 func (d *DualStream) runReconnect(id streamTransport, dial streamReconnectDialer) {
+	d.runReconnectWithBackoff(id, dial, initialReconnectBackoff, maxReconnectBackoff)
+}
+
+func (d *DualStream) runReconnectWithBackoff(id streamTransport, dial streamReconnectDialer, initialBackoff, maximumBackoff time.Duration) {
 	defer func() {
 		d.reconnectMu.Lock()
 		d.reconnectActive[id] = false
@@ -1246,7 +1263,7 @@ func (d *DualStream) runReconnect(id streamTransport, dial streamReconnectDialer
 
 	family := legFamily(id)
 	kindStr := transportName(family)
-	backoff := initialReconnectBackoff
+	backoff := initialBackoff
 	d.reconnectMu.Lock()
 	persistent := d.reconnectPersistent[id]
 	d.reconnectMu.Unlock()
@@ -1291,8 +1308,8 @@ func (d *DualStream) runReconnect(id streamTransport, dial streamReconnectDialer
 		}
 
 		backoff *= 2
-		if backoff > maxReconnectBackoff {
-			backoff = maxReconnectBackoff
+		if backoff > maximumBackoff {
+			backoff = maximumBackoff
 		}
 	}
 
@@ -1509,6 +1526,15 @@ func EnableReconnectSurvival(stream network.Stream) bool {
 		return false
 	}
 	dual.EnableReconnectSurvival()
+	return true
+}
+
+func EnablePersistentReconnectSurvival(stream network.Stream) bool {
+	dual, ok := stream.(*DualStream)
+	if !ok {
+		return false
+	}
+	dual.enablePersistentReconnectSurvival()
 	return true
 }
 

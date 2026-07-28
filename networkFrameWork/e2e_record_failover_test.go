@@ -257,6 +257,53 @@ func newE2ETestMessage(payload []byte) *network.Message {
 	}
 }
 
+func TestTcpStreamBillingObserverReceivesSealedRecord(t *testing.T) {
+	sender, receiver := newPipeStreams(t)
+	suite := &countingE2ESuite{}
+	sender.SetCryptoSuite(suite)
+	receiver.SetCryptoSuite(suite)
+
+	observed := make(chan *network.Message, 1)
+	if !SetOutboundRecordObserver(sender, func(message *network.Message, messageID []byte) error {
+		if len(messageID) == 0 {
+			t.Fatal("billing observer received an empty E2E message ID")
+		}
+		observed <- message
+		return nil
+	}) {
+		t.Fatal("TcpStream rejected the billing record observer")
+	}
+
+	message := newE2ETestMessage([]byte("service response"))
+	message.Header.BillingSessionID[0] = 1
+	message.Header.BillingSequence = 1
+	message.Header.BillingBytes = uint64(len(message.Payload))
+	sendResult := make(chan error, 1)
+	go func() { sendResult <- sender.SendMessage(context.Background(), message) }()
+
+	received, err := receiver.NextMessage(context.Background())
+	if err != nil {
+		t.Fatalf("receive sealed service response: %v", err)
+	}
+	if !bytes.Equal(received.Payload, message.Payload) {
+		t.Fatalf("received payload = %q, want %q", received.Payload, message.Payload)
+	}
+	if err := <-sendResult; err != nil {
+		t.Fatalf("send sealed service response: %v", err)
+	}
+	select {
+	case record := <-observed:
+		if bytes.Equal(record.Payload, message.Payload) {
+			t.Fatal("billing observer received plaintext instead of the sealed record")
+		}
+		if record.Header.BillingSequence != message.Header.BillingSequence {
+			t.Fatalf("observed billing sequence = %d, want %d", record.Header.BillingSequence, message.Header.BillingSequence)
+		}
+	default:
+		t.Fatal("billing observer was not called")
+	}
+}
+
 func TestDualStreamKCPToTCPFailoverSealsOnce(t *testing.T) {
 	suite := &countingE2ESuite{}
 	kcpLeg := newObservingE2ELeg(errors.New("KCP unavailable"))

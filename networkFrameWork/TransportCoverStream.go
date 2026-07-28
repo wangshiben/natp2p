@@ -293,18 +293,24 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		if isBridge {
 			// 逐帧跨中继桥接：先由 handler 安装 pure-forwarder/frame tap，再启动 readLoop。
 			//
-			// 但**必须**在本地补发首包 ACK：本入口 relay 已经把客户端的首帧（routing-hello,
+			// 成功建桥后**必须**在本地补发首包 ACK：本入口 relay 已经把客户端的首帧（routing-hello,
 			// 含公钥）同步读走用于路由, 并改发自己合成的 hello 给对端 relay —— 客户端的这条
 			// 首帧根本不会到达真正的 nat 节点, 故端到端 ACK 永远回不来。若不在此本地 ACK,
 			// 客户端 recvAckTimer 超时后会重传该首帧；若把这份路由 hello 当业务帧继续转发，
 			// callee 会在 TLS 握手里收到**两份公钥**，错位成 "wrong Salt format"。
 			// 跨公网高延迟下必现, 进程内测试因 <1s 完成握手而侥幸不触发。
 			// 首帧之后的真实 TLS 负载仍由对端 nat 节点端到端 ACK, 不受影响。
-			_ = stream.AckFirstMessage()
+			// ACK 不能早于 handler 成功：目标尚未注册时提前确认会让发起端把一次失败桥接
+			// 当成成功重连，Relay 随即关闭连接，形成无退避的重连/EOF 活锁。
 			// 把 (stream, 首条消息) 交给 handler；handler 会先完成逐帧桥接配置再启动循环。
 			if err := missingHandlerPeek(stream, message); err != nil {
 				logx.Errorf("[relay] MissingGroupHandler(桥接) 处理失败: targetNodeId=%.16s connId=%s err=%v",
 					message.Header.NodeId, message.Header.ConnectionId, err)
+				stream.Close()
+				errChan <- err
+				return
+			}
+			if err := stream.AckFirstMessage(); err != nil {
 				stream.Close()
 				errChan <- err
 				return

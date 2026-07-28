@@ -23,10 +23,32 @@ const RelayBridgeMuxRoute = "/relay/bridge-mux"
 
 // 控制消息类型。
 const (
-	ctrlHello    = "HELLO"     // 交换 relay 身份与公网业务地址
-	ctrlFind     = "FIND"      // 查询某个 nat 节点是否托管在对端 relay
-	ctrlFindResp = "FIND_RESP" // FIND 的应答
+	ctrlHello        = "HELLO"         // 交换 relay 身份与公网业务地址
+	ctrlFind         = "FIND"          // 查询某个 nat 节点是否托管在对端 relay
+	ctrlFindResp     = "FIND_RESP"     // FIND 的应答
+	ctrlHostRoutes   = "HOST_ROUTES"   // 同步 NodeID -> Relay 多路由目录
+	ctrlHostWithdraw = "HOST_WITHDRAW" // 撤销由本控制邻居提供的失效路径
 )
+
+type hostRouteKey struct {
+	Target  string `json:"target"`
+	RelayID string `json:"relay_id"`
+}
+
+type hostRouteWire struct {
+	Target         string   `json:"target"`
+	RelayID        string   `json:"relay_id"`
+	RelayPublicKey string   `json:"relay_public_key"`
+	Addr           string   `json:"addr"`
+	Incarnation    string   `json:"incarnation"`
+	Sequence       uint64   `json:"sequence"`
+	IssuedAt       int64    `json:"issued_at"`
+	LeaseUntil     int64    `json:"lease_until"`
+	Active         bool     `json:"active"`
+	IndexSign      []byte   `json:"index_sign,omitempty"`
+	Path           []string `json:"path,omitempty"`
+	Signature      []byte   `json:"signature"`
+}
 
 // controlMessage 是 relay↔relay 控制链路上交换的统一信封。
 //
@@ -40,13 +62,15 @@ const (
 //	             (observedRemoteIP + 对端自报端口)。relay 收到后用它覆盖自己的对外地址,
 //	             使其后续上报给 natNode 的 relay 列表是可路由的, 而非 ":9000" 占位。
 type controlMessage struct {
-	Type         string `json:"type"`
-	ReqID        uint64 `json:"req_id,omitempty"`
-	NodeId       string `json:"node_id,omitempty"`
-	Addr         string `json:"addr,omitempty"`
-	Target       string `json:"target,omitempty"`
-	Hosts        bool   `json:"hosts,omitempty"`
-	ObservedAddr string `json:"observed_addr,omitempty"`
+	Type         string          `json:"type"`
+	ReqID        uint64          `json:"req_id,omitempty"`
+	NodeId       string          `json:"node_id,omitempty"`
+	Addr         string          `json:"addr,omitempty"`
+	Target       string          `json:"target,omitempty"`
+	Hosts        bool            `json:"hosts,omitempty"`
+	ObservedAddr string          `json:"observed_addr,omitempty"`
+	Routes       []hostRouteWire `json:"routes,omitempty"`
+	Withdrawals  []hostRouteKey  `json:"withdrawals,omitempty"`
 	// IndexSign 是 HELLO 携带的准入证书(indexSign)JSON（admission.SignedCert）。
 	// 无交互准入：对端收到 HELLO 即离线验签。未启用准入/老对端时为空。
 	IndexSign []byte `json:"index_sign,omitempty"`

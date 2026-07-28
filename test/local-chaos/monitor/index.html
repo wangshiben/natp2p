@@ -69,8 +69,8 @@
     .topology-node.ca rect { fill:#173227; stroke:var(--green); }
     .topology-node.natserver rect { fill:#1b2b29; stroke:#70bba0; }
     .topology-node.natclient rect { fill:#252435; stroke:#a99bd1; }
-    .topology-node.malicious-relay rect,.topology-node.malicious-natserver rect { fill:#3a211d; stroke:#ff8a65; stroke-width:2; stroke-dasharray:5 3; }
-    .topology-node.malicious-relay text,.topology-node.malicious-natserver text { fill:#ffd7c8; }
+    .topology-node.malicious-relay rect,.topology-node.malicious-natserver rect,.topology-node.malicious-natclient rect,.topology-node.malicious-random-natserver rect { fill:#3a211d; stroke:#ff8a65; stroke-width:2; stroke-dasharray:5 3; }
+    .topology-node.malicious-relay text,.topology-node.malicious-natserver text,.topology-node.malicious-natclient text,.topology-node.malicious-random-natserver text { fill:#ffd7c8; }
     .topology-node.offline rect { opacity:.5; stroke:var(--red); }
     .topology-node.active rect { stroke:var(--orange); stroke-width:3; filter:drop-shadow(0 0 5px #ff996c88); }
     .group-label { fill:var(--muted); font:600 12px ui-sans-serif,system-ui,sans-serif; letter-spacing:.08em; }
@@ -95,7 +95,7 @@
     .transfer-stat strong { color:var(--text); margin-left:4px; }
     .client-transfer-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(520px,1fr)); gap:11px; }
     .client-transfer { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:11px; background:#0b1721; }
-    .client-transfer.adversary-transfer { border-color:#744232; background:#211713; }
+    .client-transfer.adversary-transfer,.server-transfer.adversary-transfer { border-color:#744232; background:#211713; }
     .client-transfer.adversary-transfer .client-transfer-head { border-bottom-color:#5d382c; }
     .client-transfer-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 12px; border-bottom:1px solid #203341; }
     .client-transfer-head strong { font:700 13px ui-monospace,SFMono-Regular,Consolas,monospace; }
@@ -104,6 +104,15 @@
     .client-transfer-table th,.client-transfer-table td { padding:7px 8px; }
     .client-transfer-table td:first-child { color:var(--muted); }
     .client-transfer-table .empty-row { height:72px; text-align:center; color:var(--muted); }
+    .server-transfer-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:17px 0 9px; }
+    .server-transfer-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:9px; }
+    .server-transfer { min-width:0; border:1px solid var(--line); border-left:3px solid var(--blue); border-radius:10px; padding:11px 12px; background:#0b1721; }
+    .server-transfer.idle { border-left-color:#395062; }
+    .server-transfer-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+    .server-transfer-head strong { font:700 13px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .server-transfer-stack { margin:7px 0; color:#bad0dd; font-size:11px; }
+    .server-transfer-route { color:var(--muted); font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .server-transfer-clients { margin-top:7px; color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .failure-summary { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
     .failure-stat { border:1px solid var(--line); border-radius:999px; padding:5px 10px; color:var(--muted); font-size:12px; }
     .failure-stat strong { color:var(--text); margin-left:4px; }
@@ -168,6 +177,23 @@
     .worker-chip { display:inline-flex; align-items:center; gap:5px; padding:4px 8px; border-radius:999px; background:#122531; color:var(--muted); font-size:12px; }
     .worker-chip::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--red); }
     .worker-chip.alive::before { background:var(--green); }
+    .random-batch-summary { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
+    .random-batch-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:9px; margin-bottom:14px; }
+    .random-batch { border:1px solid var(--line); border-left:3px solid var(--blue); border-radius:10px; padding:10px 11px; background:#0b1721; }
+    .random-batch.multi { border-left-color:var(--purple); }
+    .random-batch.bad { border-left-color:var(--red); background:#29191d; }
+    .random-batch-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+    .random-batch-route { margin-top:7px; color:var(--muted); font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .random-batch-client { display:inline-block; border:1px solid #31536b; border-radius:999px; padding:2px 6px; margin:2px 3px 2px 0; color:var(--text); }
+    .random-batch-client.malicious { border-color:#ff8a65; color:#ffd7c8; background:#3a211d; }
+    .service-session-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(270px,1fr)); gap:9px; margin-top:12px; }
+    .service-listener { border:1px solid var(--line); border-left:3px solid var(--green); border-radius:10px; padding:11px 12px; background:#0b1721; }
+    .service-listener.bad { border-left-color:var(--red); background:#29191d; }
+    .service-listener-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+    .service-listener-path { margin:8px 0; color:var(--muted); font:11px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .service-session-list { display:flex; flex-wrap:wrap; gap:5px; min-height:24px; }
+    .service-session-chip { border:1px solid #2e6f61; border-radius:999px; padding:3px 7px; color:#c9f8e8; background:#10271f; font:10px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .topology-edge.service-session { stroke:var(--green); stroke-width:3.2; opacity:1; filter:drop-shadow(0 0 4px #49d49d88); }
     .empty-state { display:flex; justify-content:center; align-items:center; min-height:170px; color:var(--muted); text-align:center; padding:24px; }
     @media (max-width:1000px) { .summary,.resource { grid-column:span 6; } .chart-panel,.probe-panel { grid-column:span 12; } }
     @media (max-width:620px) { main{padding:14px} header{display:block}.right{text-align:left;margin-top:12px}.summary,.resource{grid-column:span 12}.client-transfer-grid{grid-template-columns:1fr}.adversary-actors,.malicious-node-grid{grid-template-columns:1fr} }
@@ -184,7 +210,7 @@
   <section class="grid">
     <article class="panel summary"><div class="muted">剩余时间</div><div class="value" id="remaining">--:--:--</div><div class="small muted" id="deadline">等待进入 RUNNING</div></article>
     <article class="panel summary"><div class="muted">核心节点健康</div><div class="value" id="core">0 / 9</div><div class="small muted">CA + Index + 7 Relay</div></article>
-    <article class="panel summary"><div class="muted">NAT / 恶意节点运行</div><div class="value" id="nat">0 / 19</div><div class="small muted" id="maliciousSummary">13 Server + 6 Client · 恶意节点 0 / 2</div></article>
+    <article class="panel summary"><div class="muted">NAT / 恶意节点运行</div><div class="value" id="nat">0 / 21</div><div class="small muted" id="maliciousSummary">13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client</div></article>
     <article class="panel summary"><div class="muted">容器重启总数</div><div class="value" id="restarts">0</div><div class="small muted" id="caStatus">CA Web 探测中</div></article>
 
     <article class="panel resource"><div class="split-title"><h2>项目 CPU</h2><strong id="cpuText">0%</strong></div><div class="meter"><i id="cpuMeter"></i></div><div class="small muted" id="cpuHost">阈值 55%</div></article>
@@ -197,12 +223,25 @@
 
   <section class="panel" style="margin-bottom:14px">
     <div class="split-title">
+      <h2>NatServer 持久注册与并发服务会话</h2>
+      <span class="muted small" id="serviceSessionFreshness">等待真实 ServiceListener 状态</span>
+    </div>
+    <div class="transfer-summary" id="serviceSessionSummary"></div>
+    <div class="service-session-grid" id="serviceListeners"><div class="empty-state">等待 NatServer listener 状态文件</div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="split-title">
       <h2>NAT Client 随机传输与恶意节点活动（各节点最新 10 条）</h2>
       <span class="muted small">正常随机传输、真实混合 P2P 探针与隔离计费 fixture 分开展示、互不混算</span>
     </div>
-    <div class="worker-summary" id="workerSummary"><strong>随机传输 Worker 0 / 6</strong><span class="muted small">等待 worker 身份数据</span></div>
+    <div class="worker-summary" id="workerSummary"><strong>随机批次调度器 0 / 1</strong><span class="muted small">等待调度器身份数据</span></div>
+    <div class="random-batch-summary" id="randomBatchSummary"></div>
+    <div class="random-batch-list" id="randomBatchList"><div class="empty-state">等待随机批次</div></div>
     <div class="transfer-summary" id="transferSummary"></div>
     <div class="client-transfer-grid" id="clientTransfers"></div>
+    <div class="server-transfer-title"><h2>NatServer 被随机命中的时间线</h2><span class="muted small">展示不同时间的多 Client→同一 Server 关系；同时在线会话以上方 listener 为准</span></div>
+    <div class="server-transfer-grid" id="serverTransferTimeline"></div>
   </section>
 
   <section class="panel" style="margin-bottom:14px">
@@ -284,7 +323,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const defaultClientCount = 6;
+const defaultClientCount = 7;
 let lastData = null;
 async function refresh() {
   try {
@@ -310,7 +349,7 @@ function render(data) {
   const maliciousRuntime = Array.isArray(data.maliciousNodes) ? data.maliciousNodes : [];
   const maliciousHealthy = maliciousRuntime.filter(node => node?.running === true && ['healthy','running'].includes(String(node?.health || ''))).length;
   const mixedPathHealthy = data.mixedPath?.healthy === true;
-  $('maliciousSummary').textContent = '13 Server + 6 Client + 1 混合探针 · 恶意节点 ' + maliciousHealthy + ' / 2 · P2P ' + (mixedPathHealthy ? 'PASS' : 'WAIT');
+  $('maliciousSummary').textContent = '13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client + 1 混合探针 · 计费恶意节点 ' + maliciousHealthy + ' / 2 · P2P ' + (mixedPathHealthy ? 'PASS' : 'WAIT');
   $('maliciousSummary').style.color = maliciousHealthy === 2 && (mixedPathHealthy || data.phase !== 'RUNNING') ? '' : 'var(--red)';
   $('restarts').textContent = data.summary.totalRestarts;
   $('caStatus').textContent = data.ca.reachable ? `CA Web ${round(data.ca.latencyMs,1)} ms` : `CA Web 不可达${data.ca.error ? ' · '+data.ca.error : ''}`;
@@ -319,7 +358,9 @@ function render(data) {
   resource('mem', num(latest.project_memory_host_pct), data.thresholds.memory, `宿主机内存 ${round(num(latest.host_memory_pct),1)}%`);
   resource('disk', num(latest.guard_disk_pct), data.thresholds.disk, `Docker ${latest.docker_disk_pct || 0}% · 证据盘 ${latest.artifact_disk_pct || 0}%`);
   renderProbe(data.largeProbes?.latest || data.probes.latest);
+  renderServiceSessions(data.serviceSessions);
   renderWorkers(data.workers);
+  renderRandomBatches(data.randomBatches);
   renderClientTransfers(data.clientTransfers, data.metadata, data.maliciousNodes, data.billingAdversary?.containerProbe?.recent, data.mixedPath);
   renderIPFamilyCoverage(data.ipFamilyCoverage, data.metadata);
   renderFailureWatcher(data.failureWatcher);
@@ -353,6 +394,36 @@ function render(data) {
   else if (terminalBad || (phase === 'RUNNING' && badCore)) showAlert(data.status.detail || data.resourceGuard || '存在核心节点异常');
   else hideAlert();
 }
+function renderServiceSessions(serviceSessions = {}) {
+  const summary = serviceSessions.summary || {};
+  const listeners = Array.isArray(serviceSessions.listeners) ? serviceSessions.listeners : [];
+  $('serviceSessionFreshness').textContent = serviceSessions.available
+    ? '真实 listener 快照' + (serviceSessions.observedAt ? ' · ' + transferTimestamp(serviceSessions.observedAt) : '')
+    : '等待 runtime/.private/natserverXX/service-listener.json';
+  $('serviceSessionSummary').innerHTML =
+    '<span class="transfer-stat">持久 carrier<strong>' + num(summary.connectedCarriers) + ' / ' + num(summary.listeners) + '</strong></span>' +
+    '<span class="transfer-stat">活跃独立会话<strong style="color:var(--green)">' + num(summary.activeSessions) + ' / ' + num(summary.maxSessions) + '</strong></span>' +
+    '<span class="transfer-stat">累计接入<strong>' + num(summary.acceptedTotal) + '</strong></span>' +
+    '<span class="transfer-stat">已拒绝<strong style="color:' + (num(summary.rejectedTotal) ? 'var(--yellow)' : 'var(--green)') + '">' + num(summary.rejectedTotal) + '</strong></span>' +
+    '<span class="transfer-stat">新鲜快照<strong>' + num(summary.freshListeners) + ' / ' + num(summary.listeners) + '</strong></span>';
+  if (!listeners.length) {
+    $('serviceListeners').innerHTML = '<div class="empty-state">等待 NatServer listener 状态文件</div>';
+    return;
+  }
+  $('serviceListeners').innerHTML = listeners.map(listener => {
+    const healthy = listener.carrierConnected === true && listener.fresh === true;
+    const sessions = Array.isArray(listener.sessions) ? listener.sessions : [];
+    const sessionChips = sessions.length ? sessions.map(session =>
+      '<span class="service-session-chip">' + escapeHtml(session.client) + ' · ' + escapeHtml(session.clientRelay || 'relay?') + ' → ' + escapeHtml(listener.relay || 'relay?') + ' · ' + escapeHtml(session.connectionID) + '</span>'
+    ).join('') : '<span class="muted small">当前无活跃 NatClient</span>';
+    return '<article class="service-listener ' + (healthy ? '' : 'bad') + '">' +
+      '<div class="service-listener-head"><strong>' + escapeHtml(listener.service) + '</strong><span class="status ' + (healthy ? 'ok' : 'bad') + '">' + (healthy ? 'LISTENING' : 'STALE') + '</span></div>' +
+      '<div class="service-listener-path">' + escapeHtml(listener.relay || 'relay?') + ' → ' + escapeHtml(listener.service) + ' · carrier gen ' + num(listener.carrierGeneration) + '</div>' +
+      '<div class="service-session-list">' + sessionChips + '</div>' +
+      '<div class="node-meta">Active ' + num(listener.activeSessions) + ' / ' + num(listener.maxSessions) + ' · Queue ' + num(listener.acceptQueueDepth) + ' / ' + num(listener.acceptQueue) + ' · Accepted ' + num(listener.acceptedTotal) + ' · Rejected ' + num(listener.rejectedTotal) + '</div>' +
+      '</article>';
+  }).join('');
+}
 function resource(prefix, value, limit, suffix) {
   $(`${prefix}Text`).textContent = `${round(value,2)}% / ${limit}%`;
   const meter = $(`${prefix}Meter`); meter.style.width = `${Math.min(100, limit ? value/limit*100 : 100)}%`;
@@ -378,15 +449,52 @@ function renderProbe(probe) {
     '</tbody></table>';
 }
 function renderWorkers(workers = {}) {
-  const expected = Math.max(defaultClientCount, num(workers.expected));
+  const expected = Math.max(1, num(workers.expected));
   const running = Math.max(0, num(workers.running));
   const clients = Array.isArray(workers.clients) ? workers.clients : [];
   const healthy = running === expected && expected > 0;
+  const label = workers.mode === 'batch-scheduler' ? '随机批次调度器' : '随机传输 Worker';
   $('workerSummary').className = 'worker-summary ' + (healthy ? 'ok' : 'bad');
   $('workerSummary').innerHTML =
-    '<strong>随机传输 Worker ' + running + ' / ' + expected + '</strong>' +
+    '<strong>' + label + ' ' + running + ' / ' + expected + '</strong>' +
     clients.map(worker => '<span class="worker-chip ' + (worker.alive ? 'alive' : '') + '">' +
       escapeHtml(worker.client || 'unknown') + ' · ' + (worker.alive ? 'alive' : 'stopped') + '</span>').join('');
+}
+function renderRandomBatches(batches = {}) {
+  const policy = batches.policy || {};
+  const summary = batches.summary || {};
+  const recent = Array.isArray(batches.recent) ? batches.recent : [];
+  const rateLimits = Array.isArray(policy.rateLimitsKiBps) ? policy.rateLimitsKiBps : [];
+  const ratePolicy = rateLimits.filter(item => num(item.clients) >= 1 && num(item.clients) <= 4)
+    .map(item => num(item.clients) + ' Client × ' + round(num(item.kibps) / 1024, 2) + ' MiB/s').join(' · ');
+  $('randomBatchSummary').innerHTML =
+    '<span class="transfer-stat">多 Client 概率<strong>' + num(policy.multiClientProbabilityPct || 60) + '%</strong></span>' +
+    '<span class="transfer-stat">多 Client 数量<strong>' + num(policy.multiClientMin || 2) + '–' + num(policy.multiClientMax || 4) + '</strong></span>' +
+    (num(policy.clientStartStaggerSeconds) > 0 ? '<span class="transfer-stat">建连错峰<strong>' + num(policy.clientStartStaggerSeconds) + ' 秒 / Client</strong></span>' : '') +
+    (num(policy.mixedPathQuietSamples) > 0 ? '<span class="transfer-stat">迁移静默窗<strong>连续 ' + num(policy.mixedPathQuietSamples) + ' 秒稳定</strong></span>' : '') +
+    (ratePolicy ? '<span class="transfer-stat">CPU 安全单流限速<strong>' + escapeHtml(ratePolicy) + '</strong></span>' : '') +
+    '<span class="transfer-stat">累计批次<strong>' + num(summary.totalBatches) + '</strong></span>' +
+    '<span class="transfer-stat">多 Client 批次<strong>' + num(summary.multiClientBatches) + '</strong></span>' +
+    '<span class="transfer-stat">选中恶意 Client<strong style="color:var(--orange)">' + num(summary.maliciousSelectedBatches) + '</strong></span>' +
+    '<span class="transfer-stat">选中恶意 Server<strong style="color:var(--orange)">' + num(summary.maliciousServerBatches) + '</strong></span>' +
+    '<span class="transfer-stat">失败<strong style="color:' + (num(summary.failedBatches) ? 'var(--red)' : 'var(--green)') + '">' + num(summary.failedBatches) + '</strong></span>';
+  if (!recent.length) {
+    $('randomBatchList').innerHTML = '<div class="empty-state">等待按 60% 策略生成随机批次</div>';
+    return;
+  }
+  $('randomBatchList').innerHTML = recent.slice(0, 8).map(batch => {
+    const clients = Array.isArray(batch.selectedClients) ? batch.selectedClients : [];
+    const targets = Array.isArray(batch.targets) ? batch.targets : [];
+    const selectedServer = String(batch.selectedServer || '');
+    const statusClass = batch.status === 'PASS' ? 'ok' : batch.status === 'FAIL' ? 'bad' : 'warn';
+    return '<article class="random-batch ' + (batch.mode === 'multi' ? 'multi ' : '') + (batch.status === 'FAIL' ? 'bad' : '') + '">' +
+      '<div class="random-batch-head"><strong>' + escapeHtml(batch.mode === 'multi' ? '多 Client 批次 · ' + clients.length + ' 个' : '单 Client 批次') + '</strong><span class="status ' + statusClass + '">' + escapeHtml(batch.status || 'RUNNING') + '</span></div>' +
+      '<div class="random-batch-route">步骤 0 · 本批目标 Server：<span class="random-batch-client ' + (batch.serverMalicious ? 'malicious' : '') + '">' + escapeHtml(selectedServer || 'unknown') + (batch.serverMalicious ? '（恶意）' : '') + '</span></div>' +
+      '<div>' + clients.map(client => '<span class="random-batch-client ' + (client === 'malicious-natclient' ? 'malicious' : '') + '">' + escapeHtml(client) + '</span>').join('') + '</div>' +
+      '<div class="random-batch-route">' + targets.map(target => escapeHtml(target.client) + ' → ' + escapeHtml(target.server)).join('<br>') + '</div>' +
+      '<div class="node-meta">' + escapeHtml(transferTimestamp(batch.timestamp)) + ' · 成功 ' + num(batch.succeeded) + ' · 失败 ' + num(batch.failed) + (batch.maliciousSelected || batch.serverMalicious ? ' · 含恶意节点' : '') + '</div>' +
+      '</article>';
+  }).join('');
 }
 function renderClientTransfers(transfers = {}, metadata = {}, maliciousNodes = [], maliciousEvents = [], mixedPath = {}) {
   const summary = transfers.summary || {};
@@ -406,10 +514,12 @@ function renderClientTransfers(transfers = {}, metadata = {}, maliciousNodes = [
     '<span class="transfer-stat">最新记录<strong>' + escapeHtml(latest) + '</strong></span>' +
     (!available ? '<span class="transfer-stat" style="color:var(--yellow)">等待 transfers.tsv</span>' : '');
 
-  const clientNames = Array.from({length:defaultClientCount}, (_, index) => 'natclient' + String(index + 1).padStart(2, '0'));
+  const clientNames = [...Array.from({length:6}, (_, index) => 'natclient' + String(index + 1).padStart(2, '0')), 'malicious-natclient'];
   const clientCards = clientNames.map(client => {
     const state = transfers.byClient?.[client] || {};
     const clientSummary = state.summary || {};
+    const clientIPType = state.ipType || 'IPv4（默认网络）';
+    const clientStack = state.transportStack || 'KCP/UDP + TCP 故障切换';
     const recent = Array.isArray(state.recent) ? state.recent.slice(0, 10) : [];
     const rows = recent.length ? recent.map(transfer => {
       const bytes = Math.max(0, num(transfer.bytes));
@@ -428,17 +538,37 @@ function renderClientTransfers(transfers = {}, metadata = {}, maliciousNodes = [
         '<td>' + escapeHtml(transferTimestamp(transfer.timestamp)) + '</td>' +
         '<td><strong>' + escapeHtml(transfer.ingress_relay || '—') + '</strong></td>' +
         '<td><strong>' + escapeHtml(transfer.server || '—') + '</strong></td>' +
+        '<td>' + escapeHtml(transfer.serverIPType || 'IPv4（默认网络）') + '</td>' +
+        '<td title="' + escapeHtml(transfer.networkStack || clientStack) + '">' + escapeHtml(transfer.transportStack || clientStack) + '</td>' +
         '<td title="请求 ' + requested + ' MiB · ' + Math.floor(bytes) + ' B">' + escapeHtml(formatBytes(bytes)) + '</td>' +
         '<td>' + (speed === null ? '—' : round(speed, 3) + ' MiB/s') + '</td>' +
         '<td><span class="status ' + verificationClass + '" title="rc=' + escapeHtml(transfer.rc || '') + ' · sha256_ok=' + escapeHtml(transfer.sha256_ok || '') + '">' + verificationLabel + '</span></td>' +
         '</tr>';
-    }).join('') : '<tr><td class="empty-row" colspan="6">暂无传输记录</td></tr>';
-    return '<article class="client-transfer">' +
-      '<div class="client-transfer-head"><strong>' + client + '</strong><span class="muted small">累计 ' + num(clientSummary.totalTransfers) + ' · 成功 ' + num(clientSummary.succeeded) + ' · 失败 ' + num(clientSummary.failed) + '</span></div>' +
-      '<div class="client-transfer-scroll"><table class="client-transfer-table"><thead><tr><th>时间</th><th>接入 Relay</th><th>目标 NAT Server</th><th>传输量</th><th>平均带宽</th><th>SHA-256</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    }).join('') : '<tr><td class="empty-row" colspan="8">暂无传输记录</td></tr>';
+    return '<article class="client-transfer ' + (client === 'malicious-natclient' ? 'adversary-transfer' : '') + '">' +
+      '<div class="client-transfer-head"><strong>' + client + '</strong><span class="muted small">' + escapeHtml(clientIPType) + ' · ' + escapeHtml(clientStack) + ' · 累计 ' + num(clientSummary.totalTransfers) + ' · 成功 ' + num(clientSummary.succeeded) + ' · 失败 ' + num(clientSummary.failed) + '</span></div>' +
+      '<div class="client-transfer-scroll"><table class="client-transfer-table"><thead><tr><th>时间</th><th>接入 Relay</th><th>目标 NAT Server</th><th>Server IP 类型</th><th>传输协议</th><th>传输量</th><th>平均带宽</th><th>SHA-256</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '</article>';
   }).join('');
   $('clientTransfers').innerHTML = clientCards + renderMixedPathTransferCard(mixedPath);
+  const serverNames = [...Array.from({length:13}, (_, index) => 'natserver' + String(index + 1).padStart(2, '0')), 'malicious-random-natserver'];
+  $('serverTransferTimeline').innerHTML = serverNames.map(server => {
+    const state = transfers.byServer?.[server] || {};
+    const serverSummary = state.summary || {};
+    const total = num(serverSummary.totalTransfers);
+    const clients = Array.isArray(state.recentClients) ? state.recentClients : [];
+    const latestTime = state.lastTransferAt ? transferTimestamp(state.lastTransferAt) : '尚未被随机命中';
+    const latestRoute = state.lastClient
+      ? escapeHtml(state.lastClient) + ' → ' + escapeHtml(state.lastIngressRelay || 'relay?') + ' → ' + escapeHtml(server)
+      : '等待随机 NatClient';
+    return '<article class="server-transfer ' + (server === 'malicious-random-natserver' ? 'adversary-transfer ' : '') + (total ? '' : 'idle') + '">' +
+      '<div class="server-transfer-head"><strong>' + server + '</strong><span class="status ' + (total ? 'ok' : 'warn') + '">' + escapeHtml(state.ipType || 'IPv4（默认网络）') + '</span></div>' +
+      '<div class="server-transfer-stack">' + escapeHtml(state.networkStack || 'IPv4（默认网络） · KCP/UDP + TCP 故障切换') + '</div>' +
+      '<div class="server-transfer-route">上次传输：' + escapeHtml(latestTime) + '<br>' + latestRoute + '</div>' +
+      '<div class="node-meta">累计 ' + total + ' · 成功 ' + num(serverSummary.succeeded) + ' · 失败 ' + num(serverSummary.failed) + ' · 不同 Client ' + num(state.distinctClients) + '</div>' +
+      '<div class="server-transfer-clients" title="' + escapeHtml(clients.join(', ')) + '">命中 Client：' + escapeHtml(clients.length ? clients.join(', ') : '—') + '</div>' +
+      '</article>';
+  }).join('');
 }
 function renderIPFamilyCoverage(coverage = {}, metadata = {}) {
   const enabled = coverage.enabled === true || String(metadata.ip_family_coverage || '') === 'random';
@@ -743,6 +873,8 @@ function renderMaliciousNodes(nodes = [], mixedPath = {}) {
       '<div class="malicious-node-stats">' +
       '<span class="malicious-node-stat">容器 ' + (running ? 'running' : 'not running') + '</span>' +
       '<span class="malicious-node-stat">Health ' + escapeHtml(health) + '</span>' +
+      '<span class="malicious-node-stat">' + escapeHtml(node.ipType || 'IPv4（默认网络）') + '</span>' +
+      '<span class="malicious-node-stat">' + escapeHtml(node.transportStack || 'KCP/UDP + TCP 故障切换') + '</span>' +
       '<span class="malicious-node-stat">Restart ' + restartCount + '</span>' +
       '<span class="malicious-node-stat">探针 ' + escapeHtml(probeStatus) + '</span>' +
       '<span class="malicious-node-stat">覆盖 ' + Math.max(0, num(probe.covered)) + ' / ' + Math.max(0, num(probe.required)) + '</span>' +
@@ -1042,6 +1174,7 @@ function renderTopology(data) {
       data.maliciousNodes || [],
       data.billingAdversary?.containerProbe?.recent || [],
       data.mixedPath || {},
+      data.serviceSessions || {},
     );
     renderActivePath(topology.activePath);
     renderMaliciousPath(topology.attackPath);
@@ -1061,7 +1194,7 @@ function renderTopology(data) {
     $('topologyFreshness').textContent = '拓扑渲染异常';
   }
 }
-function normalizeTopology(raw, runtimeNodes, maliciousNodes = [], maliciousEvents = [], mixedPath = {}) {
+function normalizeTopology(raw, runtimeNodes, maliciousNodes = [], maliciousEvents = [], mixedPath = {}, serviceSessions = {}) {
   const nodeMap = new Map();
   const runtimeMap = new Map((runtimeNodes || []).map(node => [node.service || node.id || node.name, node]));
   const addNode = value => {
@@ -1075,6 +1208,9 @@ function normalizeTopology(raw, runtimeNodes, maliciousNodes = [], maliciousEven
       running: source.running === undefined ? Boolean(runtime.running) : Boolean(source.running),
       health: source.health || runtime.health || (source.running ? 'running' : 'unknown'),
       networks: arrayValue(source.networks || source.sharedNetworks || source.network),
+      ipType: source.ipType || runtime.ipType || 'IPv4（默认网络）',
+      transportStack: source.transportStack || runtime.transportStack || 'KCP/UDP + TCP 故障切换',
+      networkStack: source.networkStack || runtime.networkStack || 'IPv4（默认网络） · KCP/UDP + TCP 故障切换',
     });
   };
   (raw.nodes || []).forEach(addNode);
@@ -1118,6 +1254,20 @@ function normalizeTopology(raw, runtimeNodes, maliciousNodes = [], maliciousEven
     links.push(link);
   };
   rawLinks.forEach(addLink);
+  const liveServiceSessions = Array.isArray(serviceSessions.sessions) ? serviceSessions.sessions : [];
+  for (const session of liveServiceSessions) {
+    const client = nodeId(session?.client);
+    const clientRelay = nodeId(session?.clientRelay || session?.relay);
+    const serverRelay = nodeId(session?.serverRelay || session?.relay);
+    const server = nodeId(session?.server);
+    if (topologyRole(client) !== 'natclient' || topologyRole(clientRelay) !== 'relay'
+      || topologyRole(serverRelay) !== 'relay' || topologyRole(server) !== 'natserver') continue;
+    addLink({source:client, target:clientRelay, kind:'service-session', state:'dual', active:true, reason:session.connectionID, protocol:'ServiceListener'});
+    if (clientRelay !== serverRelay) {
+      addLink({source:clientRelay, target:serverRelay, kind:'service-session', state:'dual', active:true, reason:session.connectionID, protocol:'Relay control path'});
+    }
+    addLink({source:serverRelay, target:server, kind:'service-session', state:'dual', active:true, reason:session.connectionID, protocol:'persistent carrier'});
+  }
   const attackEvent = latestMaliciousActivity(maliciousEvents);
   const fixtureAttackNodes = maliciousActivityPath(attackEvent?.path);
   const addMixedAttachmentLink = (source, target, kind, state, reason, protocol) => {
@@ -1213,6 +1363,11 @@ function normalizeTopology(raw, runtimeNodes, maliciousNodes = [], maliciousEven
       fixtureObservedAt: attackEvent?.observedAt || '',
     },
     maliciousNodeCount: nodes.filter(node => node.role.startsWith('malicious-')).length,
+    serviceSessionNodes: unique(liveServiceSessions.flatMap(session => [
+      session.client, session.clientRelay || session.relay,
+      session.serverRelay || session.relay, session.server,
+    ]).filter(Boolean)),
+    serviceSessionCount: liveServiceSessions.length,
     partitions,
     reachability: {relays:relayIds, nats:natIds, cells:reachability.cells},
     hasReachability: reachability.present || hasDirectLinks,
@@ -1252,6 +1407,8 @@ function normalizeLink(value) {
   const kindText = String(value?.kind || value?.type || value?.relation || '').toLowerCase();
   const kind = kindText.includes('attack')
     ? 'attack'
+    : kindText.includes('service-session')
+      ? 'service-session'
     : kindText.includes('control') || kindText.includes('admission')
       ? 'control'
       : 'direct';
@@ -1397,6 +1554,7 @@ function renderTopologyGraph(topology) {
   const activeNodes = new Set([
     ...(pathIsActive ? topology.activePath.nodes : []),
     ...(topology.attackPath?.passed ? topology.attackPath.nodes : []),
+    ...(topology.serviceSessionNodes || []),
   ]);
   const edgeParts = [];
   const sortedLinks = [...topology.links].sort((left, right) => Number(left.active) - Number(right.active));
@@ -1405,7 +1563,9 @@ function renderTopologyGraph(topology) {
     const end = positions.get(link.target);
     if (!start || !end || link.state === 'none' || link.state === 'unknown') continue;
     const active = pathIsActive && (link.active || activePathHasEdge(topology.activePath.nodes, link.source, link.target));
-    const edgeState = link.kind === 'attack'
+    const edgeState = link.kind === 'service-session'
+      ? 'service-session'
+      : link.kind === 'attack'
       ? link.state
       : link.kind === 'control' && !['blocked','none'].includes(link.state)
         ? 'control'
@@ -1431,11 +1591,11 @@ function renderTopologyGraph(topology) {
   const nodeParts = topology.nodes.map(node => {
     const position = positions.get(node.id);
     if (!position) return '';
-    const malicious = node.role.startsWith('malicious-');
+    const malicious = node.role.startsWith('malicious-') || node.id === 'malicious-natclient' || node.id === 'malicious-random-natserver';
     const width = malicious ? 156 : node.role === 'natserver' || node.role === 'natclient' ? 88 : 94;
     const height = node.role === 'natserver' || node.role === 'natclient' ? 30 : 36;
-    const classes = ['topology-node', node.role, node.running ? '' : 'offline', activeNodes.has(node.id) ? 'active' : ''].filter(Boolean).join(' ');
-    const details = node.id + ' · ' + (node.running ? node.health : 'offline') + (node.networks.length ? ' · ' + node.networks.join(', ') : '');
+    const classes = ['topology-node', node.role, node.id === 'malicious-natclient' ? 'malicious-natclient' : '', node.id === 'malicious-random-natserver' ? 'malicious-random-natserver' : '', node.running ? '' : 'offline', activeNodes.has(node.id) ? 'active' : ''].filter(Boolean).join(' ');
+    const details = node.id + ' · ' + (node.running ? node.health : 'offline') + ' · ' + node.networkStack + (node.networks.length ? ' · ' + node.networks.join(', ') : '');
     return '<g class="' + classes + '" transform="translate(' + position.x + ' ' + position.y + ')"><title>' + escapeHtml(details) + '</title><rect x="' + (-width / 2) + '" y="' + (-height / 2) + '" width="' + width + '" height="' + height + '" rx="8"></rect><text x="0" y="1">' + escapeHtml(node.id) + '</text></g>';
   });
   svg.innerHTML = '<defs><marker id="activeArrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#ff996c"></path></marker></defs>' +
@@ -1575,6 +1735,9 @@ function edgeTitle(link) {
     }
     return link.source + ' → ' + link.target + ' · 隔离恶意 HTTP/CA 路径 · ' + scenario.label + ' · ' + (link.state === 'attack-contained' ? '已阻断' : '漏防');
   }
+  if (link.kind === 'service-session') {
+    return link.source + ' → ' + link.target + ' · 活跃独立服务会话 · connection ' + (link.reason || 'unknown');
+  }
   if (link.source === 'ca' || link.target === 'ca') {
     return link.source + ' → ' + link.target + ' · CA HTTP/TCP 接入验证链路 · ' + (link.state === 'blocked' ? '不可达' : '可达');
   }
@@ -1597,6 +1760,8 @@ function samePair(a, b, c, d) {
 }
 function topologyRole(id) {
   const value = String(id || '').toLowerCase();
+  if (value === 'malicious-natclient') return 'natclient';
+  if (value === 'malicious-random-natserver') return 'natserver';
   if (value === 'malicious-relay' || value === 'malicious-natserver') return value;
   if (value === 'mixed-path-probe') return 'natclient';
   if (value === 'ca' || value === 'index') return value;
@@ -1640,7 +1805,7 @@ function naturalCompare(left, right) {
 function renderNodes(id, nodes) {
   $(id).innerHTML = nodes.map(node => {
     const cls = node.running && ['healthy','running'].includes(node.health) ? 'ok' : node.running ? 'warn' : 'bad';
-    return `<div class="node"><div class="node-head"><span>${escapeHtml(node.service)}</span><span class="status ${cls}">${escapeHtml(node.health)}</span></div><div class="node-meta">Restart ${node.restartCount||0}</div></div>`;
+    return `<div class="node"><div class="node-head"><span>${escapeHtml(node.service)}</span><span class="status ${cls}">${escapeHtml(node.health)}</span></div><div class="node-meta">${escapeHtml(node.ipType || 'IPv4（默认网络）')} · ${escapeHtml(node.transportStack || 'KCP/UDP + TCP 故障切换')}<br>Restart ${node.restartCount||0}</div></div>`;
   }).join('');
 }
 function drawChart(rows, thresholds) {

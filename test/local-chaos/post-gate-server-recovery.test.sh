@@ -18,6 +18,7 @@ MOCK_EVENTS=$test_root/events
 MOCK_MISMATCH_SERVER=
 MOCK_SINGLE_LEG_SERVER=
 MOCK_BILLING_NOT_READY_SERVER=
+PRIVATE_RUNTIME_DIR=$test_root/private
 
 fail() {
   printf 'post-gate server recovery regression failed: %s\n' "$1" >&2
@@ -87,6 +88,18 @@ billing_production_gate_observation_is_fresh() {
   return 0
 }
 
+write_listener_status() {
+  local server=$1 active_sessions=$2 offset_ms=$3 observed sessions='[]'
+  observed=$(node -e 'process.stdout.write(new Date(Date.now() + Number(process.argv[1])).toISOString())' "$offset_ms")
+  if (( active_sessions > 0 )); then
+    sessions='[{"connectionId":"1234abcd","peerId":"1234567890abcdef"}]'
+  fi
+  mkdir -p "$PRIVATE_RUNTIME_DIR/$server"
+  printf '{"schemaVersion":1,"observedAt":"%s","service":"%s","carrierConnected":true,"activeSessions":%s,"acceptQueueDepth":0,"sessions":%s}\n' \
+    "$observed" "$server" "$active_sessions" "$sessions" \
+    > "$PRIVATE_RUNTIME_DIR/$server/service-listener.json"
+}
+
 make_run_dir() {
   local name=$1 run_dir=$test_root/$name server
   mkdir -p "$run_dir/server-fresh"
@@ -112,6 +125,21 @@ reset_case() {
   MOCK_RUN_DIR=$(make_run_dir "$name")
   rm -f "$MOCK_RUN_DIR/server-fresh/$REAL_BILLING_GATE_SERVER"
 }
+
+write_listener_status natserver07 1 0
+if wait_random_server_listener_idle natserver07 1; then
+  fail 'active ServiceListener unexpectedly passed the idle drain barrier'
+fi
+(
+  for offset_ms in 0 1 2; do
+    write_listener_status natserver07 0 "$offset_ms"
+    sleep 0.3
+  done
+) &
+listener_writer_pid=$!
+wait_random_server_listener_idle natserver07 2 \
+  || fail 'fresh consecutive idle ServiceListener snapshots did not pass'
+wait "$listener_writer_pid"
 
 assert_restarted() {
   local server=$1 expected_count=${2:-1}
@@ -188,18 +216,19 @@ worker_body=$(awk '/^random_client_worker\(\)/,/^}/' "$stability_script")
 if grep -q 'restart_tunnel_server' <<< "$worker_body"; then
   fail 'random worker still cold-restarts a normally reused Tunnel Server'
 fi
-worker_registration_line=$(awk '/registration_count=\$\(relay_registration_count/ { print NR; exit }' <<< "$worker_body")
 worker_stop_line=$(awk '/^[[:space:]]*if ! stop_nat_process "\$client" tunclient/ { print NR; exit }' <<< "$worker_body")
-worker_generation_line=$(awk '/wait_relay_registration_generation/ { print NR; exit }' <<< "$worker_body")
+worker_idle_line=$(awk '/wait_random_server_listener_idle/ { print NR; exit }' <<< "$worker_body")
 worker_billing_line=$(awk '/wait_random_server_billing_ready/ { print NR; exit }' <<< "$worker_body")
 worker_unlock_line=$(awk '/flock -u "\$server_lock_fd"/ { line=NR } END { print line }' <<< "$worker_body")
-[[ $worker_registration_line =~ ^[1-9][0-9]*$ && $worker_stop_line =~ ^[1-9][0-9]*$ \
-  && $worker_generation_line =~ ^[1-9][0-9]*$ && $worker_billing_line =~ ^[1-9][0-9]*$ \
+[[ $worker_stop_line =~ ^[1-9][0-9]*$ && $worker_idle_line =~ ^[1-9][0-9]*$ \
+  && $worker_billing_line =~ ^[1-9][0-9]*$ \
   && $worker_unlock_line =~ ^[1-9][0-9]*$ \
-  && worker_registration_line -lt worker_stop_line \
-  && worker_stop_line -lt worker_generation_line \
-  && worker_generation_line -lt worker_billing_line \
+  && worker_stop_line -lt worker_idle_line \
+  && worker_idle_line -lt worker_billing_line \
   && worker_billing_line -lt worker_unlock_line ]] \
-  || fail 'random worker does not hold the Server lock through dual-leg billing re-arm'
+  || fail 'random worker does not hold the Server lock through listener drain and billing re-arm'
+if grep -q 'wait_relay_registration_generation\|registration_count=\$(relay_registration_count' <<< "$worker_body"; then
+  fail 'random worker still expects a persistent carrier to re-register after each Client'
+fi
 
 printf 'post-gate server recovery regression passed\n'

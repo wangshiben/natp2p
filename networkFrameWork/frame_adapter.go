@@ -134,9 +134,28 @@ func (a *TcpFrameAdapter) NextFrame(ctx context.Context) (*network.Frame, error)
 		return frame, nil
 	}
 	select {
+	case frame := <-a.frames:
+		if frame == nil {
+			return nil, errors.New("frame relay: nil input frame")
+		}
+		return frame, nil
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-a.stream.streamCtx.Done():
+		select {
+		case frame := <-a.frames:
+			if frame == nil {
+				return nil, errors.New("frame relay: nil input frame")
+			}
+			return frame, nil
+		default:
+		}
 		return nil, a.stream.streamErr()
 	case frame := <-a.frames:
 		if frame == nil {
@@ -184,9 +203,27 @@ func pullFrameBatch(
 		*pending = nil
 	} else {
 		select {
+		case first = <-input:
+		default:
+		}
+		if first == nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if first == nil {
+		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-streamDone:
+			select {
+			case first = <-input:
+			default:
+			}
+			if first != nil {
+				break
+			}
 			return nil, streamErr()
 		case first = <-input:
 		}
@@ -739,9 +776,28 @@ func (e *DualFrameRelayEndpoint) NextFrame(ctx context.Context) (*network.Frame,
 		return frame, nil
 	}
 	select {
+	case frame := <-e.incoming:
+		if frame == nil {
+			return nil, errors.New("frame relay: nil input frame")
+		}
+		return frame, nil
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-e.stream.ctx.Done():
+		select {
+		case frame := <-e.incoming:
+			if frame == nil {
+				return nil, errors.New("frame relay: nil input frame")
+			}
+			return frame, nil
+		default:
+		}
 		return nil, errors.New("stream closed")
 	case frame := <-e.incoming:
 		if frame == nil {

@@ -29,6 +29,8 @@ test("every Compose service overlays an isolated private artifact directory", as
     ...numbered("relay", 7),
     ...numbered("natserver", 13),
     ...numbered("natclient", 6),
+    "malicious-random-natserver",
+    "malicious-natclient",
   ];
 
   assert.deepEqual(Object.keys(compose.services).sort(), [...serviceNames].sort());
@@ -75,9 +77,16 @@ test("every Compose service overlays an isolated private artifact directory", as
   for (const serviceName of numbered("natserver", 13)) {
     await assertEnrollmentCredential(compose, privateRoot, serviceName, tokens.server);
   }
+  await assertEnrollmentCredential(compose, privateRoot, "malicious-random-natserver", tokens.server);
   for (const serviceName of numbered("natclient", 6)) {
     await assertEnrollmentCredential(compose, privateRoot, serviceName, tokens.client);
   }
+  await assertEnrollmentCredential(compose, privateRoot, "malicious-natclient", tokens.client);
+  assert.deepEqual(compose.services["malicious-natclient"].networks, ["access_r01"]);
+  assert.equal(compose.services["malicious-natclient"].labels["bnfs.test.actor"], "malicious-natclient");
+  assert.deepEqual(compose.services["malicious-random-natserver"].networks, ["access_r03"]);
+  assert.equal(compose.services["malicious-random-natserver"].labels["bnfs.test.actor"],
+    "malicious-random-natserver");
   assert.equal(Object.hasOwn(compose.services.ca, "environment"), false);
   assert.deepEqual(compose.services.ca.command.slice(-8), [
     "-relay-enrollment-token-file", "/artifacts/.private/enroll-relay.token",
@@ -117,7 +126,10 @@ test("malicious Compose actors receive neither management credentials nor shared
     assert.equal(JSON.stringify(service).includes("token"), false);
     assert.equal(JSON.stringify(service).includes("/artifacts"), false);
     assert.equal((await fs.stat(path.join(runtimeDir, ".private", serviceName))).mode & 0o777, 0o700);
+    assert.equal(commandOption(service.command, "-interval"), "60s");
   }
+  assert.equal(commandOption(compose.services["malicious-natserver"].command, "-attack-offset"), "0s");
+  assert.equal(commandOption(compose.services["malicious-relay"].command, "-attack-offset"), "30s");
 
   assert.deepEqual(compose.services["malicious-natserver"].networks, [
     "adversary_billing",

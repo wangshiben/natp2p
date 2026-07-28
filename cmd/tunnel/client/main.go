@@ -116,13 +116,13 @@ func main() {
 		}
 	}()
 
-	// Connect with retries. Cross-relay routing in the P2P network can need a
-	// few seconds (and retries) for DHT info to propagate, so a single failed
-	// attempt is expected on first connect. Retry with backoff.
-	fmt.Printf("正在连接目标节点 ...\n")
+	// DialService creates a fresh Client/Server session. The local Listen above
+	// keeps the client registered for admission and billing, but does not share
+	// this service session with other tunnel clients.
+	fmt.Printf("正在连接目标服务 ...\n")
 	var conn p2pnode.Connection
 	for attempt := 1; ; attempt++ {
-		c, err := node.Connect(ctx, p2pnode.NodeID(*targetID))
+		c, err := node.DialService(ctx, p2pnode.NodeID(*targetID))
 		if err == nil {
 			conn = c
 			break

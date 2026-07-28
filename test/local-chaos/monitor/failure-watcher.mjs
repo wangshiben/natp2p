@@ -563,8 +563,8 @@ function serviceName(value, role) {
   const service = String(value ?? "");
   const patterns = {
     relay: /^relay\d{2}$/,
-    natserver: /^natserver\d{2}$/,
-    natclient: /^natclient\d{2}$/,
+    natserver: /^(?:natserver\d{2}|malicious-random-natserver)$/,
+    natclient: /^(?:natclient\d{2}|malicious-natclient)$/,
   };
   return patterns[role]?.test(service) ? service : "unknown";
 }

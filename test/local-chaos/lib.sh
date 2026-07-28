@@ -25,7 +25,7 @@ log_step() {
 }
 
 topology_reset() {
-  log_step "重建 1 Index + 7 Relay + 19 NAT 容器拓扑"
+  log_step "重建 1 Index + 7 Relay + 19 正常 NAT + 可选恶意测试节点拓扑"
   dc down --remove-orphans --timeout 3 >/dev/null 2>&1 || true
   if ! dc up -d --remove-orphans > "$RUNTIME_DIR/topology-up.log" 2>&1; then
     log_step "Compose 拓扑启动失败，原始输出: $RUNTIME_DIR/topology-up.log"
@@ -153,7 +153,11 @@ launch_tunnel_server() {
 
   local command="exec env BNFS_RELAY_INCLUDE_INDEX=0 /opt/bnfs/tunserver -index index:9000 -target 127.0.0.1:8080"
   if [[ -n $relay ]]; then
-    command+=" -relay '$relay'"
+	if [[ $relay == *,* ]]; then
+	  command+=" -relays '$relay'"
+	else
+	  command+=" -relay '$relay'"
+	fi
   fi
   if [[ -n ${BNFS_CHAOS_NAT_CA_URL:-} ]]; then
     command+=" -ca '$BNFS_CHAOS_NAT_CA_URL'"
@@ -161,6 +165,8 @@ launch_tunnel_server() {
   if [[ -n ${BNFS_CHAOS_NAT_KEY_DIR:-} ]]; then
     command+=" -key $BNFS_CHAOS_NAT_KEY_DIR/$service.key"
     command+=" -billing-private-snapshot $BNFS_CHAOS_NAT_KEY_DIR/billing-meter.json"
+    command+=" -status-file $BNFS_CHAOS_NAT_KEY_DIR/service-listener.json"
+    command+=" -service-name $service"
   fi
   command+=" > '$inside_dir/${service}.log' 2>&1"
   dc exec -T -d "$service" sh -lc "$command"
@@ -284,7 +290,8 @@ random_transfer_once() {
 	local requested_mib_override=${9:-}
 	local attempt_deadline_epoch=${10:-}
 	local requested_mib expected_size expected_sha result actual_size=0 actual_sha= rc=0 sha_ok=no
-  local curl_seconds= step_timeout
+  local curl_seconds= step_timeout rate_option= limit_mibps=${BNFS_RANDOM_TRANSFER_LIMIT_MIBPS:-0}
+  local limit_kibps=${BNFS_RANDOM_TRANSFER_LIMIT_KIBPS:-0}
   local started_ns ended_ns elapsed throughput timestamp
   local inside_file=/tmp/bnfs-${client}-${transfer_id}.bin
   local error_file=$run_dir/transfer-errors/${client}-${transfer_id}.log
@@ -299,6 +306,13 @@ random_transfer_once() {
 		attempt_deadline_epoch=$(( $(date +%s) + 900 ))
 	fi
 	[[ $attempt_deadline_epoch =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ $limit_mibps =~ ^[0-9]+$ ]] || return 1
+  [[ $limit_kibps =~ ^[0-9]+$ ]] || return 1
+  if (( limit_kibps > 0 )); then
+    rate_option="--limit-rate '${limit_kibps}k'"
+  elif (( limit_mibps > 0 )); then
+    rate_option="--limit-rate '${limit_mibps}m'"
+  fi
   started_ns=$(date +%s%N)
 	timestamp=$(date --iso-8601=seconds)
 	write_transfer_record_atomic "$record_file" "$timestamp" "$transfer_id" "$client" \
@@ -318,8 +332,8 @@ random_transfer_once() {
     if step_timeout=$(deadline_step_timeout_seconds "$attempt_deadline_epoch" 900); then
       printf 'attempt_deadline_epoch=%s\ntransfer_timeout_seconds=%s\n' \
         "$attempt_deadline_epoch" "$step_timeout" > "$error_file"
-      result=$(dc exec -T "$client" sh -lc \
-        "rm -f '$inside_file'; transfer_rc=0; transfer_seconds=\$(curl -fsS --max-time '$step_timeout' -w '%{time_total}' -o '$inside_file' 'http://127.0.0.1:$listen_port/file?size_mb=$requested_mib') || transfer_rc=\$?; size=\$(stat -c %s '$inside_file' 2>/dev/null || printf 0); sha=\$(sha256sum '$inside_file' 2>/dev/null | awk '{print \$1}'); rm -f '$inside_file'; printf '%s\\t%s\\t%s\\n' \"\$size\" \"\$sha\" \"\$transfer_seconds\"; exit \"\$transfer_rc\"" \
+	      result=$(dc exec -T "$client" sh -lc \
+	        "rm -f '$inside_file'; transfer_rc=0; transfer_seconds=\$(curl -fsS $rate_option --max-time '$step_timeout' -w '%{time_total}' -o '$inside_file' 'http://127.0.0.1:$listen_port/file?size_mb=$requested_mib') || transfer_rc=\$?; size=\$(stat -c %s '$inside_file' 2>/dev/null || printf 0); sha=\$(sha256sum '$inside_file' 2>/dev/null | awk '{print \$1}'); rm -f '$inside_file'; printf '%s\\t%s\\t%s\\n' \"\$size\" \"\$sha\" \"\$transfer_seconds\"; exit \"\$transfer_rc\"" \
         2>> "$error_file") || rc=$?
       IFS=$'\t' read -r actual_size actual_sha curl_seconds <<< "$result"
       [[ $actual_size =~ ^[0-9]+$ ]] || actual_size=0

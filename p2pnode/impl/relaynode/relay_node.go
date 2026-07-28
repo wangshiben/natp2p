@@ -36,6 +36,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var errPeerLinkDown = errors.New("relaynode: 控制链路未建立")
@@ -82,7 +84,12 @@ type RelayNode struct {
 	relayActiveLinks     map[string]int
 	// hostedNatAddr 记录本 relay 托管的每个 NAT 节点的来源地址（其底层连接远端 IP:port）,
 	// 用于状态打印 / 排障, 判断"托管NAT节点"里每个节点的托管来源。
-	hostedNatAddr map[string]string // NAT 节点 NodeId -> 远端地址
+	hostedNatAddr        map[string]string // NAT 节点 NodeId -> 远端地址
+	hostRoutes           map[string]map[string]hostRouteRecord
+	hostRouteMultipath   map[string]bool
+	hostRouteSequence    map[string]uint64
+	hostRouteIncarnation string
+	hostRouteCursor      atomic.Uint64
 
 	pendingFinds map[uint64]*pendingFind
 	findCounter  atomic.Uint64
@@ -223,6 +230,10 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 		relayActiveLinks:     make(map[string]int),
 		pendingFinds:         make(map[uint64]*pendingFind),
 		hostedNatAddr:        make(map[string]string),
+		hostRoutes:           make(map[string]map[string]hostRouteRecord),
+		hostRouteMultipath:   make(map[string]bool),
+		hostRouteSequence:    make(map[string]uint64),
+		hostRouteIncarnation: uuid.New().String(),
 		ctx:                  ctx,
 		cancel:               cancel,
 		startedAt:            time.Now(),
@@ -238,6 +249,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 	cover.SetRegisterHook(n.onRegister)
 	cover.SetUnregisterHook(n.onUnregister)
 	cover.SetMissingGroupHandler(n.onMissingGroup)
+	go n.maintainHostRoutes()
 
 	return n, nil
 }
@@ -374,6 +386,7 @@ func (n *RelayNode) onRegister(nodeId, remoteAddr string) {
 	n.mu.Lock()
 	n.hostedNatAddr[nodeId] = remoteAddr
 	n.mu.Unlock()
+	n.publishLocalHostRoute(nodeId, true)
 	logx.Infof("[relaynode] 本地托管的 NAT 节点登记到 natNodes: %.16s 来源=%s", nodeId, remoteAddr)
 }
 
@@ -384,6 +397,7 @@ func (n *RelayNode) onUnregister(nodeId string) {
 	n.mu.Lock()
 	delete(n.hostedNatAddr, nodeId)
 	n.mu.Unlock()
+	n.publishLocalHostRoute(nodeId, false)
 	logx.Infof("[relaynode] 已回收离线 NAT 节点托管状态: %.16s", nodeId)
 }
 
@@ -836,14 +850,19 @@ func (n *RelayNode) relayLinkDown(peerID string) {
 	if peerID == "" {
 		return
 	}
+	fullyDown := false
 	n.mu.Lock()
 	if count := n.relayActiveLinks[peerID]; count > 1 {
 		n.relayActiveLinks[peerID] = count - 1
 	} else {
 		delete(n.relayActiveLinks, peerID)
 		n.relayLastControlSeen[peerID] = time.Now()
+		fullyDown = true
 	}
 	n.mu.Unlock()
+	if fullyDown {
+		n.removeHostRoutesVia(peerID)
+	}
 }
 
 func (n *RelayNode) relayPresence(peerID string) relayquery.Info {
@@ -1156,6 +1175,9 @@ func (n *RelayNode) spliceFailoverLeg(br *networkFrameWork.CrossRelayBridge, str
 // 调用方用该链路的 dialHostAddr() 得到可路由的桥接地址（而非对端自报的可能不可路由的 Addr）。
 // 全部未命中或超时则返回错误（需求 3）。
 func (n *RelayNode) findHostRelay(target string) (*peerLink, error) {
+	if links := n.routeNextHops(target, ""); len(links) > 0 {
+		return links[0], nil
+	}
 	baseCtx := n.ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()

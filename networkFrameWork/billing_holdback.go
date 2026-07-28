@@ -71,7 +71,6 @@ type messageHoldbackConnectionKey struct {
 }
 
 type messageHoldbackConnection struct {
-	validationMu             sync.Mutex
 	pendingBytes             int64
 	pendingMessages          int
 	pendingFrames            int
@@ -81,6 +80,11 @@ type messageHoldbackConnection struct {
 	noiseMessages            uint8
 	handshakeInfoSeen        bool
 	billingEstablished       bool
+}
+
+type messageHoldbackValidationLock struct {
+	mu    sync.Mutex
+	users int
 }
 
 type messageHoldbackPhase struct {
@@ -130,6 +134,7 @@ type messageHoldback struct {
 	limits           messageHoldbackLimits
 	entries          map[messageHoldbackKey]*messageHoldbackEntry
 	connections      map[messageHoldbackConnectionKey]*messageHoldbackConnection
+	validationLocks  map[string]*messageHoldbackValidationLock
 	approved         *list.List
 	pendingBytes     int64
 	pendingMessages  int
@@ -149,10 +154,11 @@ type messageHoldbackSnapshot struct {
 
 func newMessageHoldback(limits messageHoldbackLimits) *messageHoldback {
 	return &messageHoldback{
-		limits:      limits,
-		entries:     make(map[messageHoldbackKey]*messageHoldbackEntry),
-		connections: make(map[messageHoldbackConnectionKey]*messageHoldbackConnection),
-		approved:    list.New(),
+		limits:          limits,
+		entries:         make(map[messageHoldbackKey]*messageHoldbackEntry),
+		connections:     make(map[messageHoldbackConnectionKey]*messageHoldbackConnection),
+		validationLocks: make(map[string]*messageHoldbackValidationLock),
+		approved:        list.New(),
 	}
 }
 
@@ -321,22 +327,43 @@ func (holdback *messageHoldback) phase(entry *messageHoldbackEntry) (messageHold
 	}, true
 }
 
-func (holdback *messageHoldback) validationMutex(entry *messageHoldbackEntry) (*sync.Mutex, bool) {
+func (holdback *messageHoldback) validationGuard(entry *messageHoldbackEntry) (func(), bool) {
 	if holdback == nil || entry == nil {
 		return nil, false
 	}
 	holdback.mu.Lock()
-	defer holdback.mu.Unlock()
 	if holdback.entries[entry.key] != entry || !entry.validating {
+		holdback.mu.Unlock()
 		return nil, false
 	}
-	connection := holdback.connections[messageHoldbackConnectionKey{
-		nodeID: entry.key.nodeID, connectionID: entry.key.connectionID,
-	}]
-	if connection == nil {
-		return nil, false
+	validationLock := holdback.validationLocks[entry.key.nodeID]
+	if validationLock == nil {
+		validationLock = &messageHoldbackValidationLock{}
+		holdback.validationLocks[entry.key.nodeID] = validationLock
 	}
-	return &connection.validationMu, true
+	validationLock.users++
+	holdback.mu.Unlock()
+
+	validationLock.mu.Lock()
+	return func() {
+		validationLock.mu.Unlock()
+		holdback.mu.Lock()
+		validationLock.users--
+		if validationLock.users == 0 && holdback.validationLocks[entry.key.nodeID] == validationLock &&
+			!holdback.hasNodeEntriesLocked(entry.key.nodeID) {
+			delete(holdback.validationLocks, entry.key.nodeID)
+		}
+		holdback.mu.Unlock()
+	}, true
+}
+
+func (holdback *messageHoldback) hasNodeEntriesLocked(nodeID string) bool {
+	for key := range holdback.entries {
+		if key.nodeID == nodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func (holdback *messageHoldback) deferCompletion(completion *messageHoldbackCompletion) bool {
@@ -355,7 +382,7 @@ func (holdback *messageHoldback) deferCompletion(completion *messageHoldbackComp
 	return true
 }
 
-func (holdback *messageHoldback) nextDeferred(key messageHoldbackKey) *messageHoldbackCompletion {
+func (holdback *messageHoldback) nextDeferred(nodeID string, sessionID [32]byte) *messageHoldbackCompletion {
 	if holdback == nil {
 		return nil
 	}
@@ -364,7 +391,8 @@ func (holdback *messageHoldback) nextDeferred(key messageHoldbackKey) *messageHo
 	var selected *messageHoldbackEntry
 	for _, entry := range holdback.entries {
 		if !entry.deferred || !entry.validating || !entry.pending || entry.message == nil ||
-			entry.key.nodeID != key.nodeID || entry.key.connectionID != key.connectionID {
+			entry.key.nodeID != nodeID || entry.message.Header == nil ||
+			entry.message.Header.BillingSessionID != sessionID {
 			continue
 		}
 		if selected == nil ||
@@ -595,13 +623,12 @@ func (state *forwardHookState) framesForForward(ctx context.Context, frame *netw
 	if completion.entry == nil {
 		return completion.frames, nil
 	}
-	validationMu, ok := holdback.validationMutex(completion.entry)
+	releaseValidation, ok := holdback.validationGuard(completion.entry)
 	if !ok {
 		holdback.reject(completion.entry)
 		return nil, errors.New("billing holdback: message expired before validation")
 	}
-	validationMu.Lock()
-	defer validationMu.Unlock()
+	defer releaseValidation()
 
 	var authorized []*network.Frame
 	for completion != nil {
@@ -624,11 +651,12 @@ func (state *forwardHookState) framesForForward(ctx context.Context, frame *netw
 			return authorized, validateErr
 		}
 		key := completion.entry.key
+		sessionID := completion.message.Header.BillingSessionID
 		if !holdback.approve(completion.entry, approval) {
 			return authorized, nil
 		}
 		authorized = append(authorized, completion.frames...)
-		completion = holdback.nextDeferred(key)
+		completion = holdback.nextDeferred(key.nodeID, sessionID)
 	}
 	return authorized, nil
 }

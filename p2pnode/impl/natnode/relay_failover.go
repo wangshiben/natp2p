@@ -91,6 +91,9 @@ func (s *relayFailoverState) reportResult(target relayDialTarget, dialErr error)
 	s.failures++
 	if s.failures >= relayReconnectAttemptsPerAddress {
 		s.current++
+		if s.current >= len(s.candidates) && len(s.candidates) > 0 {
+			s.current = 0
+		}
 		s.failures = 0
 		s.generation++
 		oldSignal := s.changeSignal

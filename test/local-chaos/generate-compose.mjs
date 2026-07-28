@@ -71,6 +71,22 @@ const admissionArgs = enableCA
 const services = {};
 if (enableCA) {
   services.ca = caService("ca");
+  services["malicious-random-natserver"] = {
+    ...idleNatService("malicious-random-natserver", [relayNetwork(3)]),
+    labels: {
+      "bnfs.test.actor": "malicious-random-natserver",
+      "bnfs.test.scope": "random-workload-real-p2p",
+      "bnfs.test.transport": "p2p-server-batch-target",
+    },
+  };
+  services["malicious-natclient"] = {
+    ...idleNatService("malicious-natclient", [relayNetwork(1)]),
+    labels: {
+      "bnfs.test.actor": "malicious-natclient",
+      "bnfs.test.scope": "random-workload-real-p2p",
+      "bnfs.test.transport": "p2p-client-batch-member",
+    },
+  };
 }
 if (enableAdversaries) {
   services["malicious-natserver"] = adversaryService(
@@ -268,6 +284,8 @@ function adversaryService(name, role, peerURL, attachedNetworks) {
       "-peer", peerURL,
       "-state-dir", "/state",
       "-seed", adversarySeed,
+      "-interval", "60s",
+      "-attack-offset", role === "relay" ? "30s" : "0s",
     ],
     volumes: [`${servicePrivateDirectory}:/state`],
     tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m"],
@@ -318,9 +336,11 @@ function provisionCACredentials() {
   for (const service of numberedNames("natserver", natServerCount)) {
     installCredential(path.join(privateRuntimeDir, service, "ca-issue.token"), values.server);
   }
+  installCredential(path.join(privateRuntimeDir, "malicious-random-natserver", "ca-issue.token"), values.server);
   for (const service of numberedNames("natclient", natClientCount)) {
     installCredential(path.join(privateRuntimeDir, service, "ca-issue.token"), values.client);
   }
+  installCredential(path.join(privateRuntimeDir, "malicious-natclient", "ca-issue.token"), values.client);
   if (enableAdversaries) {
     installCredential(path.join(privateRuntimeDir, "mixed-path-probe", "ca-issue.token"), values.client);
   }

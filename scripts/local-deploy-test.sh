@@ -18,7 +18,7 @@ build_only=0
 while (($#)); do
   case "$1" in
     --scenario)
-      scenario=${2:?--scenario requires all, 1, 2, or 3}
+      scenario=${2:?--scenario requires all, 1, 2, 3, 4, 5, or 6}
       shift 2
       ;;
     --keep)
@@ -38,7 +38,7 @@ while (($#)); do
       shift
       ;;
     -h|--help)
-      printf 'usage: %s [--scenario all|1|2|3] [--no-build] [--keep] [--allow-failures] [--build-only]\n' "$0"
+      printf 'usage: %s [--scenario all|1|2|3|4|5|6] [--no-build] [--keep] [--allow-failures] [--build-only]\n' "$0"
       exit 0
       ;;
     *)
@@ -49,7 +49,7 @@ while (($#)); do
 done
 
 case "$scenario" in
-  all|1|2|3) ;;
+  all|1|2|3|4|5|6) ;;
   *) printf 'invalid scenario: %s\n' "$scenario" >&2; exit 2 ;;
 esac
 
@@ -108,6 +108,8 @@ if [[ $scenario == all ]]; then
     "$ROOT_DIR/test/local-chaos/scenarios/01_partition_bridges.sh"
     "$ROOT_DIR/test/local-chaos/scenarios/02_relay_failover.sh"
     "$ROOT_DIR/test/local-chaos/scenarios/03_kcp_tcp_fallback.sh"
+	"$ROOT_DIR/test/local-chaos/scenarios/04_concurrent_service_dashboard.sh"
+	"$ROOT_DIR/test/local-chaos/scenarios/05_multi_relay_service.sh"
   )
 else
   scripts=("$ROOT_DIR/test/local-chaos/scenarios/0${scenario}_"*.sh)

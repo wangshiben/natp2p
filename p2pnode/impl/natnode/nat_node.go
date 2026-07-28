@@ -25,6 +25,7 @@ import (
 type relayEntry struct {
 	addr   string
 	stream network.Stream
+	pinned bool
 }
 
 // NATNode 实现 p2pnode.Node 接口，代表一个 NAT 后节点。
@@ -129,17 +130,35 @@ func NewNATNode(privKey *ecdh.PrivateKey, bootstrapRelay string) (*NATNode, erro
 
 func (n *NATNode) relayActivated(address string) {
 	n.mu.Lock()
-	n.entryRelays = map[string]struct{}{address: {}}
+	entryRelays := map[string]struct{}{address: {}}
 	n.knownRelays[address] = struct{}{}
 	for oldAddress, entry := range n.registeredRelays {
+		if entry.pinned {
+			entryRelays[oldAddress] = struct{}{}
+			continue
+		}
 		delete(n.registeredRelays, oldAddress)
 		entry.addr = address
 		n.registeredRelays[address] = entry
 		break
 	}
+	n.entryRelays = entryRelays
 	n.mu.Unlock()
 	n.startBillingControl(address)
 	logx.Infof("[natnode] 注册到 relay: %s", address)
+}
+
+// RelayCandidates returns the current quality-ranked Relay candidates without
+// changing the single-active failover cursor.
+func (n *NATNode) RelayCandidates(limit int) []string {
+	if n.relayFailover == nil || limit <= 0 {
+		return nil
+	}
+	candidates, _, _, _ := n.relayFailover.snapshot()
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
 }
 
 func (n *NATNode) currentBillingRelay(fallback string) string {
