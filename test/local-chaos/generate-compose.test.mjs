@@ -223,6 +223,38 @@ test("IP-family plan assigns isolated IPv4, IPv6 and dual-stack paths", async (c
   assert.equal(commandOption(compose.services.relay05.command, "-ca"), "http://10.253.43.251:9100");
 });
 
+test("access networks can move away from a stale Docker address pool", async (context) => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-access-network-runtime-"));
+  context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
+  const { stdout } = await execFileAsync(process.execPath, [generator, runtimeDir], {
+    env: {
+      ...process.env,
+      BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET: "212",
+    },
+    maxBuffer: 1024 * 1024,
+  });
+  const compose = JSON.parse(stdout);
+
+  for (let relay = 1; relay <= 7; relay += 1) {
+    assert.deepEqual(compose.networks[`access_r${String(relay).padStart(2, "0")}`].ipam.config, [
+      { subnet: `10.212.${relay}.0/24` },
+    ]);
+  }
+});
+
+test("access network override rejects overlapping reserved topology ranges", async (context) => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-access-network-invalid-"));
+  context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
+
+  await assert.rejects(execFileAsync(process.execPath, [generator, runtimeDir], {
+    env: {
+      ...process.env,
+      BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET: "200",
+    },
+    maxBuffer: 1024 * 1024,
+  }), /isolated RFC1918/);
+});
+
 function numbered(prefix, count) {
   return Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1).padStart(2, "0")}`);
 }

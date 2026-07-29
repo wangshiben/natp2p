@@ -11,6 +11,9 @@ const enableAdversaries = enableCA && process.env.BNFS_CHAOS_ENABLE_ADVERSARIES 
 const caHostPort = process.env.BNFS_CHAOS_CA_HOST_PORT ?? "19100";
 const adversarySeed = process.env.BNFS_CHAOS_ADVERSARY_SEED ?? "bnfs-container-adversary-v1";
 const ipFamilyPlanFile = process.env.BNFS_CHAOS_IP_FAMILY_PLAN_FILE ?? "";
+const accessNetworkSecondOctet = parseAccessNetworkSecondOctet(
+  process.env.BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET ?? "211",
+);
 const relayCount = 7;
 const natServerCount = 13;
 const natClientCount = 6;
@@ -46,7 +49,7 @@ const networks = {
   control_partition_b: network("10.200.2.0/24"),
 };
 for (let relay = 1; relay <= relayCount; relay += 1) {
-  networks[relayNetwork(relay)] = network(`10.201.${relay}.0/24`);
+  networks[relayNetwork(relay)] = network(`10.${accessNetworkSecondOctet}.${relay}.0/24`);
 }
 for (const assignment of ipFamilyPlan) {
   const spec = ipFamilySpecs[assignment.family];
@@ -181,6 +184,13 @@ function network(subnet) {
     internal: true,
     ipam: { config: [{ subnet }] },
   };
+}
+
+function parseAccessNetworkSecondOctet(value) {
+  if (!/^(?:1[6-9]|[2-9][0-9]|1[0-9]{2}|20[14-9]|21[0-9]|22[0-3])$/.test(value)) {
+    throw new Error("BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET must select an isolated RFC1918 /16");
+  }
+  return Number.parseInt(value, 10);
 }
 
 function ipFamilyNetwork(spec) {
