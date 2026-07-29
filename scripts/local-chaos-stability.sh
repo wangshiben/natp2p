@@ -2778,6 +2778,13 @@ random_batch_worker() {
     done < "$selected_file"
     target_pairs=$(awk -F '\t' '{ if (pairs != "") pairs=pairs ","; pairs=pairs $1 "→" $7 } END { print pairs }' "$assignment_file")
     [[ $target_pairs ]] || return 1
+    if ! wait_random_batch_mixed_path_quiet "$run_dir" "$deadline_epoch"; then
+      rm -f "$eligible_file" "$selected_file" "$assignment_file"
+      now_epoch=$(date +%s)
+      (( now_epoch < deadline_epoch )) || return 0
+      sleep 1
+      continue
+    fi
     append_random_batch_event "$run_dir" "$(date --iso-8601=seconds)" "$batch_id" \
       "$selected_server" "$selected_server_malicious" "$mode" "$client_count" "$selected_clients" \
       "$malicious_selected" RUNNING "$target_pairs" 0 0 || return 1
@@ -2790,10 +2797,6 @@ random_batch_worker() {
     child_pids=()
     while IFS=$'\t' read -r client relay relay_endpoint family listen_port node_id \
       server server_relay server_endpoint server_family target_id; do
-      if ! wait_random_batch_mixed_path_quiet "$run_dir" "$deadline_epoch"; then
-        child_failed=1
-        break
-      fi
       server_line=$(printf '%s\t%s\t%s\t%s\t%s' \
         "$server" "$server_relay" "$server_endpoint" "$server_family" "$target_id")
       BNFS_RANDOM_BATCH_ID="$batch_id" BNFS_RANDOM_BATCH_MEMBER=1 \

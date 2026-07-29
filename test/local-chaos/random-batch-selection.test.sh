@@ -131,4 +131,29 @@ grep -q '> "$run_dir/workers/$batch_id-$client.log" 2>&1 < /dev/null &' <<< "$st
 grep -q 'BNFS_RANDOM_BATCH_MEMBER:-0} != 1' <<< "$stability_source" \
   || fail 'batch members still wait independently for global Server idleness'
 
+defer_run_dir=$test_root/defer-run
+mkdir -p "$defer_run_dir"
+cp "$pool_file" "$defer_run_dir/client-pool.tsv"
+cp "$run_dir/server-pool.tsv" "$defer_run_dir/server-pool.tsv"
+printf 'timestamp\tbatch_id\tselected_server\tserver_pool_includes_malicious\tserver_malicious\tmode\trequested_clients\tselected_clients\tclient_pool_includes_malicious\tmalicious_client_selected\tstatus\ttarget_pairs\tsucceeded\tfailed\n' \
+  > "$defer_run_dir/random-batches.tsv"
+(
+  wait_random_batch_mixed_path_quiet() {
+    if (( $(wc -l < "$1/random-batches.tsv") != 1 )); then
+      : > "$1/published-before-quiet"
+    fi
+    return 1
+  }
+  random_batch_client_count() {
+    printf '1\n'
+  }
+  random_batch_worker "$defer_run_dir" "$(( $(date +%s) + 2 ))" 1 1 5 5
+) || fail 'a busy mixed path still terminates the random batch scheduler'
+[[ ! -e $defer_run_dir/published-before-quiet ]] \
+  || fail 'a random batch was published before the mixed path became quiet'
+[[ $(wc -l < "$defer_run_dir/random-batches.tsv") -eq 1 ]] \
+  || fail 'a deferred batch was exposed as a false RUNNING or FAIL event'
+[[ -z $(find "$defer_run_dir/random-batches" -type f -print -quit) ]] \
+  || fail 'a deferred batch left stale assignment files'
+
 printf 'random batch selection regression passed\n'
