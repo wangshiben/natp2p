@@ -337,6 +337,29 @@ func (d *DualStream) SendMessageAsync(ctx context.Context, message *network.Mess
 // 调度该协议重连，然后用同一条消息在 backup 上重发，实现实时切换。
 // 若两条 leg 都失败或都不存在，关闭整个逻辑流并返回错误。
 func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) error {
+	return d.sendMessage(ctx, message, nil)
+}
+
+func (d *DualStream) SendMessageWithInitialWrite(
+	ctx context.Context,
+	message *network.Message,
+	onInitialWrite func(),
+) error {
+	if onInitialWrite != nil {
+		var once sync.Once
+		callback := onInitialWrite
+		onInitialWrite = func() {
+			once.Do(callback)
+		}
+	}
+	return d.sendMessage(ctx, message, onInitialWrite)
+}
+
+func (d *DualStream) sendMessage(
+	ctx context.Context,
+	message *network.Message,
+	onInitialWrite func(),
+) error {
 	sealedMessage := cloneMessage(message)
 	payloadBytes := 0
 	if sealedMessage != nil {
@@ -387,6 +410,7 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 
 		winner, primaryErr, backupErr, hedged := d.sendWithKCPGoodputBudget(
 			ctx, sealedMessage, sealedMessageID, payloadBytes, primaryKind, primary, backupKind, backup,
+			onInitialWrite,
 		)
 		if winner != streamTransportUnknown {
 			if primaryErr != nil && ctx.Err() == nil {
@@ -415,7 +439,9 @@ func (d *DualStream) SendMessage(ctx context.Context, message *network.Message) 
 		}
 
 		if backup != nil && !hedged {
-			retryErr := backup.SendMessage(ctx, cloneMessage(sealedMessage))
+			retryErr := sendMessageWithInitialWrite(
+				ctx, backup, cloneMessage(sealedMessage), onInitialWrite,
+			)
 			if retryErr == nil {
 				d.setPreferred(backupKind)
 				return nil
@@ -460,6 +486,7 @@ func (d *DualStream) sendWithKCPGoodputBudget(
 	primary network.Stream,
 	backupKind streamTransport,
 	backup network.Stream,
+	onInitialWrite func(),
 ) (streamTransport, error, error, bool) {
 	if primary == nil {
 		return streamTransportUnknown, errors.New("stream closed"), nil, false
@@ -473,7 +500,7 @@ func (d *DualStream) sendWithKCPGoodputBudget(
 	}
 	if backup == nil || legFamily(primaryKind) != streamTransportKCP ||
 		legFamily(backupKind) != streamTransportTCP || len(messageID) == 0 || !qualityEnabled {
-		err := primary.SendMessage(ctx, cloneMessage(message))
+		err := sendMessageWithInitialWrite(ctx, primary, cloneMessage(message), onInitialWrite)
 		if err == nil {
 			return primaryKind, nil, nil, false
 		}
@@ -486,7 +513,9 @@ func (d *DualStream) sendWithKCPGoodputBudget(
 	send := func(kind streamTransport, stream network.Stream) {
 		results <- dualStreamSendResult{
 			kind: kind,
-			err:  stream.SendMessage(sendContext, cloneMessage(message)),
+			err: sendMessageWithInitialWrite(
+				sendContext, stream, cloneMessage(message), onInitialWrite,
+			),
 		}
 	}
 	go send(primaryKind, primary)
@@ -530,6 +559,24 @@ func (d *DualStream) sendWithKCPGoodputBudget(
 		}
 	}
 	return streamTransportUnknown, primaryErr, backupErr, true
+}
+
+func sendMessageWithInitialWrite(
+	ctx context.Context,
+	stream network.Stream,
+	message *network.Message,
+	onInitialWrite func(),
+) error {
+	if ordered, ok := stream.(network.InitialWriteStream); ok {
+		return ordered.SendMessageWithInitialWrite(ctx, message, onInitialWrite)
+	}
+	if err := stream.SendMessage(ctx, message); err != nil {
+		return err
+	}
+	if onInitialWrite != nil {
+		onInitialWrite()
+	}
+	return nil
 }
 
 func (d *DualStream) handleSendFailure(role string, kind streamTransport, stream network.Stream, err error) {

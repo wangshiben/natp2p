@@ -1,6 +1,7 @@
 package mux
 
 import (
+	"context"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -13,7 +14,8 @@ type Stream struct {
 	id   uint32
 
 	// sendSeq 是本流出站 DATA 帧的单调序号分配器(每帧 +1)。Close 时其值即 finalSeq。
-	sendSeq atomic.Uint64
+	sendSeq    atomic.Uint64
+	sendWindow chan struct{}
 
 	mu       sync.Mutex
 	buf      []byte
@@ -33,11 +35,12 @@ type Stream struct {
 
 func newStream(sess *Session, id uint32) *Stream {
 	return &Stream{
-		sess:     sess,
-		id:       id,
-		dataCh:   make(chan struct{}, 1),
-		closedCh: make(chan struct{}),
-		reorder:  make(map[uint64][]byte),
+		sess:       sess,
+		id:         id,
+		sendWindow: make(chan struct{}, sess.streamSendWindow),
+		dataCh:     make(chan struct{}, 1),
+		closedCh:   make(chan struct{}),
+		reorder:    make(map[uint64][]byte),
 	}
 }
 
@@ -158,7 +161,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 		wg.Add(1)
 		go func(seq uint64, data []byte) {
 			defer wg.Done()
-			if err := st.sess.sendData(st.id, seq, data); err != nil {
+			if err := st.sess.sendData(st.id, seq, data, st.sendWindow); err != nil {
 				e := err
 				firstErr.CompareAndSwap(nil, &e)
 			}
@@ -182,7 +185,13 @@ func (st *Stream) Close() error {
 	st.mu.Unlock()
 	if !already {
 		finalSeq := st.sendSeq.Load()
-		_ = st.sess.sendClose(st.id, finalSeq)
+		closeCtx, cancel := context.WithTimeout(st.sess.ctx, st.sess.streamCloseTimeout)
+		defer cancel()
+		if err := st.sess.sendClose(closeCtx, st.id, finalSeq); err != nil {
+			st.sess.removeStream(st.id)
+			st.closeLocal()
+			return err
+		}
 	}
 	st.sess.removeStream(st.id)
 	st.closeLocal()

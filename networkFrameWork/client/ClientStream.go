@@ -119,6 +119,29 @@ func (s *StreamClient) SendMessage(ctx context.Context, message *network.Message
 	return nil
 }
 
+func (s *StreamClient) SendMessageWithInitialWrite(
+	ctx context.Context,
+	message *network.Message,
+	onInitialWrite func(),
+) error {
+	select {
+	case <-s.exit:
+		return errors.New("stream closed")
+	default:
+	}
+	message.Header.ConnectionId = s.stream.ConnectionId()
+	if stream, ok := s.stream.(network.InitialWriteStream); ok {
+		return stream.SendMessageWithInitialWrite(ctx, message, onInitialWrite)
+	}
+	if err := s.stream.SendMessage(ctx, message); err != nil {
+		return err
+	}
+	if onInitialWrite != nil {
+		onInitialWrite()
+	}
+	return nil
+}
+
 // SendMessageAsync 异步发送消息，立即返回。发送结果通过回调通知。
 // 如果 callback 为 nil，行为退化为同步阻塞（等价于 SendMessage）。
 func (s *StreamClient) SendMessageAsync(ctx context.Context, message *network.Message, callback network.MessageResultCallback) error {

@@ -16,6 +16,12 @@ import (
 	"bnfs_p2p/networkFrameWork/client"
 )
 
+const (
+	billingControlInitialBackoff = 250 * time.Millisecond
+	billingControlMaximumBackoff = 5 * time.Second
+	billingControlStableDuration = 30 * time.Second
+)
+
 func (n *NATNode) startBillingControl(relayAddr string) {
 	if relayAddr == "" || n.billingMeter.certificate() == nil {
 		return
@@ -36,22 +42,24 @@ func (n *NATNode) maintainBillingControl(relayAddr string) {
 		delete(n.billingControlActive, relayAddr)
 		n.mu.Unlock()
 	}()
-	backoff := 250 * time.Millisecond
+	backoff := billingControlInitialBackoff
 	for n.ctx.Err() == nil {
+		connectedAt := time.Time{}
 		stream, _, err := networkFrameWork.TryConnectControlStreamTCP(
 			relayAddr, string(n.ID()), n.identity.Pubkey(), billingcontrol.Route,
 		)
 		if err == nil {
+			connectedAt = time.Now()
 			n.mu.Lock()
 			n.billingControlActive[relayAddr] = stream
 			n.mu.Unlock()
-			backoff = 250 * time.Millisecond
 			err = n.serveBillingControl(relayAddr, client.NewStreamClient(stream))
 			n.billingMeter.invalidateRelaySession(relayAddr)
 		}
 		if n.ctx.Err() != nil {
 			return
 		}
+		nextBackoff := nextBillingControlBackoff(backoff, connectedAt, time.Now())
 		logx.Warnf("[natnode] 双签计费控制流断开, 将重连 relay=%s: %v", relayAddr, err)
 		timer := time.NewTimer(backoff)
 		select {
@@ -60,10 +68,21 @@ func (n *NATNode) maintainBillingControl(relayAddr string) {
 			return
 		case <-timer.C:
 		}
-		if backoff < 5*time.Second {
-			backoff *= 2
-		}
+		backoff = nextBackoff
 	}
+}
+
+func nextBillingControlBackoff(current time.Duration, connectedAt, now time.Time) time.Duration {
+	if !connectedAt.IsZero() && now.Sub(connectedAt) >= billingControlStableDuration {
+		return billingControlInitialBackoff
+	}
+	if current < billingControlInitialBackoff {
+		current = billingControlInitialBackoff
+	}
+	if current >= billingControlMaximumBackoff/2 {
+		return billingControlMaximumBackoff
+	}
+	return current * 2
 }
 
 func (n *NATNode) serveBillingControl(relayAddr string, stream *client.StreamClient) error {

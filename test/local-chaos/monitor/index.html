@@ -21,6 +21,12 @@
     .panel { grid-column:span 12; min-width:0; border:1px solid var(--line); border-radius:14px; background:linear-gradient(160deg,var(--panel2),var(--panel)); padding:16px; box-shadow:0 12px 35px #0005; }
     .summary { grid-column:span 3; }
     .resource { grid-column:span 4; }
+    .capacity-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:9px; margin:12px 0; }
+    .capacity-stat { border:1px solid var(--line); border-radius:10px; padding:10px 11px; background:#0a1721; }
+    .capacity-stat strong { display:block; margin-top:3px; font-size:18px; color:var(--text); }
+    .capacity-targets { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+    .capacity-target { border:1px solid #31536b; border-radius:999px; padding:4px 9px; color:var(--muted); font:11px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .capacity-resource-table { min-width:900px; font-size:12px; }
     .chart-panel { grid-column:span 8; }
     .probe-panel { grid-column:span 4; }
     .value { font-size:25px; font-weight:760; letter-spacing:.01em; margin-top:5px; }
@@ -221,6 +227,24 @@
     <article class="panel probe-panel"><h2>最新端到端探测</h2><div id="probe" class="muted">尚无探测记录</div></article>
   </section>
 
+  <section class="panel" id="capacityPanel" style="margin-bottom:14px">
+    <div class="split-title">
+      <h2>公网 Relay 100 × 100 MiB 同时传输容量验证</h2>
+      <span class="status warn" id="capacityPhase">NOT STARTED</span>
+    </div>
+    <div class="muted small" id="capacityFreshness">等待正式容量测试</div>
+    <div class="capacity-summary" id="capacitySummary"></div>
+    <div class="meter"><i id="capacityProgressMeter"></i></div>
+    <div class="capacity-targets" id="capacityTargets"></div>
+    <div class="scroll">
+      <table class="capacity-resource-table">
+        <thead><tr><th>组件</th><th>CPU</th><th>RSS</th><th>线程</th><th>FD</th><th>活动会话 / TCP</th><th>磁盘读</th><th>磁盘写</th></tr></thead>
+        <tbody id="capacityResources"><tr><td colspan="8">等待资源样本</td></tr></tbody>
+      </table>
+    </div>
+    <div class="muted small" id="capacityNetwork" style="margin-top:10px"></div>
+  </section>
+
   <section class="panel" style="margin-bottom:14px">
     <div class="split-title">
       <h2>NatServer 持久注册与并发服务会话</h2>
@@ -338,9 +362,14 @@ async function refresh() {
 }
 function render(data) {
   const phase = data.phase || 'UNKNOWN';
-  $('phase').textContent = phase;
-  $('phaseBadge').className = `badge ${phaseClass(phase)}`;
-  $('identity').textContent = `稳定性轮次 · 场景 ${data.metadata.scenario || '?'} ${data.metadata.scenario_name || ''}`;
+  const capacity = data.capacityTest || {};
+  const capacityActive = capacity.available && ['CONNECTING','READY','TRANSFERRING'].includes(capacity.phase);
+  const capacityCompleted = capacity.available && capacity.phase === 'COMPLETED';
+  $('phase').textContent = capacityActive || capacityCompleted ? `CAPACITY · ${capacity.phase}` : phase;
+  $('phaseBadge').className = `badge ${capacityActive || capacityCompleted ? (capacity.healthy ? 'ok' : 'bad') : phaseClass(phase)}`;
+  $('identity').textContent = capacity.available
+    ? `公网 Relay 容量验证 · ${num(capacity.transfer?.clients) || num(capacity.connected)} Client × 100 MiB`
+    : `稳定性轮次 · 场景 ${data.metadata.scenario || '?'} ${data.metadata.scenario_name || ''}`;
   $('updated').textContent = `刷新于 ${new Date(data.generatedAt).toLocaleString()} · 每 2 秒`;
   $('remaining').textContent = duration(data.timing.remainingSeconds);
   $('deadline').textContent = data.timing.durationSeconds ? `计划时长 ${duration(data.timing.durationSeconds)}` : '集群初始化中';
@@ -358,6 +387,7 @@ function render(data) {
   resource('mem', num(latest.project_memory_host_pct), data.thresholds.memory, `宿主机内存 ${round(num(latest.host_memory_pct),1)}%`);
   resource('disk', num(latest.guard_disk_pct), data.thresholds.disk, `Docker ${latest.docker_disk_pct || 0}% · 证据盘 ${latest.artifact_disk_pct || 0}%`);
   renderProbe(data.largeProbes?.latest || data.probes.latest);
+  renderCapacityTest(capacity);
   renderServiceSessions(data.serviceSessions);
   renderWorkers(data.workers);
   renderRandomBatches(data.randomBatches);
@@ -391,8 +421,64 @@ function render(data) {
   else if (watcherNewFailures > 0) showAlert('实时失败监视器发现 ' + watcherNewFailures + ' 条新失败，请查看失败诊断与拓扑路径');
   else if (watcherUnhealthy) showAlert('实时失败监视器状态异常：' + (data.failureWatcher?.status || 'UNKNOWN'));
   else if (workersUnhealthy) showAlert('随机传输 Worker 异常：' + num(data.workers?.running) + ' / ' + num(data.workers?.expected));
-  else if (terminalBad || (phase === 'RUNNING' && badCore)) showAlert(data.status.detail || data.resourceGuard || '存在核心节点异常');
+  else if (capacityActive && num(capacity.transfer?.failures) > 0) showAlert('公网容量测试出现 ' + num(capacity.transfer?.failures) + ' 条传输失败，正在保留现场');
+  else if (!capacityActive && (terminalBad || (phase === 'RUNNING' && badCore))) showAlert(data.status.detail || data.resourceGuard || '存在核心节点异常');
   else hideAlert();
+}
+function renderCapacityTest(capacity = {}) {
+  const phase = capacity.phase || 'NOT_STARTED';
+  const transfer = capacity.transfer || {};
+  const resources = capacity.resources || {};
+  const healthy = capacity.available && capacity.healthy;
+  $('capacityPhase').textContent = phase;
+  $('capacityPhase').className = 'status ' + (healthy ? 'ok' : capacity.available ? 'bad' : 'warn');
+  $('capacityFreshness').textContent = capacity.available
+    ? '开始 ' + transferTimestamp(capacity.startedAt) + (transfer.observedAt ? ' · 最新进度 ' + transferTimestamp(transfer.observedAt) : '')
+    : '等待正式容量测试';
+  $('capacitySummary').innerHTML =
+    capacityStat('已连接', num(capacity.connected) + ' / 100') +
+    capacityStat('唯一预期 SHA', num(capacity.checksumWarmup?.uniqueChecksums) + ' / 100') +
+    capacityStat('完整传输', num(transfer.successes) + ' / ' + num(transfer.clients)) +
+    capacityStat('失败', num(transfer.failures), num(transfer.failures) ? 'var(--red)' : 'var(--green)') +
+    capacityStat('总进度', round(num(transfer.progressPct), 3) + '%') +
+    capacityStat('有效吞吐', round(num(transfer.mibPerSecond), 3) + ' MiB/s') +
+    capacityStat('已校验数据', formatBytes(num(transfer.bytes)) + ' / ' + formatBytes(num(transfer.expectedBytes))) +
+    capacityStat('运行时间', escapeHtml(transfer.elapsed || '--'));
+  const progress = Math.max(0, Math.min(100, num(transfer.progressPct)));
+  $('capacityProgressMeter').style.width = progress + '%';
+  $('capacityProgressMeter').style.background = num(transfer.failures) ? 'var(--red)' : '';
+  const targets = Array.isArray(capacity.targets) ? capacity.targets : [];
+  $('capacityTargets').innerHTML = targets.length
+    ? targets.map(target => '<span class="capacity-target">NatServer ' + escapeHtml(target.target) + ' · ' + num(target.clients) + ' Client</span>').join('')
+    : '<span class="muted small">等待 34 / 33 / 33 目标分布</span>';
+  const rows = [
+    ['容量客户端', resources.client, '—'],
+    ...(Array.isArray(resources.natServers) ? resources.natServers.map(server => [server.service, server, num(server.activeSessions)]) : []),
+    ['公网 Relay', resources.relay, num(resources.relay?.tcpEstablished)],
+  ];
+  $('capacityResources').innerHTML = resources.samples
+    ? rows.map(([name, item, sessions]) => '<tr><td>' + escapeHtml(name) + '</td>' +
+      '<td>' + round(num(item?.cpuPct), 2) + '%</td>' +
+      '<td>' + round(num(item?.rssMiB), 2) + ' MiB</td>' +
+      '<td>' + num(item?.threads) + '</td>' +
+      '<td>' + (item?.fds === undefined ? '—' : num(item.fds)) + '</td>' +
+      '<td>' + sessions + '</td>' +
+      '<td>' + round(num(item?.readMiBps), 3) + ' MiB/s</td>' +
+      '<td>' + round(num(item?.writeMiBps), 3) + ' MiB/s</td></tr>').join('')
+    : '<tr><td colspan="8">等待资源样本</td></tr>';
+  const network = resources.network || {};
+  const peaks = resources.peaks || {};
+  $('capacityNetwork').textContent = resources.samples
+    ? '网络速率：本机 RX/TX ' + round(num(network.localRxMiBps), 3) + ' / ' + round(num(network.localTxMiBps), 3) +
+      ' MiB/s · Relay RX/TX ' + round(num(network.relayRxMiBps), 3) + ' / ' + round(num(network.relayTxMiBps), 3) +
+      ' MiB/s · 近期峰值 RSS Client/Relay ' + round(num(peaks.clientRSSMiB), 1) + ' / ' + round(num(peaks.relayRSSMiB), 1) +
+      ' MiB · Relay FD/TCP ' + num(peaks.relayFDs) + ' / ' + num(peaks.relayTCPEstablished) +
+      ' · 样本 ' + num(resources.samples)
+    : '';
+}
+function capacityStat(label, value, color = '') {
+  return '<div class="capacity-stat"><span class="muted small">' + escapeHtml(label) + '</span><strong' +
+    (color ? ' style="color:' + color + '"' : '') + '>' + value + '</strong></div>';
 }
 function renderServiceSessions(serviceSessions = {}) {
   const summary = serviceSessions.summary || {};

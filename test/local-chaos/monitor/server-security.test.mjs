@@ -1629,6 +1629,76 @@ test("Dashboard exposes only whitelisted concurrent service sessions", async () 
   }
 });
 
+test("Dashboard publishes the public Relay capacity result", async () => {
+  const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-capacity-"));
+  const capacityDir = path.join(runDir, "capacity");
+  const capacityPointer = path.join(runDir, "capacity-pointer");
+  try {
+    await fs.mkdir(capacityDir, { recursive: true });
+    await fs.writeFile(capacityPointer, `${capacityDir}\n`);
+    await fs.writeFile(path.join(capacityDir, "start-time.txt"), "2026-07-29T12:00:00+08:00\n");
+    await fs.writeFile(path.join(capacityDir, "end-time.txt"), "2026-07-29T13:50:00+08:00\n");
+    await fs.writeFile(path.join(capacityDir, "client.rc"), "0\n");
+    await fs.writeFile(path.join(capacityDir, "client.pid"), "999999999\n");
+    await fs.writeFile(path.join(capacityDir, "client.log"), [
+      "CONNECTED count=100 target=1ecbe57204ac5464 elapsed=1s at=2026-07-29T12:00:01+08:00",
+      "CHECKSUM_WARMUP_COMPLETE clients=100 unique_checksums=100 elapsed=30s at=2026-07-29T12:00:31+08:00",
+      "TARGET_DISTRIBUTION target=1ecbe57204ac5464 clients=34",
+      "TARGET_DISTRIBUTION target=a8cea2806f6c997f clients=33",
+      "TARGET_DISTRIBUTION target=bf0c600945127f4d clients=33",
+      "TRANSFER_SUMMARY clients=100 successes=100 failures=0 bytes=10485760000 expected_bytes=10485760000 elapsed=1h50m0s mib_per_second=1.515 at=2026-07-29T13:50:00+08:00",
+      "",
+    ].join("\n"));
+    await fs.writeFile(path.join(capacityDir, "resource-samples.tsv"), [
+      [
+        "epoch", "iso", "host_cpu_ticks",
+        "client_cpu_ticks", "client_rss_kib", "client_threads", "client_fds", "client_read_bytes", "client_write_bytes",
+        "nat1_cpu_ticks", "nat1_rss_kib", "nat1_threads", "nat1_fds", "nat1_read_bytes", "nat1_write_bytes",
+        "http1_cpu_ticks", "http1_rss_kib", "http1_threads", "nat1_active_sessions",
+        "nat2_cpu_ticks", "nat2_rss_kib", "nat2_threads", "nat2_fds", "nat2_read_bytes", "nat2_write_bytes",
+        "http2_cpu_ticks", "http2_rss_kib", "http2_threads", "nat2_active_sessions",
+        "nat3_cpu_ticks", "nat3_rss_kib", "nat3_threads", "nat3_fds", "nat3_read_bytes", "nat3_write_bytes",
+        "http3_cpu_ticks", "http3_rss_kib", "http3_threads", "nat3_active_sessions",
+        "local_net_rx_bytes", "local_net_tx_bytes",
+        "relay_cpu_ticks", "relay_rss_kib", "relay_threads", "relay_fds", "relay_read_bytes", "relay_write_bytes",
+        "relay_tcp_established", "relay_net_rx_bytes", "relay_net_tx_bytes", "relay_load1", "relay_restarts",
+      ].join("\t"),
+      [
+        "1785297600", "2026-07-29T12:00:00+08:00", "1000",
+        "100", "40960", "110", "220", "0", "0",
+        "100", "20480", "45", "80", "0", "0", "100", "110592", "8", "34",
+        "100", "20480", "45", "80", "0", "0", "100", "110592", "8", "33",
+        "100", "20480", "45", "80", "0", "0", "100", "110592", "8", "33",
+        "1000000", "2000000",
+        "100", "245760", "16", "230", "0", "0", "216", "3000000", "4000000", "0.42", "0",
+      ].join("\t"),
+      "",
+    ].join("\n"));
+
+    await withDashboard(runDir, async (port) => {
+      const response = await dashboardFetch(`http://127.0.0.1:${port}/api/status`);
+      assert.equal(response.status, 200);
+      const status = await response.json();
+      assert.equal(status.capacityTest.available, true);
+      assert.equal(status.capacityTest.phase, "COMPLETED");
+      assert.equal(status.capacityTest.connected, 100);
+      assert.equal(status.capacityTest.checksumWarmup.uniqueChecksums, 100);
+      assert.equal(status.capacityTest.transfer.successes, 100);
+      assert.equal(status.capacityTest.transfer.failures, 0);
+      assert.equal(status.capacityTest.transfer.bytes, 10485760000);
+      assert.equal(status.capacityTest.targets.reduce((sum, target) => sum + target.clients, 0), 100);
+      assert.equal(status.capacityTest.resources.client.threads, 110);
+      assert.equal(status.capacityTest.resources.client.fds, 220);
+      assert.equal(status.capacityTest.resources.natServers[0].activeSessions, 34);
+      assert.equal(status.capacityTest.resources.relay.threads, 16);
+      assert.equal(status.capacityTest.resources.relay.fds, 230);
+      assert.equal(status.capacityTest.resources.relay.restarts, 0);
+    }, { env: { CAPACITY_RUN_POINTER: capacityPointer } });
+  } finally {
+    await fs.rm(runDir, { recursive: true, force: true });
+  }
+});
+
 async function withDashboard(runDir, callback, options = {}) {
   const port = await freePort();
   const child = spawn(process.execPath, [dashboardPath], {
@@ -1641,6 +1711,7 @@ async function withDashboard(runDir, callback, options = {}) {
       COMPOSE_PROJECT: options.composeProject ?? "",
       COMPOSE_FILE: path.join(runDir, "compose.json"),
       CA_PORT: "1",
+      CAPACITY_RUN_POINTER: options.env?.CAPACITY_RUN_POINTER ?? path.join(runDir, "capacity-pointer"),
     },
     stdio: "ignore",
   });

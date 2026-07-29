@@ -571,6 +571,60 @@ func TestMessageHoldbackResourceLimitsAndTimeout(t *testing.T) {
 	})
 }
 
+func TestMessageHoldbackDefaultsCoverTunnelSendWindows(t *testing.T) {
+	limits := defaultMessageHoldbackLimits()
+	const (
+		tunnelSendWindow = 32
+		serviceSessions  = 500
+	)
+	if limits.maxConnectionMessages < 2*tunnelSendWindow {
+		t.Fatalf("per-connection message limit=%d, want at least %d",
+			limits.maxConnectionMessages, 2*tunnelSendWindow)
+	}
+	if limits.maxGlobalMessages < 2*tunnelSendWindow*serviceSessions {
+		t.Fatalf("global message limit=%d, want at least %d",
+			limits.maxGlobalMessages, 2*tunnelSendWindow*serviceSessions)
+	}
+
+	// Message-count headroom must not weaken the actual retained-memory
+	// boundaries. Tiny partial frames fill the configured message windows;
+	// payload-heavy frames remain constrained independently by byte limits.
+	holdback := newMessageHoldback(limits)
+	for index := 0; index < 2*tunnelSendWindow; index++ {
+		frame := &network.Frame{
+			FrameType: network.FrameTypeData, ConnectionId: "pipeline",
+			MessageId: uint64(index + 1), SeqId: 0, TotalFrames: 2,
+			Payload: []byte{byte(index)},
+		}
+		if _, err := holdback.add("server", frame); err != nil {
+			t.Fatalf("partial tunnel message %d: %v", index, err)
+		}
+	}
+	snapshot := holdback.snapshot()
+	if snapshot.PendingMessages != 2*tunnelSendWindow {
+		t.Fatalf("pending messages=%d, want %d", snapshot.PendingMessages, 2*tunnelSendWindow)
+	}
+
+	byteLimits := limits
+	byteLimits.maxConnectionBytes = 4
+	byteLimited := newMessageHoldback(byteLimits)
+	first := &network.Frame{
+		FrameType: network.FrameTypeData, ConnectionId: "bytes",
+		MessageId: 1, SeqId: 0, TotalFrames: 2, Payload: make([]byte, 4),
+	}
+	if _, err := byteLimited.add("server", first); err != nil {
+		t.Fatalf("first byte-limited frame: %v", err)
+	}
+	second := &network.Frame{
+		FrameType: network.FrameTypeData, ConnectionId: "bytes",
+		MessageId: 2, SeqId: 0, TotalFrames: 2, Payload: []byte{1},
+	}
+	if _, err := byteLimited.add("server", second); err == nil ||
+		!strings.Contains(err.Error(), "per-connection byte limit") {
+		t.Fatalf("byte limit error=%v, want per-connection byte limit", err)
+	}
+}
+
 func TestBillingHoldbackHookFailureReleasesNoFrames(t *testing.T) {
 	wantErr := errors.New("billing rejected")
 	config := holdbackTestConfig(func(context.Context, *BillableRecord) error { return wantErr })

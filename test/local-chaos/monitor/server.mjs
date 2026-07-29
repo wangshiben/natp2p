@@ -13,6 +13,9 @@ const privateRuntimeDir = path.resolve(process.env.PRIVATE_RUNTIME_DIR ?? path.j
 const composeProject = process.env.COMPOSE_PROJECT ?? "";
 const composeFile = path.resolve(process.env.COMPOSE_FILE ?? path.join(runDir, "runtime", "compose.json"));
 const caPort = integer(process.env.CA_PORT, 19100);
+const capacityRunPointer = path.resolve(
+  process.env.CAPACITY_RUN_POINTER ?? "/tmp/natp2p-capacity.EVFZr6/latest-formal-run",
+);
 const htmlPath = new URL("./index.html", import.meta.url);
 const relayCount = 7;
 const natServerCount = 13;
@@ -446,7 +449,7 @@ async function statusSnapshot(forceRefresh = false) {
 }
 
 async function buildStatus() {
-  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, rawClientTransfers, randomBatches, workers, workload, compose, containers, finalContainers, ca, serverPool, clientPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence, natIdentities] = await Promise.all([
+  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, rawClientTransfers, randomBatches, workers, workload, compose, containers, finalContainers, ca, serverPool, clientPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence, natIdentities, capacityTest] = await Promise.all([
     readEnv(path.join(runDir, "metadata.env")),
     readEnv(path.join(runDir, "status.env")),
     readText(path.join(runDir, "phase")),
@@ -471,6 +474,7 @@ async function buildStatus() {
     readTsv(path.join(runDir, "ip-family-plan.tsv"), 4),
     readTsv(path.join(runDir, "ip-family-coverage.tsv"), 12),
     readTsv(path.join(runDir, "nat-identities.tsv"), 64),
+    readCapacityTest(capacityRunPointer),
   ]);
   const serviceSessions = await readServiceSessions(privateRuntimeDir, natIdentities);
   const nodeProfiles = buildNodeProfiles(serverPool, clientPool, ipFamilyPlan);
@@ -521,6 +525,7 @@ async function buildStatus() {
     nodes,
     firewalls,
     mixedPath,
+    capacityTest,
     serviceSessions,
     nodeProfiles,
   });
@@ -573,6 +578,7 @@ async function buildStatus() {
     billingProductionGate,
     mixedPath,
     serviceSessions,
+    capacityTest,
     ipFamilyCoverage,
     ca,
     summary: {
@@ -588,6 +594,228 @@ async function buildStatus() {
     maliciousNodes,
     topology,
   };
+}
+
+async function readCapacityTest(pointerFile) {
+  const runDirectory = String(await readText(pointerFile)).trim();
+  if (!path.isAbsolute(runDirectory)) return emptyCapacityTest();
+  const clientLog = await readTail(path.join(runDirectory, "client.log"), 1024 * 1024);
+  if (!clientLog) return emptyCapacityTest();
+  // Five-second sampling makes 2048 rows cover roughly 2h50m, including the
+  // full 100 x 100 MiB capacity run without publishing the raw rows.
+  const resourceRows = await readTsv(path.join(runDirectory, "resource-samples.tsv"), 2048, 2 * 1024 * 1024);
+  const startTime = publicTimestamp(String(await readText(path.join(runDirectory, "start-time.txt"))).trim());
+  const endTime = publicTimestamp(String(await readText(path.join(runDirectory, "end-time.txt"))).trim());
+  const clientRCText = String(await readText(path.join(runDirectory, "client.rc"))).trim();
+  const clientRC = /^-?\d+$/.test(clientRCText) ? integer(clientRCText, -1) : null;
+  const clientPID = integer(String(await readText(path.join(runDirectory, "client.pid"))).trim(), 0);
+  const clientRunning = clientPID > 0 && await processExists(clientPID);
+  const connected = lastIntegerMatch(clientLog, /CONNECTED count=(\d+)/g);
+  const connectionFailures = lastIntegerMatch(clientLog, /CONNECT_FAILED failures=(\d+)/g);
+  const warmup = lastMatch(clientLog, /CHECKSUM_WARMUP_COMPLETE clients=(\d+) unique_checksums=(\d+) elapsed=([^\s]+)/g);
+  const barrier = lastMatch(clientLog, /TRANSFER_BARRIER clients=(\d+) bytes_per_client=(\d+) total_bytes=(\d+) timeout=([^\s]+) at=([^\s]+)/g);
+  const progress = lastMatch(clientLog, /TRANSFER_PROGRESS clients=(\d+) successes=(\d+) failures=(\d+) bytes=(\d+) expected_bytes=(\d+) progress_pct=([\d.]+) mib_per_second=([\d.]+) elapsed=([^\s]+) at=([^\s]+)/g);
+  const summary = lastMatch(clientLog, /TRANSFER_SUMMARY clients=(\d+) successes=(\d+) failures=(\d+) bytes=(\d+) expected_bytes=(\d+) elapsed=([^\s]+) mib_per_second=([\d.]+) at=([^\s]+)/g);
+  const timeout = lastMatch(clientLog, /TRANSFER_TIMEOUT clients=(\d+) successes=(\d+) failures=(\d+) bytes=(\d+) expected_bytes=(\d+) err="[^"]*" at=([^\s]+)/g);
+  const transferFailures = [...clientLog.matchAll(/TRANSFER_FAILED client=\d+ target=[0-9a-f]+ variant=\S+ bytes=\d+ failures=(\d+)/g)]
+    .reduce((maximum, match) => Math.max(maximum, integer(match[1], 0)), 0);
+  const targets = [...clientLog.matchAll(/TARGET_DISTRIBUTION target=([0-9a-f]{16}) clients=(\d+)/g)]
+    .map((match) => ({ target: match[1], clients: capacityNonNegativeInteger(match[2]) }));
+  const transfer = summary
+    ? capacityTransfer(summary, true)
+    : progress
+      ? capacityTransfer(progress, false)
+      : timeout
+        ? {
+          clients: capacityNonNegativeInteger(timeout[1]),
+          successes: capacityNonNegativeInteger(timeout[2]),
+          failures: Math.max(capacityNonNegativeInteger(timeout[3]), transferFailures),
+          bytes: capacityNonNegativeInteger(timeout[4]),
+          expectedBytes: capacityNonNegativeInteger(timeout[5]),
+          progressPct: capacityProgress(timeout[4], timeout[5]),
+          mibPerSecond: 0,
+          elapsed: "",
+          observedAt: publicTimestamp(timeout[6]),
+        }
+        : {
+          clients: capacityNonNegativeInteger(barrier?.[1]),
+          successes: 0,
+          failures: transferFailures,
+          bytes: 0,
+          expectedBytes: capacityNonNegativeInteger(barrier?.[3]),
+          progressPct: 0,
+          mibPerSecond: 0,
+          elapsed: "",
+          observedAt: publicTimestamp(barrier?.[5]),
+        };
+  const completed = Boolean(summary)
+    && transfer.clients > 0
+    && transfer.successes === transfer.clients
+    && transfer.failures === 0
+    && transfer.bytes === transfer.expectedBytes;
+  const phase = completed
+    ? "COMPLETED"
+    : timeout
+      ? "TIMEOUT"
+      : clientRC !== null && !clientRunning
+        ? "FAILED"
+        : barrier
+          ? "TRANSFERRING"
+          : warmup
+            ? "READY"
+            : "CONNECTING";
+  return {
+    available: true,
+    phase,
+    healthy: completed || (clientRunning && transfer.failures === 0 && connectionFailures === 0),
+    startedAt: startTime,
+    endedAt: endTime,
+    clientRunning,
+    clientRC,
+    connected,
+    connectionFailures,
+    checksumWarmup: {
+      clients: capacityNonNegativeInteger(warmup?.[1]),
+      uniqueChecksums: capacityNonNegativeInteger(warmup?.[2]),
+      elapsed: publicShortText(warmup?.[3]),
+    },
+    targets,
+    transfer,
+    resources: capacityResources(resourceRows),
+  };
+}
+
+function emptyCapacityTest() {
+  return {
+    available: false,
+    phase: "NOT_STARTED",
+    healthy: false,
+    startedAt: "",
+    endedAt: "",
+    clientRunning: false,
+    clientRC: null,
+    connected: 0,
+    connectionFailures: 0,
+    checksumWarmup: { clients: 0, uniqueChecksums: 0, elapsed: "" },
+    targets: [],
+    transfer: {
+      clients: 0,
+      successes: 0,
+      failures: 0,
+      bytes: 0,
+      expectedBytes: 0,
+      progressPct: 0,
+      mibPerSecond: 0,
+      elapsed: "",
+      observedAt: "",
+    },
+    resources: { samples: 0, latestAt: "", client: {}, natServers: [], relay: {}, network: {}, peaks: {} },
+  };
+}
+
+function capacityTransfer(match, complete) {
+  const clients = capacityNonNegativeInteger(match[1]);
+  const successes = capacityNonNegativeInteger(match[2]);
+  const failures = capacityNonNegativeInteger(match[3]);
+  const bytes = capacityNonNegativeInteger(match[4]);
+  const expectedBytes = capacityNonNegativeInteger(match[5]);
+  return {
+    clients,
+    successes,
+    failures,
+    bytes,
+    expectedBytes,
+    progressPct: complete ? capacityProgress(bytes, expectedBytes) : Math.max(0, number(match[6], 0)),
+    mibPerSecond: Math.max(0, number(match[complete ? 7 : 7], 0)),
+    elapsed: publicShortText(match[complete ? 6 : 8]),
+    observedAt: publicTimestamp(match[complete ? 8 : 9]),
+  };
+}
+
+function capacityProgress(bytes, expectedBytes) {
+  const expected = number(expectedBytes, 0);
+  return expected > 0 ? round(number(bytes, 0) * 100 / expected, 3) : 0;
+}
+
+function capacityResources(rows) {
+  if (rows.length === 0) {
+    return { samples: 0, latestAt: "", client: {}, natServers: [], relay: {}, network: {}, peaks: {} };
+  }
+  const latest = rows.at(-1);
+  const previous = rows.length > 1 ? rows.at(-2) : latest;
+  const seconds = Math.max(1, number(latest.epoch, 0) - number(previous.epoch, 0));
+  const cpuPercent = (key) => Math.max(0, (number(latest[key], 0) - number(previous[key], 0)) / seconds);
+  const rateMiB = (key) => Math.max(0, (number(latest[key], 0) - number(previous[key], 0)) / seconds / 1024 / 1024);
+  const process = (prefix) => ({
+    cpuPct: round(cpuPercent(`${prefix}_cpu_ticks`), 2),
+    rssMiB: round(number(latest[`${prefix}_rss_kib`], 0) / 1024, 2),
+    threads: capacityNonNegativeInteger(latest[`${prefix}_threads`]),
+    fds: capacityNonNegativeInteger(latest[`${prefix}_fds`]),
+    readMiBps: round(rateMiB(`${prefix}_read_bytes`), 3),
+    writeMiBps: round(rateMiB(`${prefix}_write_bytes`), 3),
+  });
+  const natServers = [1, 2, 3].map((numberValue) => ({
+    service: `natserver${numberValue}`,
+    ...process(`nat${numberValue}`),
+    httpCPUPercent: round(cpuPercent(`http${numberValue}_cpu_ticks`), 2),
+    httpRSSMiB: round(number(latest[`http${numberValue}_rss_kib`], 0) / 1024, 2),
+    activeSessions: capacityNonNegativeInteger(latest[`nat${numberValue}_active_sessions`]),
+  }));
+  const maximum = (key) => rows.reduce((value, row) => Math.max(value, number(row[key], 0)), 0);
+  return {
+    samples: rows.length,
+    latestAt: publicTimestamp(latest.iso),
+    client: process("client"),
+    natServers,
+    relay: {
+      ...process("relay"),
+      tcpEstablished: capacityNonNegativeInteger(latest.relay_tcp_established),
+      restarts: capacityNonNegativeInteger(latest.relay_restarts),
+      load1: Math.max(0, number(latest.relay_load1, 0)),
+    },
+    network: {
+      localRxMiBps: round(rateMiB("local_net_rx_bytes"), 3),
+      localTxMiBps: round(rateMiB("local_net_tx_bytes"), 3),
+      relayRxMiBps: round(rateMiB("relay_net_rx_bytes"), 3),
+      relayTxMiBps: round(rateMiB("relay_net_tx_bytes"), 3),
+    },
+    peaks: {
+      clientRSSMiB: round(maximum("client_rss_kib") / 1024, 2),
+      natRSSMiB: [1, 2, 3].map((numberValue) => round(maximum(`nat${numberValue}_rss_kib`) / 1024, 2)),
+      relayRSSMiB: round(maximum("relay_rss_kib") / 1024, 2),
+      relayFDs: capacityNonNegativeInteger(maximum("relay_fds")),
+      relayTCPEstablished: capacityNonNegativeInteger(maximum("relay_tcp_established")),
+    },
+  };
+}
+
+function lastMatch(value, pattern) {
+  let result = null;
+  for (const match of value.matchAll(pattern)) result = match;
+  return result;
+}
+
+function lastIntegerMatch(value, pattern) {
+  const match = lastMatch(value, pattern);
+  return capacityNonNegativeInteger(match?.[1]);
+}
+
+function capacityNonNegativeInteger(value) {
+  return publicNonNegativeInteger(integer(value, 0));
+}
+
+function publicShortText(value) {
+  const text = String(value ?? "");
+  return /^[A-Za-z0-9.+:%-]{0,32}$/.test(text) ? text : "";
+}
+
+async function processExists(pid) {
+  try {
+    await fs.stat(`/proc/${pid}`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readServiceSessions(privateRoot, identities) {
@@ -3237,8 +3465,8 @@ function round(value, digits) {
   return Math.round(value * scale) / scale;
 }
 
-async function readTsv(file, limit) {
-  const text = await readTail(file, 256 * 1024);
+async function readTsv(file, limit, maxBytes = 256 * 1024) {
+  const text = await readTail(file, maxBytes);
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
   const header = lines[0].split("\t");

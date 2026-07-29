@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,6 +72,72 @@ func TestTcpStreamSendBlocksUntilAck(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("SendMessage did not return after ACK")
+	}
+}
+
+func TestTcpStreamInitialWriteCallbackPrecedesFinalAck(t *testing.T) {
+	local, remote := net.Pipe()
+	sender := startTcpStream("nodeB", uuid.New().String(), local)
+	t.Cleanup(func() {
+		sender.Close()
+		remote.Close()
+	})
+	msg := makeTestMessage(50)
+
+	initialWritten := make(chan struct{})
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- sender.SendMessageWithInitialWrite(
+			context.Background(),
+			msg,
+			func() { close(initialWritten) },
+		)
+	}()
+
+	select {
+	case <-initialWritten:
+		t.Fatal("initial-write callback fired before the receiver consumed the frame")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	frame, err := network.ReadFrame(remote)
+	if err != nil {
+		t.Fatalf("read initial frame: %v", err)
+	}
+
+	select {
+	case <-initialWritten:
+	case <-time.After(time.Second):
+		t.Fatal("initial-write callback did not fire after the frame write")
+	}
+	select {
+	case err := <-sendDone:
+		t.Fatalf("send returned before the final ACK: %v", err)
+	default:
+	}
+	ack, err := network.BuildAckFrame(
+		frame.MessageId,
+		frame.TotalFrames,
+		network.FullAckRange(frame.TotalFrames),
+	)
+	if err != nil {
+		t.Fatalf("build ACK: %v", err)
+	}
+	ack.ConnectionId = frame.ConnectionId
+	encoded, err := ack.AppendTo(nil)
+	if err != nil {
+		t.Fatalf("encode ACK: %v", err)
+	}
+	if _, err := remote.Write(encoded); err != nil {
+		t.Fatalf("write ACK: %v", err)
+	}
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("send did not return after the final ACK")
 	}
 }
 
@@ -264,5 +331,129 @@ func TestTcpStreamFrameRelayModeDoesNotBlockOnInbox(t *testing.T) {
 	_, err := receiver.NextMessage(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected relay-mode stream to skip inbox delivery, got %v", err)
+	}
+}
+
+func TestTcpStreamStartKeepAliveClosesSilentLogicalPeer(t *testing.T) {
+	local, remote := net.Pipe()
+	stream := startTcpStream("silent-peer", uuid.New().String(), local)
+	stream.keepAlivePolicy = streamKeepAlivePolicy{
+		idleBaseline: 5 * time.Millisecond,
+		probeBase:    5 * time.Millisecond,
+		maxProbes:    1,
+		probeTimeout: 5 * time.Millisecond,
+	}
+	t.Cleanup(func() {
+		stream.Close()
+		remote.Close()
+	})
+	go func() {
+		_, _ = io.Copy(io.Discard, remote)
+	}()
+
+	stream.StartKeepAlive()
+	stream.StartKeepAlive()
+
+	select {
+	case <-stream.streamCtx.Done():
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("silent logical peer was not reclaimed")
+	}
+	if err := stream.streamErr(); err == nil || !strings.Contains(err.Error(), "peer unreachable") {
+		t.Fatalf("stream error=%v, want keepalive failure", err)
+	}
+}
+
+func TestTcpStreamKeepAliveAcceptsAckProgressDuringOneWayTransfer(t *testing.T) {
+	sender, receiver := newPipeStreams(t)
+	sender.keepAlivePolicy = streamKeepAlivePolicy{
+		idleBaseline: 10 * time.Millisecond,
+		probeBase:    5 * time.Millisecond,
+		maxProbes:    2,
+		probeTimeout: 20 * time.Millisecond,
+	}
+	sender.StartKeepAlive()
+
+	receiveErr := make(chan error, 1)
+	go func() {
+		for index := 0; index < 40; index++ {
+			message, err := receiver.NextMessage(context.Background())
+			if err != nil {
+				receiveErr <- err
+				return
+			}
+			if message == nil || len(message.Payload) == 0 {
+				index--
+			}
+		}
+		receiveErr <- nil
+	}()
+
+	for index := 0; index < 40; index++ {
+		message := makeTestMessage(8 * 1024)
+		message.Payload[0] = byte(index)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := sender.SendMessage(ctx, message)
+		cancel()
+		if err != nil {
+			t.Fatalf("one-way message %d: %v", index, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if err := <-receiveErr; err != nil {
+		t.Fatalf("receiver: %v", err)
+	}
+	select {
+	case <-sender.streamCtx.Done():
+		t.Fatalf("sender was reclaimed despite continuous ACK progress: %v", sender.streamErr())
+	default:
+	}
+}
+
+func TestTcpStreamKeepAliveDefersToPendingBusinessSend(t *testing.T) {
+	local, remote := net.Pipe()
+	stream := startTcpStream("slow-peer", uuid.New().String(), local)
+	stream.keepAlivePolicy = streamKeepAlivePolicy{
+		idleBaseline: 5 * time.Millisecond,
+		probeBase:    5 * time.Millisecond,
+		maxProbes:    1,
+		probeTimeout: 5 * time.Millisecond,
+	}
+	t.Cleanup(func() {
+		stream.Close()
+		remote.Close()
+	})
+
+	received := make(chan *network.Frame, 1)
+	go func() {
+		frame, _ := network.ReadFrame(remote)
+		received <- frame
+	}()
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- stream.SendMessage(context.Background(), makeTestMessage(8*1024))
+	}()
+	select {
+	case frame := <-received:
+		if frame == nil {
+			t.Fatal("business frame was not received")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("business frame did not reach peer")
+	}
+
+	stream.StartKeepAlive()
+	time.Sleep(4 * stream.keepAlivePolicy.idleBaseline)
+	select {
+	case <-stream.streamCtx.Done():
+		t.Fatalf("keepalive closed a stream with a pending business send: %v", stream.streamErr())
+	default:
+	}
+
+	_ = remote.Close()
+	select {
+	case <-sendDone:
+	case <-time.After(time.Second):
+		t.Fatal("pending business send did not stop after peer close")
 	}
 }

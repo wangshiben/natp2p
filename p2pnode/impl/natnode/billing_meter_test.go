@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"bnfs_p2p/billingvoucher"
 	"bnfs_p2p/crypoto"
@@ -302,6 +303,93 @@ func TestBillingSendFailureInvalidatesAmbiguousSession(t *testing.T) {
 	}
 }
 
+func TestBillingSendOrderReleasesAfterInitialWrite(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	sessionID := billingvoucher.Identifier{14, 15, 16}
+	relayAddress := "relay-ordered-send:9000"
+	if _, err := meter.activateRelaySession(
+		relayAddress,
+		sessionID.String(),
+		crypoto.GetPubKeyStr(relayKey.PublicKey()),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := newOrderedBillingStream()
+	connection := newNATConnection(
+		p2pnode.PeerInfo{ID: p2pnode.NodeID("peer")},
+		stream,
+		nil,
+		meter,
+		func() string { return relayAddress },
+		nil,
+	)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- connection.Send(context.Background(), &p2pnode.Message{Payload: []byte("first")})
+	}()
+	if sequence := waitOrderedBillingInitial(t, stream.initial, firstDone); sequence != 1 {
+		t.Fatalf("first initial sequence=%d, want 1", sequence)
+	}
+	select {
+	case err := <-firstDone:
+		t.Fatalf("first send returned before its ACK gate: %v", err)
+	default:
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- connection.Send(context.Background(), &p2pnode.Message{Payload: []byte("second")})
+	}()
+	if sequence := waitOrderedBillingInitial(t, stream.initial, secondDone); sequence != 2 {
+		t.Fatalf("second initial sequence=%d, want 2", sequence)
+	}
+	select {
+	case err := <-firstDone:
+		t.Fatalf("first send returned before the second initial write: %v", err)
+	default:
+	}
+
+	stream.release <- struct{}{}
+	stream.release <- struct{}{}
+	for index, done := range []<-chan error{firstDone, secondDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("send %d: %v", index+1, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("send %d did not finish", index+1)
+		}
+	}
+}
+
+func waitOrderedBillingInitial(t *testing.T, initial <-chan uint64, done <-chan error) uint64 {
+	t.Helper()
+	select {
+	case sequence := <-initial:
+		return sequence
+	case err := <-done:
+		t.Fatalf("send returned before its ordered initial write: %v", err)
+		return 0
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ordered initial write")
+		return 0
+	}
+}
+
 func TestBillingConfirmAdvancesOnlyAcrossContiguousPrefix(t *testing.T) {
 	payerKey, err := crypoto.MakeKeyPair()
 	if err != nil {
@@ -513,7 +601,7 @@ func TestBillingEvidenceSnapshotsRollWithinHardLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recordCount := uint64(2*maximumNatBillingEvidenceEntries + 257)
+	recordCount := uint64(maximumNatBillingReconciliationSnapshots + 257)
 	for sequence := uint64(1); sequence <= recordCount; sequence++ {
 		message := &network.Message{
 			Header:  &network.Header{ConnectionId: "tiny-record-evidence"},
@@ -533,8 +621,8 @@ func TestBillingEvidenceSnapshotsRollWithinHardLimit(t *testing.T) {
 	}
 
 	session := meter.sessions[sessionID]
-	if len(session.snapshots) != maximumNatBillingEvidenceEntries {
-		t.Fatalf("snapshot count = %d, want %d", len(session.snapshots), maximumNatBillingEvidenceEntries)
+	if len(session.snapshots) != maximumNatBillingReconciliationSnapshots {
+		t.Fatalf("snapshot count = %d, want %d", len(session.snapshots), maximumNatBillingReconciliationSnapshots)
 	}
 	if len(session.pending) != 0 {
 		t.Fatalf("rejected contiguous record left %d pending entries", len(session.pending))
@@ -545,8 +633,122 @@ func TestBillingEvidenceSnapshotsRollWithinHardLimit(t *testing.T) {
 	if _, retained := session.snapshots[recordCount]; !retained {
 		t.Fatal("latest billing evidence snapshot was evicted")
 	}
-	if len(session.snapshotOrder) > 2*maximumNatBillingEvidenceEntries {
+	if len(session.snapshotOrder) > 2*maximumNatBillingReconciliationSnapshots {
 		t.Fatalf("snapshot order index grew beyond its compacted bound: %d", len(session.snapshotOrder))
+	}
+}
+
+func TestBillingReconciliationRetainsHighConcurrencyEvidenceWindow(t *testing.T) {
+	session := newNatBillingSession()
+	recordCount := uint64(4 * maximumNatBillingEvidenceEntries)
+	for sequence := uint64(1); sequence <= recordCount; sequence++ {
+		snapshot := natBillingSnapshot{
+			cumulative: sequence, lastRecord: billingvoucher.Identifier{byte(sequence), 1},
+			lastRecordSequence: sequence, recordSet: billingvoucher.Digest{byte(sequence >> 8), 1},
+		}
+		session.snapshots[sequence] = snapshot
+		session.snapshotOrder = append(session.snapshotOrder, sequence)
+		trimNatBillingSnapshots(session)
+	}
+	if _, retained := session.snapshots[1]; !retained {
+		t.Fatal("high-concurrency reconciliation evidence was evicted at the pending-record safety limit")
+	}
+	if len(session.snapshots) != int(recordCount) {
+		t.Fatalf("retained snapshots = %d, want %d", len(session.snapshots), recordCount)
+	}
+	current := session.snapshots[recordCount]
+	session.cumulative = current.cumulative
+	session.lastRecord = current.lastRecord
+	session.recordSet = current.recordSet
+	session.nextAssigned = recordCount + 1
+	session.nextAdvance = recordCount + 1
+	target := session.snapshots[1]
+	meter := &natBillingMeter{channels: make(map[string]*natVoucherChannel)}
+	if _, err := meter.reconcileRelaySessionLocked(billingvoucher.Identifier{1}, session, target); err != nil {
+		t.Fatalf("reconcile retained high-concurrency watermark: %v", err)
+	}
+	if session.cumulative != target.cumulative || session.nextAdvance != target.lastRecordSequence+1 {
+		t.Fatalf("reconciled session = cumulative %d next %d", session.cumulative, session.nextAdvance)
+	}
+}
+
+func TestBillingReconcileAcceptsOneRelayConfirmedLocalAssignment(t *testing.T) {
+	sessionID := billingvoucher.Identifier{91, 92, 93}
+	current := natBillingSnapshot{
+		cumulative: 128, lastRecord: billingvoucher.Identifier{94},
+		lastRecordSequence: 1, recordSet: billingvoucher.Digest{95},
+	}
+	relayState := natBillingSnapshot{
+		cumulative: 192, lastRecord: billingvoucher.Identifier{96},
+		lastRecordSequence: 2, recordSet: billingvoucher.Digest{97},
+	}
+	session := newNatBillingSession()
+	session.relayID = billingvoucher.Identifier{98}
+	session.cumulative = current.cumulative
+	session.lastRecord = current.lastRecord
+	session.recordSet = current.recordSet
+	session.nextAdvance = 2
+	session.nextAssigned = 3
+	session.assignedBytes[2] = 64
+	session.snapshots[current.cumulative] = current
+	meter := &natBillingMeter{
+		sessions: map[billingvoucher.Identifier]*natBillingSession{sessionID: session},
+		channels: make(map[string]*natVoucherChannel),
+	}
+
+	if _, err := meter.reconcileRelaySessionLocked(sessionID, session, relayState); err != nil {
+		t.Fatalf("reconcile Relay-confirmed local assignment: %v", err)
+	}
+	if got := natBillingSessionSnapshot(session); got != relayState {
+		t.Fatalf("reconciled snapshot=%+v, want %+v", got, relayState)
+	}
+	if session.confirmedSequence != 2 || session.nextAdvance != 3 || session.nextAssigned != 3 ||
+		len(session.assignedBytes) != 0 {
+		t.Fatalf("reconciled assignment state=%+v", session)
+	}
+	if got, retained := session.snapshots[relayState.cumulative]; !retained || got != relayState {
+		t.Fatalf("Relay-confirmed assignment snapshot=(%+v, %v)", got, retained)
+	}
+
+	inflated := relayState
+	inflated.cumulative += 64
+	inflated.lastRecordSequence++
+	inflated.lastRecord = billingvoucher.Identifier{99}
+	inflated.recordSet = billingvoucher.Digest{100}
+	if _, err := meter.reconcileRelaySessionLocked(sessionID, session, inflated); err == nil {
+		t.Fatal("Relay advanced again without another local assignment")
+	}
+}
+
+func TestBillingReconcileRejectsAssignedRecordWithInflatedBytes(t *testing.T) {
+	sessionID := billingvoucher.Identifier{101, 102, 103}
+	current := natBillingSnapshot{
+		cumulative: 256, lastRecord: billingvoucher.Identifier{104},
+		lastRecordSequence: 4, recordSet: billingvoucher.Digest{105},
+	}
+	inflated := natBillingSnapshot{
+		cumulative: 385, lastRecord: billingvoucher.Identifier{106},
+		lastRecordSequence: 5, recordSet: billingvoucher.Digest{107},
+	}
+	session := newNatBillingSession()
+	session.relayID = billingvoucher.Identifier{108}
+	session.cumulative = current.cumulative
+	session.lastRecord = current.lastRecord
+	session.recordSet = current.recordSet
+	session.nextAdvance = 5
+	session.nextAssigned = 6
+	session.assignedBytes[5] = 128
+	session.snapshots[current.cumulative] = current
+	meter := &natBillingMeter{channels: make(map[string]*natVoucherChannel)}
+
+	if _, err := meter.reconcileRelaySessionLocked(sessionID, session, inflated); err == nil {
+		t.Fatal("Relay watermark inflated a locally assigned record")
+	}
+	if got := natBillingSessionSnapshot(session); got != current {
+		t.Fatalf("failed reconciliation changed snapshot=%+v, want %+v", got, current)
+	}
+	if session.assignedBytes[5] != 128 {
+		t.Fatal("failed reconciliation discarded local assignment evidence")
 	}
 }
 
@@ -598,6 +800,118 @@ func TestAmbiguousBillingSessionReconcilesOnlyToSignedLocalEvidence(t *testing.T
 	unknown.cumulative++
 	if _, err := meter.activateRelaySessionWithState(relayAddress, sessionID.String(), relayPublicKey, &unknown); err == nil {
 		t.Fatal("Relay watermark without matching local evidence was accepted")
+	}
+}
+
+func TestBillingReconnectDrainsActiveSendBeforeReusingSequence(t *testing.T) {
+	payerKey, _ := crypoto.MakeKeyPair()
+	relayKey, _ := crypoto.MakeKeyPair()
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddress := "relay-drain:9000"
+	relayPublicKey := crypoto.GetPubKeyStr(relayKey.PublicKey())
+	sessionID := billingvoucher.Identifier{71, 72, 73}
+	if _, err := meter.activateRelaySession(relayAddress, sessionID.String(), relayPublicKey); err != nil {
+		t.Fatal(err)
+	}
+	first := natBillingSnapshot{
+		cumulative: 128, lastRecord: billingvoucher.Identifier{74},
+		lastRecordSequence: 1, recordSet: billingvoucher.Digest{75},
+	}
+	second := natBillingSnapshot{
+		cumulative: 256, lastRecord: billingvoucher.Identifier{76},
+		lastRecordSequence: 2, recordSet: billingvoucher.Digest{77},
+	}
+	session := meter.sessions[sessionID]
+	session.cumulative = second.cumulative
+	session.lastRecord = second.lastRecord
+	session.recordSet = second.recordSet
+	session.nextAssigned = 3
+	session.nextAdvance = 3
+	session.confirmedSequence = 1
+	session.activeSends[2] = struct{}{}
+	session.snapshots[first.cumulative] = first
+	session.snapshots[second.cumulative] = second
+	meter.invalidateRelaySession(relayAddress)
+
+	status, err := meter.activateRelaySessionWithState(
+		relayAddress, sessionID.String(), relayPublicKey, &first,
+	)
+	if err != nil {
+		t.Fatalf("start active-send reconciliation drain: %v", err)
+	}
+	if !status.draining || status.cumulative != first.cumulative ||
+		status.lastRecordSequence != first.lastRecordSequence {
+		t.Fatalf("draining status = %+v", status)
+	}
+	if got := natBillingSessionSnapshot(session); got != second {
+		t.Fatalf("active send was rewound to %+v, want %+v", got, second)
+	}
+	if session.nextAssigned != 3 {
+		t.Fatalf("next assigned sequence = %d, want 3", session.nextAssigned)
+	}
+	if _, invalid := meter.invalidSessions[sessionID]; !invalid {
+		t.Fatal("draining reconciliation prematurely unblocked new sends")
+	}
+
+	message := natBillingConfirmationMessage(sessionID, 2)
+	if !meter.completeSend(message) {
+		t.Fatal("last active send did not request a final control reconciliation")
+	}
+	if len(session.activeSends) != 0 {
+		t.Fatalf("active sends after completion = %d", len(session.activeSends))
+	}
+
+	status, err = meter.activateRelaySessionWithState(
+		relayAddress, sessionID.String(), relayPublicKey, &second,
+	)
+	if err != nil {
+		t.Fatalf("finish active-send reconciliation: %v", err)
+	}
+	if status.draining || status.cumulative != second.cumulative ||
+		status.lastRecordSequence != second.lastRecordSequence {
+		t.Fatalf("final status = %+v", status)
+	}
+	if _, invalid := meter.invalidSessions[sessionID]; invalid {
+		t.Fatal("final exact reconciliation did not unblock the session")
+	}
+	if session.nextAssigned != 3 || session.nextAdvance != 3 {
+		t.Fatalf("reconciled sequence state = assigned %d advance %d", session.nextAssigned, session.nextAdvance)
+	}
+}
+
+func TestBillingInvalidationWaitsForAllActiveSendsBeforeControlReset(t *testing.T) {
+	payerKey, _ := crypoto.MakeKeyPair()
+	relayKey, _ := crypoto.MakeKeyPair()
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddress := "relay-deferred-reset:9000"
+	sessionID := billingvoucher.Identifier{81, 82, 83}
+	if _, err := meter.activateRelaySession(
+		relayAddress,
+		sessionID.String(),
+		crypoto.GetPubKeyStr(relayKey.PublicKey()),
+	); err != nil {
+		t.Fatal(err)
+	}
+	session := meter.sessions[sessionID]
+	session.nextAssigned = 3
+	session.activeSends[1] = struct{}{}
+	session.activeSends[2] = struct{}{}
+	meter.invalidateRelaySession(relayAddress)
+
+	if meter.completeSend(natBillingConfirmationMessage(sessionID, 1)) {
+		t.Fatal("first completed send reset billing control while another send was active")
+	}
+	if !meter.completeSend(natBillingConfirmationMessage(sessionID, 2)) {
+		t.Fatal("last active send did not request billing control reconciliation")
+	}
+	if len(session.activeSends) != 0 {
+		t.Fatalf("active sends after drain = %d, want 0", len(session.activeSends))
 	}
 }
 
@@ -913,3 +1227,71 @@ func (*failingBillingStream) NodeId() string                                    
 func (*failingBillingStream) ConnectionId() string                                     { return "connection" }
 func (*failingBillingStream) SetCryptoSuite(network.EncrypSuite)                       {}
 func (*failingBillingStream) SetOutboundRecordObserver(network.OutboundRecordObserver) {}
+
+type orderedBillingStream struct {
+	mu       sync.Mutex
+	observer network.OutboundRecordObserver
+	initial  chan uint64
+	release  chan struct{}
+}
+
+func newOrderedBillingStream() *orderedBillingStream {
+	return &orderedBillingStream{
+		initial: make(chan uint64, 2),
+		release: make(chan struct{}, 2),
+	}
+}
+
+func (*orderedBillingStream) Close() error { return nil }
+func (*orderedBillingStream) NextMessage(context.Context) (*network.Message, error) {
+	return nil, errors.New("unused")
+}
+func (stream *orderedBillingStream) SendMessage(ctx context.Context, message *network.Message) error {
+	return stream.SendMessageWithInitialWrite(ctx, message, nil)
+}
+func (stream *orderedBillingStream) SendMessageWithInitialWrite(
+	ctx context.Context,
+	message *network.Message,
+	onInitialWrite func(),
+) error {
+	record := natBillingTestE2ERecord(message.Header.BillingBytes, message.Header.BillingSequence)
+	sealed := *message
+	header := *message.Header
+	sealed.Header = &header
+	sealed.Payload = record
+
+	stream.mu.Lock()
+	observer := stream.observer
+	stream.mu.Unlock()
+	if observer != nil {
+		metadata, err := crypoto.InspectE2ERecord(record)
+		if err != nil {
+			return err
+		}
+		if err := observer(&sealed, metadata.MessageID); err != nil {
+			return err
+		}
+	}
+	if onInitialWrite != nil {
+		onInitialWrite()
+	}
+	stream.initial <- message.Header.BillingSequence
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stream.release:
+		return nil
+	}
+}
+func (*orderedBillingStream) SendMessageAsync(context.Context, *network.Message, network.MessageResultCallback) error {
+	return errors.New("unused")
+}
+func (*orderedBillingStream) NodeId() string       { return "peer" }
+func (*orderedBillingStream) ConnectionId() string { return "connection" }
+func (*orderedBillingStream) SetCryptoSuite(network.EncrypSuite) {
+}
+func (stream *orderedBillingStream) SetOutboundRecordObserver(observer network.OutboundRecordObserver) {
+	stream.mu.Lock()
+	stream.observer = observer
+	stream.mu.Unlock()
+}

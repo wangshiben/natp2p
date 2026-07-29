@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
+	"errors"
 	"io"
 	"math/rand"
 	"sync"
@@ -95,6 +97,119 @@ type delayedOpenConnection struct {
 	p2pnode.Connection
 	mu       sync.Mutex
 	heldOpen *p2pnode.Message
+}
+
+type blockingCloseConnection struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+type windowProbeConnection struct {
+	release chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	active  int
+	byID    map[uint32]int
+	changed chan struct{}
+}
+
+func newWindowProbeConnection() *windowProbeConnection {
+	return &windowProbeConnection{
+		release: make(chan struct{}),
+		closed:  make(chan struct{}),
+		byID:    make(map[uint32]int),
+		changed: make(chan struct{}, 1),
+	}
+}
+
+func (connection *windowProbeConnection) Peer() p2pnode.PeerInfo { return p2pnode.PeerInfo{} }
+func (connection *windowProbeConnection) Raw() network.Stream    { return nil }
+
+func (connection *windowProbeConnection) Close() error {
+	connection.once.Do(func() {
+		close(connection.closed)
+	})
+	return nil
+}
+
+func (connection *windowProbeConnection) Send(ctx context.Context, message *p2pnode.Message) error {
+	if len(message.Payload) < headerBase || message.Payload[0] != frameData {
+		return nil
+	}
+	streamID := binary.BigEndian.Uint32(message.Payload[1:5])
+	connection.mu.Lock()
+	connection.active++
+	connection.byID[streamID]++
+	connection.mu.Unlock()
+	select {
+	case connection.changed <- struct{}{}:
+	default:
+	}
+	defer func() {
+		connection.mu.Lock()
+		connection.active--
+		connection.byID[streamID]--
+		connection.mu.Unlock()
+	}()
+	select {
+	case <-connection.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-connection.closed:
+		return ErrSessionClosed
+	}
+}
+
+func (connection *windowProbeConnection) Receive(ctx context.Context) (*p2pnode.Message, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-connection.closed:
+		return nil, ErrSessionClosed
+	}
+}
+
+func (connection *windowProbeConnection) snapshot() (int, map[uint32]int) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	byID := make(map[uint32]int, len(connection.byID))
+	for streamID, active := range connection.byID {
+		byID[streamID] = active
+	}
+	return connection.active, byID
+}
+
+func (connection *blockingCloseConnection) Peer() p2pnode.PeerInfo { return p2pnode.PeerInfo{} }
+func (connection *blockingCloseConnection) Raw() network.Stream    { return nil }
+
+func (connection *blockingCloseConnection) Close() error {
+	connection.once.Do(func() {
+		close(connection.closed)
+	})
+	return nil
+}
+
+func (connection *blockingCloseConnection) Send(ctx context.Context, message *p2pnode.Message) error {
+	if len(message.Payload) == 0 || message.Payload[0] != frameClose {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-connection.closed:
+		return ErrSessionClosed
+	}
+}
+
+func (connection *blockingCloseConnection) Receive(ctx context.Context) (*p2pnode.Message, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-connection.closed:
+		return nil, ErrSessionClosed
+	}
 }
 
 func (c *delayedOpenConnection) Send(ctx context.Context, msg *p2pnode.Message) error {
@@ -379,5 +494,79 @@ func TestMux_DataBeforeOpenMaterializesStream(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("DATA 先于 OPEN 到达后 stream 未完成")
+	}
+}
+
+func TestMux_TwoLevelSendWindowsBoundCarrierAndEachStream(t *testing.T) {
+	t.Setenv("TUNNEL_SEND_WINDOW", "4")
+	t.Setenv("TUNNEL_STREAM_SEND_WINDOW", "2")
+
+	connection := newWindowProbeConnection()
+	session := NewSession(context.Background(), connection, true)
+	defer session.Close()
+
+	const streamCount = 3
+	streams := make([]*Stream, 0, streamCount)
+	for range streamCount {
+		stream, err := session.OpenStream()
+		if err != nil {
+			t.Fatalf("open stream: %v", err)
+		}
+		streams = append(streams, stream)
+	}
+
+	writerErr := make(chan error, streamCount)
+	for _, stream := range streams {
+		go func() {
+			_, err := stream.Write(make([]byte, 4*defaultMaxChunk))
+			writerErr <- err
+		}()
+	}
+
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for {
+		active, byID := connection.snapshot()
+		if active == 4 {
+			for streamID, streamActive := range byID {
+				if streamActive > 2 {
+					t.Fatalf("stream %d has %d in-flight chunks, want at most 2", streamID, streamActive)
+				}
+			}
+			break
+		}
+		select {
+		case <-connection.changed:
+		case <-deadline.C:
+			t.Fatalf("carrier reached %d in-flight chunks, want 4", active)
+		}
+	}
+
+	close(connection.release)
+	for range streamCount {
+		if err := <-writerErr; err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+}
+
+func TestStreamCloseIsBoundedWhenCloseFrameIsNotAcknowledged(t *testing.T) {
+	connection := &blockingCloseConnection{closed: make(chan struct{})}
+	session := NewSession(context.Background(), connection, true)
+	session.streamCloseTimeout = 20 * time.Millisecond
+	defer session.Close()
+
+	stream, err := session.OpenStream()
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	startedAt := time.Now()
+	err = stream.Close()
+	elapsed := time.Since(startedAt)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("close error=%v, want context deadline exceeded", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("stream close blocked for %s", elapsed)
 	}
 }

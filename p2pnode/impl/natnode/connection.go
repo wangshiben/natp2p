@@ -1,6 +1,7 @@
 package natnode
 
 import (
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/p2pnode"
@@ -41,22 +42,51 @@ func (c *NATConnection) Send(ctx context.Context, msg *p2pnode.Message) error {
 	if c.billingRelay != nil {
 		relayAddr = c.billingRelay()
 	}
+	if err := c.billing.waitRelaySession(ctx, relayAddr); err != nil {
+		return err
+	}
+	releaseSendOrder, err := c.billing.acquireSendOrder(ctx, relayAddr)
+	if err != nil {
+		return err
+	}
+	defer releaseSendOrder()
 	if err := c.billing.prepare(netMsg, relayAddr); err != nil {
 		return err
 	}
-	if err := c.stream.SendMessage(ctx, netMsg); err != nil {
+	if ordered, ok := c.stream.(network.InitialWriteStream); ok {
+		err = ordered.SendMessageWithInitialWrite(ctx, netMsg, releaseSendOrder)
+	} else {
+		err = c.stream.SendMessage(ctx, netMsg)
+	}
+	if err != nil {
 		c.billing.invalidateRelaySession(relayAddr)
-		if c.billingFailure != nil {
+		reconciliationReady := c.billing.completeSend(netMsg)
+		logx.Warnf(
+			"[natnode] 业务发送失败, 计费会话将在在途发送排空后重协商: peer=%.16s connId=%s relay=%s billingSequence=%d reconciliationReady=%t err=%v",
+			c.peer.ID, c.stream.ConnectionId(), relayAddr, netMsg.Header.BillingSequence, reconciliationReady, err,
+		)
+		if reconciliationReady && c.billingFailure != nil {
 			c.billingFailure(relayAddr)
 		}
 		return err
 	}
-	if err := c.billing.confirm(netMsg); err != nil {
+	confirmErr := c.billing.confirm(netMsg)
+	if confirmErr != nil {
 		c.billing.invalidateRelaySession(relayAddr)
-		if c.billingFailure != nil {
+	}
+	reconciliationReady := c.billing.completeSend(netMsg)
+	if confirmErr != nil {
+		logx.Warnf(
+			"[natnode] 业务发送已送达但计费确认失败, 会话将在在途发送排空后重协商: peer=%.16s connId=%s relay=%s billingSequence=%d reconciliationReady=%t err=%v",
+			c.peer.ID, c.stream.ConnectionId(), relayAddr, netMsg.Header.BillingSequence, reconciliationReady, confirmErr,
+		)
+		if reconciliationReady && c.billingFailure != nil {
 			c.billingFailure(relayAddr)
 		}
-		return err
+		return confirmErr
+	}
+	if reconciliationReady && c.billingFailure != nil {
+		c.billingFailure(relayAddr)
 	}
 	if c.touch != nil {
 		c.touch()

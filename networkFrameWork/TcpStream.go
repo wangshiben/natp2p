@@ -33,6 +33,13 @@ const (
 	// 上限 8s；重传退避也钳在 maxAckTimeout，使整条消息重传耗尽有界（见 sendMessageWithMessageID）。
 	minAckTimeout = 800 * time.Millisecond
 	maxAckTimeout = 8 * time.Second
+	// 逻辑 mux 流共享一条 NatServer→Relay carrier。高并发时即使链路完全健康，
+	// 单条消息也可能在共享发送队列中等待数秒；沿用物理流 800ms 的初始阈值会在
+	// 100 路场景下把排队误判成丢包并触发重传放大。mux 流使用更宽的无进展窗口，
+	// 真正的断链仍由 keepalive 和调用方 context 有界回收。
+	muxInitialAckTimeout = 8 * time.Second
+	muxMinAckTimeout     = 8 * time.Second
+	muxMaxAckTimeout     = 30 * time.Second
 	// maxRetransmitAttempts 是单条消息的最大重传次数。配合指数退避, 给跨公网高延迟链路足够的送达窗口。
 	maxRetransmitAttempts = 6
 	ackBatchThreshold     = 100
@@ -148,9 +155,10 @@ type TcpStream struct {
 	//   应用端的 client / relayServer 流始终保持 false，仍跑完整的 ACK / 重传 / 组包逻辑。
 	pureForwarder atomic.Bool
 
-	fatalMu   sync.Mutex
-	fatalErr  error
-	closeOnce sync.Once
+	fatalMu       sync.Mutex
+	fatalErr      error
+	closeOnce     sync.Once
+	keepAliveOnce sync.Once
 
 	// firstMsgID / firstMsgTotalFrames 记录 AcceptTcpStreamSync 同步读到的首条消息标识,
 	// 供调用方在确定流模式后用 AckFirstMessage 补发首包 ACK。
@@ -199,9 +207,13 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	// 启用KCP优化的渐进式帧大小自适应器
 	// 策略：从800字节开始，每30秒根据实际吞吐调整
 	adaptor := network.NewKCPFrameSizeAdaptor()
+	virtualMux := conn != nil && conn.RemoteAddr() != nil && conn.RemoteAddr().Network() == "mux"
 
 	// 根据连接的MTU自动设置最大帧大小
-	if adaptor != nil && conn != nil {
+	if adaptor != nil && virtualMux {
+		adaptor.SetMaxFrameSize(endpointMuxFramePayload)
+		adaptor.SetFrameSize(endpointMuxFramePayload)
+	} else if adaptor != nil && conn != nil {
 		maxFrameSize := network.DetectMaxFrameSize(conn)
 		adaptor.SetMaxFrameSize(maxFrameSize)
 	}
@@ -235,7 +247,7 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 	// 自己绝不发起。通过环境变量 BNFS_FRAME_FOLLOWER 把整个进程标记为 follower
 	// （测试中 client 进程设此变量，server/callee 进程不设 → 由 server 掌控帧大小）。
 	// relay 的 pureForwarder leg 另由 SetPureForwarder 卸载回调，亦不发起。
-	if adaptor != nil && !frameSizeFollowerProcess() {
+	if adaptor != nil && !virtualMux && !frameSizeFollowerProcess() {
 		adaptor.SetFrameSizeChangeCallback(t.requestFrameSizeChange)
 	}
 
@@ -475,8 +487,15 @@ func (t *TcpStream) SetIdentity(nodeId, connectionId string) {
 func (t *TcpStream) keepLive() {
 	policy := t.keepAlivePolicy.normalized()
 	connType := "TCP"
-	if t.connection != nil && t.connection.RemoteAddr().Network() != "tcp" {
-		connType = "KCP"
+	if t.connection != nil && t.connection.RemoteAddr() != nil {
+		switch t.connection.RemoteAddr().Network() {
+		case "tcp", "tcp4", "tcp6":
+			connType = "TCP"
+		case "mux":
+			connType = "MUX"
+		default:
+			connType = "KCP"
+		}
 	}
 	idleSince := func() time.Duration {
 		last := t.lastRecvMicros.Load()
@@ -495,8 +514,24 @@ func (t *TcpStream) keepLive() {
 			return true
 		}
 	}
+	hasPendingSends := func() bool {
+		t.pendingMu.Lock()
+		pending := len(t.pending) != 0
+		t.pendingMu.Unlock()
+		return pending
+	}
 
 	for {
+		// 正在等待业务消息 ACK 时，业务发送自己的无进展超时与重传状态机
+		// 才是连接存活性的权威判断。此时再并发发送 keepalive，会和业务帧争用
+		// 同一逻辑流的写锁/Relay 路由，并可能在高并发慢流中把健康连接误杀。
+		if hasPendingSends() {
+			if !sleep(policy.idleBaseline) {
+				return
+			}
+			continue
+		}
+
 		// —— 非探测态：等到静默超过基线才开始探测 ——
 		if d := idleSince(); d < policy.idleBaseline {
 			if !sleep(policy.idleBaseline - d) {
@@ -510,6 +545,12 @@ func (t *TcpStream) keepLive() {
 		backoff := policy.probeBase
 		alive := false
 		for probeCount < policy.maxProbes {
+			// 探测期间若应用启动了业务发送，立即把判活权交回业务 ACK
+			// 状态机，避免保活与真实流量形成重传/写锁争用。
+			if hasPendingSends() {
+				alive = true
+				break
+			}
 			before := t.lastRecvMicros.Load() // 探测前的收帧快照
 
 			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, policy.probeTimeout)
@@ -547,12 +588,24 @@ func (t *TcpStream) keepLive() {
 		if alive {
 			continue // 退避清零，回非探测态
 		}
+		if hasPendingSends() {
+			continue
+		}
 		// 连续 keepAliveMaxProbes 次探测窗口内都没收到任何帧 → 判死。
 		logx.Warnf("[%s] keepLive 判死: 连续 %d 次指数退避探测均无任何回帧, 关闭 leg: nodeId=%.16s connId=%s",
 			connType, policy.maxProbes, t.getNodeId(), t.getConnectionId())
 		t.failAndClose(errors.New("keepalive: peer unreachable after exponential-backoff probes"))
 		return
 	}
+}
+
+// StartKeepAlive starts logical-stream liveness detection once. Relay carrier
+// streams intentionally do not call this because DualStream owns their leg
+// lifecycle; persistent service sessions call it after the Noise handshake.
+func (t *TcpStream) StartKeepAlive() {
+	t.keepAliveOnce.Do(func() {
+		go t.keepLive()
+	})
 }
 
 // =============================================================================
@@ -606,7 +659,15 @@ func (t *TcpStream) SendMessage(ctx context.Context, message *network.Message) e
 }
 
 func (t *TcpStream) SendMessageAwaitAck(ctx context.Context, message *network.Message) error {
-	return t.sendMessageWithAckMode(ctx, message, nil, true)
+	return t.sendMessageWithAckMode(ctx, message, nil, true, nil)
+}
+
+func (t *TcpStream) SendMessageWithInitialWrite(
+	ctx context.Context,
+	message *network.Message,
+	onInitialWrite func(),
+) error {
+	return t.sendMessageWithAckMode(ctx, message, nil, false, onInitialWrite)
 }
 
 // SendMessageAsync 异步发送消息，立即返回。发送结果通过回调通知。
@@ -651,10 +712,16 @@ func (t *TcpStream) SendMessageAsync(ctx context.Context, message *network.Messa
 }
 
 func (t *TcpStream) sendMessageWithMessageID(ctx context.Context, message *network.Message, messageID []byte) error {
-	return t.sendMessageWithAckMode(ctx, message, messageID, false)
+	return t.sendMessageWithAckMode(ctx, message, messageID, false, nil)
 }
 
-func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network.Message, messageID []byte, awaitAckInPureMode bool) error {
+func (t *TcpStream) sendMessageWithAckMode(
+	ctx context.Context,
+	message *network.Message,
+	messageID []byte,
+	awaitAckInPureMode bool,
+	onInitialWrite func(),
+) error {
 	if err := t.fatal(); err != nil {
 		return err
 	}
@@ -709,7 +776,13 @@ func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network
 	if t.pureForwarder.Load() && !awaitAckInPureMode {
 		// pure forwarder leg：写完帧就返回。不建 pending、不等 ACK、不重传，
 		// 因为 ACK 由对端真正的接收者直接回到原始发送者，跟本 leg 无关。
-		return t.writeFramesContext(ctx, frames)
+		if err := t.writeFramesContext(ctx, frames); err != nil {
+			return err
+		}
+		if onInitialWrite != nil {
+			onInitialWrite()
+		}
+		return nil
 	}
 	total := uint32(len(frames))
 	tracker := newAckTracker(total)
@@ -722,8 +795,12 @@ func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network
 		t.pendingMu.Unlock()
 	}()
 
+	ackStartedAt := time.Now()
 	if err := t.writeFrames(frames); err != nil {
 		return err
+	}
+	if onInitialWrite != nil {
+		onInitialWrite()
 	}
 
 	// 无进展重传阈值按实测 RTT 自适应（无样本时退回 initialAckTimeout）。
@@ -731,6 +808,7 @@ func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network
 	for attempt := 0; ; attempt++ {
 		err := t.waitAck(ctx, tracker, timeout)
 		if err == nil {
+			t.observeRTT(time.Since(ackStartedAt))
 			return nil
 		}
 		if !errors.Is(err, errAckTimeout) {
@@ -762,8 +840,9 @@ func (t *TcpStream) sendMessageWithAckMode(ctx context.Context, message *network
 		}
 		// 退避但钳在 maxAckTimeout，使重传耗尽总时长有界（不与底层 RTO 抢跑、也不会退避到分钟级）。
 		timeout *= 2
-		if timeout > maxAckTimeout {
-			timeout = maxAckTimeout
+		_, _, maximum := t.ackTimeoutBounds()
+		if timeout > maximum {
+			timeout = maximum
 		}
 	}
 }
@@ -809,19 +888,30 @@ func (t *TcpStream) waitAck(ctx context.Context, tracker *ackTracker, timeout ti
 	}
 }
 
+func (t *TcpStream) ackTimeoutBounds() (initial, minimum, maximum time.Duration) {
+	if t != nil && t.connection != nil && t.connection.RemoteAddr() != nil &&
+		t.connection.RemoteAddr().Network() == "mux" {
+		return muxInitialAckTimeout, muxMinAckTimeout, muxMaxAckTimeout
+	}
+	return initialAckTimeout, minAckTimeout, maxAckTimeout
+}
+
 // adaptiveAckTimeout 返回当前「无进展」重传阈值：有 RTT 样本时为 ackProgressRTTMultiple×SRTT
-// （钳在 [minAckTimeout, maxAckTimeout]）；无样本时退回 initialAckTimeout。
+// （钳在当前传输类型的 [minimum, maximum]）；无样本时退回 initial。
+// 物理 TCP/KCP 保持原来的 800ms..8s；共享 carrier 上的 mux 逻辑流使用 8s..30s，
+// 避免把公平排队时延误判成丢包。
 func (t *TcpStream) adaptiveAckTimeout() time.Duration {
+	initial, minimum, maximum := t.ackTimeoutBounds()
 	srtt := t.srttMicros.Load()
 	if srtt <= 0 {
-		return initialAckTimeout
+		return initial
 	}
 	to := time.Duration(srtt) * time.Microsecond * ackProgressRTTMultiple
-	if to < minAckTimeout {
-		return minAckTimeout
+	if to < minimum {
+		return minimum
 	}
-	if to > maxAckTimeout {
-		return maxAckTimeout
+	if to > maximum {
+		return maximum
 	}
 	return to
 }

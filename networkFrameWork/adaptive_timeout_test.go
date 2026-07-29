@@ -3,6 +3,7 @@ package networkFrameWork
 import (
 	"bnfs_p2p/network"
 	"context"
+	"net"
 	"testing"
 	"time"
 )
@@ -32,6 +33,69 @@ func TestAdaptiveAckTimeout_Logic(t *testing.T) {
 		t.Fatalf("10ms RTT 应钳到 %v, 得 %v", minAckTimeout, got)
 	}
 	t.Logf("✔ 自适应超时: 无样本=%v, 240ms→960ms, 钳位 min=%v", initialAckTimeout, minAckTimeout)
+}
+
+type muxRemoteAddrConn struct {
+	net.Conn
+}
+
+func (connection muxRemoteAddrConn) RemoteAddr() net.Addr {
+	return muxAddr("shared-carrier")
+}
+
+func TestAdaptiveAckTimeout_MuxAccountsForSharedCarrierQueue(t *testing.T) {
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
+
+	stream := newTcpStream("peer", "connection", muxRemoteAddrConn{Conn: local})
+	if got := stream.adaptiveAckTimeout(); got != muxInitialAckTimeout {
+		t.Fatalf("mux initial timeout=%v, want %v", got, muxInitialAckTimeout)
+	}
+	stream.observeRTT(250 * time.Millisecond)
+	if got := stream.adaptiveAckTimeout(); got != muxMinAckTimeout {
+		t.Fatalf("mux minimum timeout=%v, want %v", got, muxMinAckTimeout)
+	}
+	stream.srttMicros.Store((20 * time.Second).Microseconds())
+	if got := stream.adaptiveAckTimeout(); got != muxMaxAckTimeout {
+		t.Fatalf("mux maximum timeout=%v, want %v", got, muxMaxAckTimeout)
+	}
+}
+
+func TestMuxSendDoesNotRetransmitHealthyQueuedAck(t *testing.T) {
+	local, remote := net.Pipe()
+	sender := startTcpStream("receiver", "queued-ack", muxRemoteAddrConn{Conn: local})
+	receiver := startTcpStream("sender", "queued-ack", remote)
+	t.Cleanup(func() {
+		sender.Close()
+		receiver.Close()
+	})
+
+	frames := make(chan *network.Frame, 32)
+	receiver.SetFrameTap(frames)
+	receiver.setTestAckDelay(initialAckTimeout + 200*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := sender.SendMessage(ctx, makeTestMessage(8*1024)); err != nil {
+		t.Fatalf("mux send with queued ACK: %v", err)
+	}
+
+	retransmits := 0
+drain:
+	for {
+		select {
+		case frame := <-frames:
+			if frame != nil && frame.FrameType == network.FrameTypeRetransmit {
+				retransmits++
+			}
+		default:
+			break drain
+		}
+	}
+	if retransmits != 0 {
+		t.Fatalf("healthy queued ACK triggered %d retransmit frames", retransmits)
+	}
 }
 
 // TestWaitAck_ProgressResetsTimer 验证核心改动：只要持续有 ACK 进展，

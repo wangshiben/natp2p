@@ -16,7 +16,10 @@ import (
 	"bnfs_p2p/network"
 )
 
-const maximumNatBillingEvidenceEntries = 4096
+const (
+	maximumNatBillingEvidenceEntries         = 4096
+	maximumNatBillingReconciliationSnapshots = 65536
+)
 
 type natBillingRecord struct {
 	bytes    uint64
@@ -37,6 +40,9 @@ type natBillingSession struct {
 	confirmedSequence      uint64
 	confirmedOutOfOrder    map[uint64]struct{}
 	cosignedRecordSequence uint64
+	assignedBytes          map[uint64]uint64
+	activeSends            map[uint64]struct{}
+	reconciliationDraining bool
 	pending                map[uint64]natBillingRecord
 	snapshots              map[uint64]natBillingSnapshot
 	snapshotOrder          []uint64
@@ -60,6 +66,7 @@ type natBillingMeter struct {
 	relaySessions         map[string]billingvoucher.Identifier
 	relayReady            map[string]chan struct{}
 	invalidSessions       map[billingvoucher.Identifier]struct{}
+	sendOrder             map[billingvoucher.Identifier]chan struct{}
 	channels              map[string]*natVoucherChannel
 	cert                  *admission.SignedCert
 	enabled               bool
@@ -69,6 +76,7 @@ type natBillingMeter struct {
 type natBillingSessionStatus struct {
 	preexisting        bool
 	resetRequired      bool
+	draining           bool
 	cumulative         uint64
 	lastRecord         billingvoucher.Identifier
 	lastRecordSequence uint64
@@ -87,15 +95,60 @@ func newNatBillingMeter(privateKey *ecdh.PrivateKey) (*natBillingMeter, error) {
 		relaySessions:   make(map[string]billingvoucher.Identifier),
 		relayReady:      make(map[string]chan struct{}),
 		invalidSessions: make(map[billingvoucher.Identifier]struct{}),
+		sendOrder:       make(map[billingvoucher.Identifier]chan struct{}),
 		channels:        make(map[string]*natVoucherChannel),
 	}
 	return meter, nil
+}
+
+func (meter *natBillingMeter) acquireSendOrder(ctx context.Context, relayAddr string) (func(), error) {
+	if meter == nil {
+		return func() {}, nil
+	}
+	if ctx == nil {
+		return nil, errors.New("natnode: nil context while acquiring billing send order")
+	}
+	meter.mu.Lock()
+	if !meter.enabled {
+		meter.mu.Unlock()
+		return func() {}, nil
+	}
+	sessionID, exists := meter.relaySessions[relayAddr]
+	if !exists {
+		meter.mu.Unlock()
+		return nil, errors.New("natnode: billing relay session is unavailable")
+	}
+	if _, invalid := meter.invalidSessions[sessionID]; invalid {
+		meter.mu.Unlock()
+		return nil, errors.New("natnode: billing relay session requires reconciliation")
+	}
+	gate := meter.sendOrder[sessionID]
+	if gate == nil {
+		gate = make(chan struct{}, 1)
+		gate <- struct{}{}
+		meter.sendOrder[sessionID] = gate
+	}
+	meter.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-gate:
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			gate <- struct{}{}
+		})
+	}, nil
 }
 
 func newNatBillingSession() *natBillingSession {
 	return &natBillingSession{
 		nextAssigned: 1, nextAdvance: 1,
 		confirmedOutOfOrder: make(map[uint64]struct{}),
+		assignedBytes:       make(map[uint64]uint64),
+		activeSends:         make(map[uint64]struct{}),
 		pending:             make(map[uint64]natBillingRecord),
 		snapshots:           make(map[uint64]natBillingSnapshot),
 		claimableCumulative: make(map[uint64]struct{}),
@@ -173,9 +226,17 @@ func (meter *natBillingMeter) activateRelaySessionWithState(
 				return natBillingSessionStatus{}, errors.New("natnode: preexisting billing session requires a signed Relay watermark")
 			}
 		} else if invalid {
-			recoveryVoucher, err := meter.reconcileRelaySessionLocked(sessionID, existing, *relayState)
+			result, err := meter.reconcileRelaySessionStateLocked(sessionID, existing, *relayState)
 			if err != nil {
 				return natBillingSessionStatus{}, err
+			}
+			if result.draining {
+				return natBillingSessionStatus{
+					preexisting: true, draining: true,
+					cumulative: result.target.cumulative, lastRecord: result.target.lastRecord,
+					lastRecordSequence: result.target.lastRecordSequence, recordSet: result.target.recordSet,
+					recoveryVoucher: result.recoveryVoucher,
+				}, nil
 			}
 			delete(meter.invalidSessions, sessionID)
 			if hasPrevious && previousID != sessionID {
@@ -186,7 +247,7 @@ func (meter *natBillingMeter) activateRelaySessionWithState(
 			return natBillingSessionStatus{
 				preexisting: true, cumulative: existing.cumulative, lastRecord: existing.lastRecord,
 				lastRecordSequence: existing.nextAdvance - 1, recordSet: existing.recordSet,
-				recoveryVoucher: recoveryVoucher,
+				recoveryVoucher: result.recoveryVoucher,
 			}, nil
 		} else {
 			current := natBillingSessionSnapshot(existing)
@@ -260,18 +321,35 @@ func (meter *natBillingMeter) reconcileRelaySessionLocked(
 	session *natBillingSession,
 	relayState natBillingSnapshot,
 ) (*billingvoucher.MutualVoucher, error) {
+	result, err := meter.reconcileRelaySessionStateLocked(sessionID, session, relayState)
+	return result.recoveryVoucher, err
+}
+
+type natBillingReconciliationResult struct {
+	target          natBillingSnapshot
+	recoveryVoucher *billingvoucher.MutualVoucher
+	draining        bool
+}
+
+func (meter *natBillingMeter) reconcileRelaySessionStateLocked(
+	sessionID billingvoucher.Identifier,
+	session *natBillingSession,
+	relayState natBillingSnapshot,
+) (natBillingReconciliationResult, error) {
 	if session == nil || session.nextAdvance == 0 {
-		return nil, errors.New("natnode: billing session state is unavailable for reconciliation")
+		return natBillingReconciliationResult{}, errors.New("natnode: billing session state is unavailable for reconciliation")
 	}
 	if len(session.pending) != 0 {
-		return nil, errors.New("natnode: cannot reconcile a billing session with pending records")
+		return natBillingReconciliationResult{}, errors.New("natnode: cannot reconcile a billing session with pending records")
 	}
 	if !billingSnapshotConsistent(relayState) {
-		return nil, errors.New("natnode: Relay advertised an inconsistent billing watermark")
+		return natBillingReconciliationResult{}, errors.New("natnode: Relay advertised an inconsistent billing watermark")
 	}
 	current := natBillingSessionSnapshot(session)
 	target := relayState
 	var recoveryVoucher *billingvoucher.MutualVoucher
+	assignedAdvance := false
+	assignedAdvanceClaimable := false
 	channel := meter.channels[sessionID.String()+"|"+session.relayID.String()]
 	if channel != nil && channel.has {
 		body := channel.last.Body
@@ -290,17 +368,42 @@ func (meter *natBillingMeter) reconcileRelaySessionLocked(
 				lastRecordSequence: body.LastRecordSequence, recordSet: body.RecordSetDigest,
 			}
 		} else if !afterVoucher {
-			return nil, errors.New("natnode: Relay watermark conflicts with the last mutual voucher")
+			return natBillingReconciliationResult{}, errors.New("natnode: Relay watermark conflicts with the last mutual voucher")
 		}
 	}
 	if recoveryVoucher == nil && relayState != current && !billingSnapshotEmpty(relayState) {
 		local, ok := session.snapshots[relayState.cumulative]
 		if !ok || local != relayState {
-			return nil, errors.New("natnode: signed Relay watermark does not match local record evidence")
+			assignedAdvance, assignedAdvanceClaimable = locallyAssignedRelayAdvanceMatches(
+				session, channel, current, relayState,
+			)
+		}
+		if (!ok || local != relayState) && !assignedAdvance {
+			oldestSequence, newestSequence := natBillingSnapshotSequenceRange(session)
+			return natBillingReconciliationResult{}, fmt.Errorf(
+				"natnode: signed Relay watermark does not match local record evidence: relay_sequence=%d relay_cumulative=%d local_sequence=%d local_cumulative=%d next_assigned=%d assigned_records=%d active_sends=%d retained_sequence=%d..%d retained_snapshots=%d exact_cumulative=%t",
+				relayState.lastRecordSequence, relayState.cumulative,
+				current.lastRecordSequence, current.cumulative, session.nextAssigned,
+				len(session.assignedBytes), len(session.activeSends), oldestSequence, newestSequence,
+				len(session.snapshots), ok,
+			)
 		}
 	}
 	if target.lastRecordSequence < highestNatBillingConfirmedSequence(session) {
-		return nil, errors.New("natnode: Relay watermark would roll back transport-confirmed usage")
+		return natBillingReconciliationResult{}, errors.New("natnode: Relay watermark would roll back transport-confirmed usage")
+	}
+	if len(session.activeSends) != 0 {
+		session.reconciliationDraining = true
+		return natBillingReconciliationResult{
+			target: target, recoveryVoucher: recoveryVoucher, draining: true,
+		}, nil
+	}
+	if assignedAdvance {
+		session.snapshots[target.cumulative] = target
+		session.snapshotOrder = append(session.snapshotOrder, target.cumulative)
+		if assignedAdvanceClaimable {
+			appendNatClaimableSnapshot(session, target)
+		}
 	}
 	if target != current {
 		session.cumulative = target.cumulative
@@ -311,6 +414,8 @@ func (meter *natBillingMeter) reconcileRelaySessionLocked(
 	session.nextAssigned = session.nextAdvance
 	session.confirmedSequence = target.lastRecordSequence
 	clear(session.confirmedOutOfOrder)
+	clear(session.assignedBytes)
+	session.reconciliationDraining = false
 	for cumulative := range session.snapshots {
 		if cumulative > target.cumulative {
 			delete(session.snapshots, cumulative)
@@ -325,7 +430,40 @@ func (meter *natBillingMeter) reconcileRelaySessionLocked(
 		delete(session.claimableCumulative, snapshot.cumulative)
 	}
 	session.claimable = retainedClaimable
-	return recoveryVoucher, nil
+	return natBillingReconciliationResult{target: target, recoveryVoucher: recoveryVoucher}, nil
+}
+
+func locallyAssignedRelayAdvanceMatches(
+	session *natBillingSession,
+	channel *natVoucherChannel,
+	current, relayState natBillingSnapshot,
+) (bool, bool) {
+	if session == nil || relayState.lastRecordSequence != current.lastRecordSequence+1 ||
+		relayState.lastRecordSequence < session.nextAdvance ||
+		relayState.lastRecordSequence >= session.nextAssigned {
+		return false, false
+	}
+	assignedBytes, ok := session.assignedBytes[relayState.lastRecordSequence]
+	if !ok || current.cumulative > billingvoucher.MaxBillableBytes-assignedBytes ||
+		current.cumulative+assignedBytes != relayState.cumulative {
+		return false, false
+	}
+	windowBase := uint64(0)
+	if channel != nil && channel.has {
+		windowBase = channel.last.Body.CumulativeUniqueBytes
+	}
+	if len(session.claimable) != 0 {
+		windowBase = session.claimable[len(session.claimable)-1].cumulative
+	}
+	if current.cumulative < windowBase {
+		return false, false
+	}
+	windowBytes := current.cumulative - windowBase
+	if windowBytes > billingvoucher.CumulativeWindowBytes ||
+		assignedBytes > billingvoucher.CumulativeWindowBytes-windowBytes {
+		return false, false
+	}
+	return true, windowBytes+assignedBytes == billingvoucher.CumulativeWindowBytes
 }
 
 func natBillingSessionSnapshot(session *natBillingSession) natBillingSnapshot {
@@ -347,10 +485,28 @@ func billingSnapshotConsistent(snapshot natBillingSnapshot) bool {
 		snapshot.lastRecord != (billingvoucher.Identifier{}) && snapshot.recordSet != (billingvoucher.Digest{})
 }
 
+func natBillingSnapshotSequenceRange(session *natBillingSession) (uint64, uint64) {
+	if session == nil || len(session.snapshots) == 0 {
+		return 0, 0
+	}
+	oldest := uint64(^uint64(0))
+	newest := uint64(0)
+	for _, snapshot := range session.snapshots {
+		if snapshot.lastRecordSequence < oldest {
+			oldest = snapshot.lastRecordSequence
+		}
+		if snapshot.lastRecordSequence > newest {
+			newest = snapshot.lastRecordSequence
+		}
+	}
+	return oldest, newest
+}
+
 func (meter *natBillingMeter) sessionSafeToReplaceLocked(sessionID billingvoucher.Identifier) bool {
 	session := meter.sessions[sessionID]
 	if session == nil || session.nextAssigned == 0 || session.nextAdvance == 0 ||
-		len(session.pending) != 0 || session.nextAssigned != session.nextAdvance {
+		len(session.pending) != 0 || len(session.activeSends) != 0 ||
+		session.reconciliationDraining || session.nextAssigned != session.nextAdvance {
 		return false
 	}
 	lastRecordSequence := session.nextAdvance - 1
@@ -379,7 +535,14 @@ func (meter *natBillingMeter) invalidateRelaySession(relayAddr string) {
 }
 
 func (meter *natBillingMeter) waitRelaySession(ctx context.Context, relayAddr string) error {
+	if meter == nil {
+		return nil
+	}
 	meter.mu.Lock()
+	if !meter.enabled {
+		meter.mu.Unlock()
+		return nil
+	}
 	if sessionID, ok := meter.relaySessions[relayAddr]; ok {
 		if _, invalid := meter.invalidSessions[sessionID]; !invalid {
 			meter.mu.Unlock()
@@ -431,11 +594,36 @@ func (meter *natBillingMeter) prepare(message *network.Message, relayAddr string
 	if sequence < session.nextAdvance || sequence-session.nextAdvance >= maximumNatBillingEvidenceEntries {
 		return errors.New("natnode: assigned billing record gap exceeds evidence limit")
 	}
+	if session.assignedBytes == nil {
+		session.assignedBytes = make(map[uint64]uint64)
+	}
+	if session.activeSends == nil {
+		session.activeSends = make(map[uint64]struct{})
+	}
+	session.assignedBytes[sequence] = billableBytes
+	session.activeSends[sequence] = struct{}{}
 	session.nextAssigned++
 	message.Header.BillingSessionID = [32]byte(sessionID)
 	message.Header.BillingSequence = sequence
 	message.Header.BillingBytes = billableBytes
 	return nil
+}
+
+func (meter *natBillingMeter) completeSend(message *network.Message) bool {
+	if meter == nil || message == nil || message.Header == nil || message.Header.BillingSequence == 0 {
+		return false
+	}
+	sessionID := billingvoucher.Identifier(message.Header.BillingSessionID)
+	sequence := message.Header.BillingSequence
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	session := meter.sessions[sessionID]
+	if session == nil {
+		return false
+	}
+	delete(session.activeSends, sequence)
+	_, invalid := meter.invalidSessions[sessionID]
+	return (invalid || session.reconciliationDraining) && len(session.activeSends) == 0
 }
 
 func (meter *natBillingMeter) confirm(message *network.Message) error {
@@ -529,6 +717,10 @@ func (meter *natBillingMeter) observe(message *network.Message, e2eRecordID []by
 	if record.Sequence < session.nextAdvance {
 		return nil
 	}
+	assignedBytes, assigned := session.assignedBytes[record.Sequence]
+	if !assigned || assignedBytes != record.Bytes {
+		return errors.New("natnode: sealed billing record does not match local assignment")
+	}
 	if record.Sequence > session.nextAdvance {
 		if record.Sequence-session.nextAdvance > maximumNatBillingEvidenceEntries {
 			return errors.New("natnode: pending billing record gap exceeds evidence limit")
@@ -576,6 +768,7 @@ func (meter *natBillingMeter) observe(message *network.Message, e2eRecordID []by
 			appendNatClaimableSnapshot(session, session.snapshots[session.cumulative])
 		}
 		trimNatBillingSnapshots(session)
+		delete(session.assignedBytes, session.nextAdvance)
 		delete(session.pending, session.nextAdvance)
 		session.nextAdvance++
 	}
@@ -598,7 +791,7 @@ func appendNatClaimableSnapshot(session *natBillingSession, snapshot natBillingS
 
 func trimNatBillingSnapshots(session *natBillingSession) {
 	attempts := 0
-	for len(session.snapshots) > maximumNatBillingEvidenceEntries && len(session.snapshotOrder) > 0 {
+	for len(session.snapshots) > maximumNatBillingReconciliationSnapshots && len(session.snapshotOrder) > 0 {
 		oldest := session.snapshotOrder[0]
 		session.snapshotOrder = session.snapshotOrder[1:]
 		snapshot, exists := session.snapshots[oldest]
@@ -626,7 +819,7 @@ func trimNatBillingSnapshots(session *natBillingSession) {
 		delete(session.snapshots, oldest)
 		attempts = 0
 	}
-	if len(session.snapshotOrder) <= 2*maximumNatBillingEvidenceEntries {
+	if len(session.snapshotOrder) <= 2*maximumNatBillingReconciliationSnapshots {
 		return
 	}
 	compacted := make([]uint64, 0, len(session.snapshots))

@@ -223,7 +223,8 @@ func runContinuousTest(targetURL, tunnelURL string, timeout, interval int) {
 }
 
 func printResults(results []TestResult) {
-	fmt.Println("=== 测试结果 ===\n")
+	fmt.Println("=== 测试结果 ===")
+	fmt.Println()
 	for i, r := range results {
 		status := colorRed + "✗ 失败" + colorReset
 		if r.Success {

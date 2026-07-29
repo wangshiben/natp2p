@@ -26,13 +26,15 @@ import (
 // 取中等值让重传粒度更细（大 chunk 会放大单次重传的丢失代价）。可用 TUNNEL_MAX_CHUNK 覆盖。
 const defaultMaxChunk = 64 * 1024
 
-// defaultSendWindow 是全会话允许同时在途(未收齐端到端 ACK)的 DATA 消息数。
-// 流水线核心参数：把"窗口=1 停等"提升为"窗口=W"，吞吐≈W×chunk/RTT，直到填满 BDP 或撞节流。
-// W≈BDP/chunk；240ms RTT、~1MB/s、chunk 64KB → BDP≈240KB → W≈4，取 8 留余量。
-// 可用 TUNNEL_SEND_WINDOW 覆盖。
+// 发送窗口分成两级：每条流最多 8 个 DATA chunk 在途，整个 carrier 最多 32 个。
+// 每流窗口保证单流可以填满常见公网 BDP；carrier 窗口限制总内存与底层 ACK tracker，
+// 同时避免旧的全会话 8 槽让大量业务流彼此停等。
+// TUNNEL_STREAM_SEND_WINDOW 和 TUNNEL_SEND_WINDOW 可分别覆盖两级窗口。
 const (
-	defaultSendWindow       = 8
-	sessionCloseSendTimeout = 2 * time.Second
+	defaultStreamSendWindow  = 8
+	defaultSessionSendWindow = 32
+	sessionCloseSendTimeout  = 2 * time.Second
+	streamCloseSendTimeout   = 2 * time.Second
 )
 
 var streamMaxChunk = resolveMaxChunk()
@@ -46,13 +48,22 @@ func resolveMaxChunk() int {
 	return defaultMaxChunk
 }
 
-func resolveSendWindow() int {
+func resolveSessionSendWindow() int {
 	if v := os.Getenv("TUNNEL_SEND_WINDOW"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 			return n
 		}
 	}
-	return defaultSendWindow
+	return defaultSessionSendWindow
+}
+
+func resolveStreamSendWindow() int {
+	if v := os.Getenv("TUNNEL_STREAM_SEND_WINDOW"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			return n
+		}
+	}
+	return defaultStreamSendWindow
 }
 
 const (
@@ -83,11 +94,14 @@ type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// sendWindow 是发送窗口信号量(容量 = W)：限制全会话同时在途的消息数。
+	// sessionSendWindow 是 carrier 级发送窗口：限制全会话同时在途的消息数。
 	// 取代旧的 writeMu 跨 ACK 串行——旧实现把 conn.Send(阻塞到端到端 ACK)整段锁住，
 	// 全会话同时只有 1 条消息在途(窗口=1)。改为信号量后允许 W 条并发在途，conn.Send
 	// 并发安全(底层每条消息独立 messageId/ackTracker)。
-	sendWindow chan struct{}
+	sessionSendWindow chan struct{}
+	streamSendWindow  int
+
+	streamCloseTimeout time.Duration
 
 	mu       sync.Mutex
 	streams  map[uint32]*Stream
@@ -103,14 +117,16 @@ type Session struct {
 func NewSession(ctx context.Context, conn p2pnode.Connection, isClient bool) *Session {
 	cctx, cancel := context.WithCancel(ctx)
 	s := &Session{
-		conn:       conn,
-		ctx:        cctx,
-		cancel:     cancel,
-		sendWindow: make(chan struct{}, resolveSendWindow()),
-		streams:    make(map[uint32]*Stream),
-		accept:     make(chan *Stream, 16),
-		isClient:   isClient,
-		nextID:     1,
+		conn:               conn,
+		ctx:                cctx,
+		cancel:             cancel,
+		sessionSendWindow:  make(chan struct{}, resolveSessionSendWindow()),
+		streamSendWindow:   resolveStreamSendWindow(),
+		streamCloseTimeout: streamCloseSendTimeout,
+		streams:            make(map[uint32]*Stream),
+		accept:             make(chan *Stream, 16),
+		isClient:           isClient,
+		nextID:             1,
 	}
 	go s.readLoop()
 	return s

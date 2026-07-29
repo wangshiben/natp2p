@@ -36,10 +36,16 @@ type EndpointFrameMux struct {
 	// 卡住别的流的握手写——这是避免单连接多路复用 head-of-line 阻塞的关键。
 	outCh chan *network.Frame
 
-	mu        sync.Mutex
-	conns     map[string]*muxConn
-	inbound   map[muxFrameKey]muxInboundRoute
-	startOnce sync.Once
+	mu                     sync.Mutex
+	conns                  map[string]*muxConn
+	inbound                map[muxFrameKey]muxInboundRoute
+	outbound               map[muxFrameKey]*muxOutboundRoute
+	retired                map[string]time.Time
+	kcpGoodput             map[streamTransport]*frameRelayGoodputState
+	kcpCooldown            time.Time
+	lastQualityMaintenance time.Time
+	outboundFrames         int
+	startOnce              sync.Once
 
 	// onNew 在首次见到某 ConnectionId 时被调用（持锁外），上层据此 spawn per‑conn handler。
 	onNew func(connId string, conn net.Conn)
@@ -61,6 +67,9 @@ func NewEndpointFrameMux(stream network.Stream, onNew func(connId string, conn n
 		adapterSet: make(map[*TcpStream]struct{}),
 		conns:      make(map[string]*muxConn),
 		inbound:    make(map[muxFrameKey]muxInboundRoute),
+		outbound:   make(map[muxFrameKey]*muxOutboundRoute),
+		retired:    make(map[string]time.Time),
+		kcpGoodput: make(map[streamTransport]*frameRelayGoodputState),
 		onNew:      onNew,
 		outCh:      make(chan *network.Frame, 1024),
 	}
@@ -113,6 +122,7 @@ func (m *EndpointFrameMux) writeFrame(frame *network.Frame) {
 		if routed {
 			m.completeInboundRoute(routeKey, adapter, frame)
 		}
+		m.observeOutboundFrame(adapter, frame, time.Now())
 		return
 	}
 }
@@ -126,6 +136,10 @@ func (m *EndpointFrameMux) Close() {
 	}
 	m.conns = make(map[string]*muxConn)
 	m.inbound = make(map[muxFrameKey]muxInboundRoute)
+	m.outbound = make(map[muxFrameKey]*muxOutboundRoute)
+	m.retired = make(map[string]time.Time)
+	m.kcpGoodput = make(map[streamTransport]*frameRelayGoodputState)
+	m.outboundFrames = 0
 	m.mu.Unlock()
 }
 
@@ -143,6 +157,7 @@ func (m *EndpointFrameMux) watchLegs() {
 			return
 		case <-ticker.C:
 		}
+		m.maintainCarrierQuality(time.Now())
 		for _, adapter := range m.attachCurrentLegs() {
 			go m.readLeg(adapter)
 		}
@@ -236,6 +251,19 @@ func (m *EndpointFrameMux) dispatchFromAdapter(adapter *TcpFrameAdapter, f *netw
 		return
 	}
 	m.mu.Lock()
+	now := time.Now()
+	if f.FrameType == network.FrameTypeAck {
+		m.observeOutboundAckLocked(f, now)
+	}
+	if m.isRetiredLocked(connId, now) {
+		m.mu.Unlock()
+		return
+	}
+	c := m.conns[connId]
+	if c == nil && f.FrameType != network.FrameTypeData && f.FrameType != network.FrameTypeRetransmit {
+		m.mu.Unlock()
+		return
+	}
 	if adapter != nil && (f.FrameType == network.FrameTypeData || f.FrameType == network.FrameTypeRetransmit) {
 		if m.inbound == nil {
 			m.inbound = make(map[muxFrameKey]muxInboundRoute)
@@ -245,7 +273,6 @@ func (m *EndpointFrameMux) dispatchFromAdapter(adapter *TcpFrameAdapter, f *netw
 			total:   f.TotalFrames,
 		}
 	}
-	c := m.conns[connId]
 	isNew := c == nil
 	if isNew {
 		c = newMuxConn(connId, m.writeShared)
@@ -273,15 +300,68 @@ func (m *EndpointFrameMux) removeConn(connId string) {
 	m.mu.Lock()
 	c := m.conns[connId]
 	delete(m.conns, connId)
+	m.retireLocked(connId, time.Now())
 	for key := range m.inbound {
 		if key.connectionID == connId {
 			delete(m.inbound, key)
+		}
+	}
+	for key := range m.outbound {
+		if key.connectionID == connId {
+			m.removeOutboundRouteLocked(key)
 		}
 	}
 	m.mu.Unlock()
 	if c != nil {
 		c.Close()
 	}
+}
+
+const (
+	endpointMuxTombstoneTTL   = 10 * time.Minute
+	endpointMuxTombstoneLimit = 4096
+)
+
+func (m *EndpointFrameMux) isRetiredLocked(connID string, now time.Time) bool {
+	expiresAt, exists := m.retired[connID]
+	if !exists {
+		return false
+	}
+	if now.Before(expiresAt) {
+		return true
+	}
+	delete(m.retired, connID)
+	return false
+}
+
+func (m *EndpointFrameMux) retireLocked(connID string, now time.Time) {
+	if connID == "" {
+		return
+	}
+	if m.retired == nil {
+		m.retired = make(map[string]time.Time)
+	}
+	if expiresAt, exists := m.retired[connID]; exists && now.Before(expiresAt) {
+		return
+	}
+	if len(m.retired) >= endpointMuxTombstoneLimit {
+		var oldestID string
+		var oldestExpiry time.Time
+		for retiredID, expiresAt := range m.retired {
+			if !now.Before(expiresAt) {
+				delete(m.retired, retiredID)
+				continue
+			}
+			if oldestID == "" || expiresAt.Before(oldestExpiry) {
+				oldestID = retiredID
+				oldestExpiry = expiresAt
+			}
+		}
+		if len(m.retired) >= endpointMuxTombstoneLimit {
+			delete(m.retired, oldestID)
+		}
+	}
+	m.retired[connID] = now.Add(endpointMuxTombstoneTTL)
 }
 
 // writeShared 把一帧交给单写者 goroutine（入队即返回，除非队列满才施加公平背压）。
@@ -302,10 +382,16 @@ func (m *EndpointFrameMux) orderedAdapters() []*TcpFrameAdapter {
 		return adapters
 	}
 	preferred := m.dual.preferredTransport()
+	m.mu.Lock()
+	kcpCoolingDown := time.Now().Before(m.kcpCooldown)
+	m.mu.Unlock()
 	ordered := make([]*TcpFrameAdapter, 0, len(adapters))
 	var rest []*TcpFrameAdapter
 	for _, a := range adapters {
-		if transportOfStream(a.stream) == preferred {
+		kind := transportOfStream(a.stream)
+		if kcpCoolingDown && legFamily(preferred) == streamTransportKCP && legFamily(kind) == streamTransportTCP {
+			ordered = append(ordered, a)
+		} else if kind == preferred && !(kcpCoolingDown && legFamily(kind) == streamTransportKCP) {
 			ordered = append(ordered, a)
 		} else {
 			rest = append(rest, a)
@@ -322,6 +408,242 @@ type muxFrameKey struct {
 type muxInboundRoute struct {
 	adapter *TcpFrameAdapter
 	total   uint32
+}
+
+type muxOutboundRoute struct {
+	kind         streamTransport
+	total        uint32
+	payloadBySeq map[uint32]int
+	sentBytes    int64
+	ackedBytes   int64
+	ackProgress  frameAckProgress
+	lastActive   time.Time
+}
+
+const (
+	endpointMuxFramePayload             = 8 * 1024
+	endpointMuxQualityRouteTTL          = 2 * time.Minute
+	endpointMuxQualityMaxRoutes         = 8192
+	endpointMuxQualityMaxFramesPerRoute = 32768
+	endpointMuxQualityMaxTrackedFrames  = 262144
+)
+
+func (m *EndpointFrameMux) observeOutboundFrame(adapter *TcpFrameAdapter, frame *network.Frame, now time.Time) {
+	if adapter == nil || frame == nil || frame.ConnectionId == "" ||
+		(frame.FrameType != network.FrameTypeData && frame.FrameType != network.FrameTypeRetransmit) {
+		return
+	}
+	kind := transportOfStream(adapter.stream)
+	if legFamily(kind) != streamTransportKCP || frame.TotalFrames == 0 ||
+		frame.SeqId >= frame.TotalFrames || frame.TotalFrames > endpointMuxQualityMaxFramesPerRoute {
+		return
+	}
+	key := muxFrameKey{connectionID: frame.ConnectionId, messageID: frame.MessageId}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.outbound == nil {
+		m.outbound = make(map[muxFrameKey]*muxOutboundRoute)
+	}
+	route := m.outbound[key]
+	if route == nil {
+		if len(m.outbound) >= endpointMuxQualityMaxRoutes {
+			m.sweepOutboundLocked(now)
+		}
+		if len(m.outbound) >= endpointMuxQualityMaxRoutes ||
+			m.outboundFrames >= endpointMuxQualityMaxTrackedFrames {
+			return
+		}
+		route = &muxOutboundRoute{
+			kind:         kind,
+			total:        frame.TotalFrames,
+			payloadBySeq: make(map[uint32]int),
+			lastActive:   now,
+		}
+		m.outbound[key] = route
+	}
+	if route.total != frame.TotalFrames || route.kind != kind {
+		m.removeOutboundRouteLocked(key)
+		return
+	}
+	route.lastActive = now
+	if _, exists := route.payloadBySeq[frame.SeqId]; exists {
+		return
+	}
+	if len(route.payloadBySeq) >= endpointMuxQualityMaxFramesPerRoute ||
+		m.outboundFrames >= endpointMuxQualityMaxTrackedFrames {
+		m.removeOutboundRouteLocked(key)
+		return
+	}
+	payloadBytes := len(frame.Payload)
+	route.payloadBySeq[frame.SeqId] = payloadBytes
+	route.sentBytes += int64(payloadBytes)
+	m.outboundFrames++
+	state := m.carrierGoodputStateLocked(kind, now)
+	state.windowSent += int64(payloadBytes)
+	state.outstanding += int64(payloadBytes)
+}
+
+func (m *EndpointFrameMux) observeOutboundAckLocked(frame *network.Frame, now time.Time) {
+	if frame == nil || frame.ConnectionId == "" {
+		return
+	}
+	key := muxFrameKey{connectionID: frame.ConnectionId, messageID: frame.MessageId}
+	route := m.outbound[key]
+	if route == nil {
+		return
+	}
+	route.lastActive = now
+	if delta, _, valid := acknowledgeFramePayload(
+		frame,
+		route.total,
+		&route.ackProgress,
+		func(sequence uint32) (int, bool) {
+			size, exists := route.payloadBySeq[sequence]
+			return size, exists
+		},
+	); valid && delta > 0 {
+		route.ackedBytes += delta
+		state := m.carrierGoodputStateLocked(route.kind, now)
+		state.windowAcked += delta
+		state.outstanding -= delta
+		if state.outstanding < 0 {
+			state.outstanding = 0
+		}
+	}
+	if isFullFrameAck(frame, route.total) {
+		m.removeOutboundRouteLocked(key)
+	}
+}
+
+func muxAckPayloadBytes(frame *network.Frame, expectedTotal uint32, payloadBySeq map[uint32]int) (int64, bool) {
+	payloadBytes, _, valid := acknowledgeFramePayload(
+		frame,
+		expectedTotal,
+		&frameAckProgress{},
+		func(sequence uint32) (int, bool) {
+			size, exists := payloadBySeq[sequence]
+			return size, exists
+		},
+	)
+	return payloadBytes, valid
+}
+
+func (m *EndpointFrameMux) carrierGoodputStateLocked(kind streamTransport, now time.Time) *frameRelayGoodputState {
+	if m.kcpGoodput == nil {
+		m.kcpGoodput = make(map[streamTransport]*frameRelayGoodputState)
+	}
+	state := m.kcpGoodput[kind]
+	if state == nil {
+		state = &frameRelayGoodputState{windowStarted: now}
+		m.kcpGoodput[kind] = state
+	}
+	return state
+}
+
+func (m *EndpointFrameMux) maintainCarrierQuality(now time.Time) {
+	if m.dual == nil {
+		return
+	}
+	m.mu.Lock()
+	if !m.lastQualityMaintenance.IsZero() && now.Sub(m.lastQualityMaintenance) < frameRelaySweepInterval {
+		m.mu.Unlock()
+		return
+	}
+	m.lastQualityMaintenance = now
+	m.sweepOutboundLocked(now)
+	decisions := m.evaluateCarrierGoodputLocked(now)
+	if len(decisions) > 0 {
+		m.kcpCooldown = now.Add(frameRelayGoodputCooldown)
+	}
+	m.mu.Unlock()
+
+	for _, decision := range decisions {
+		m.dual.setPreferred(streamTransportTCP)
+		logx.Warnf("[EndpointMux] KCP carrier 确认吞吐连续低于阈值, 切换 TCP: goodput=%dB/s threshold=%dB/s sent=%d acked=%d window=%s cooldown=%s",
+			decision.goodput, defaultKCPGoodputBytesPerSecond, decision.sent, decision.acked,
+			decision.elapsed, frameRelayGoodputCooldown)
+	}
+}
+
+func (m *EndpointFrameMux) evaluateCarrierGoodputLocked(now time.Time) []frameRelayGoodputDecision {
+	if now.Before(m.kcpCooldown) {
+		return nil
+	}
+	policy := defaultKCPSendQualityPolicy()
+	decisions := make([]frameRelayGoodputDecision, 0)
+	for kind, state := range m.kcpGoodput {
+		if state == nil || state.windowStarted.IsZero() || now.Before(state.windowStarted) {
+			continue
+		}
+		elapsed := now.Sub(state.windowStarted)
+		if elapsed < frameRelayGoodputWindow {
+			continue
+		}
+		sent := state.windowSent
+		acked := state.windowAcked
+		outstanding := state.outstanding
+		state.windowStarted = now
+		state.windowSent = 0
+		state.windowAcked = 0
+		if sent < int64(policy.minimumPayloadBytes) {
+			if outstanding < int64(policy.minimumPayloadBytes) || acked >= sent {
+				state.lowWindowStreak = 0
+			}
+			continue
+		}
+		if outstanding < int64(policy.minimumPayloadBytes) || acked >= sent {
+			state.lowWindowStreak = 0
+			continue
+		}
+		goodput := int64(float64(acked) / elapsed.Seconds())
+		if goodput >= policy.minimumGoodputBytesPerSec {
+			state.lowWindowStreak = 0
+			continue
+		}
+		state.lowWindowStreak++
+		if state.lowWindowStreak < frameRelaySlowRouteThreshold {
+			continue
+		}
+		decisions = append(decisions, frameRelayGoodputDecision{
+			kcpKind: kind,
+			tcpKind: streamTransportTCP,
+			sent:    sent,
+			acked:   acked,
+			elapsed: elapsed,
+			goodput: goodput,
+		})
+		delete(m.kcpGoodput, kind)
+	}
+	return decisions
+}
+
+func (m *EndpointFrameMux) sweepOutboundLocked(now time.Time) {
+	for key, route := range m.outbound {
+		if route == nil || now.Sub(route.lastActive) >= endpointMuxQualityRouteTTL {
+			m.removeOutboundRouteLocked(key)
+		}
+	}
+}
+
+func (m *EndpointFrameMux) removeOutboundRouteLocked(key muxFrameKey) {
+	route := m.outbound[key]
+	if route == nil {
+		delete(m.outbound, key)
+		return
+	}
+	m.outboundFrames -= len(route.payloadBySeq)
+	if m.outboundFrames < 0 {
+		m.outboundFrames = 0
+	}
+	if outstanding := route.sentBytes - route.ackedBytes; outstanding > 0 {
+		if state := m.kcpGoodput[route.kind]; state != nil {
+			state.outstanding -= outstanding
+			if state.outstanding < 0 {
+				state.outstanding = 0
+			}
+		}
+	}
+	delete(m.outbound, key)
 }
 
 func (m *EndpointFrameMux) orderedAdaptersForFrame(frame *network.Frame) ([]*TcpFrameAdapter, muxFrameKey, bool) {
@@ -490,8 +812,7 @@ func (c *muxConn) SetDeadline(t time.Time) error      { return nil }
 func (c *muxConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *muxConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// muxAddr 是一个非 *net.TCPAddr 的占位地址；这样 DetectMaxFrameSize 会回退到默认上限（1400），
-// 不会去匹配本机网卡 MTU（per‑conn 虚拟连接没有真实网卡）。
+// muxAddr 标识不受物理 MTU 限制的进程内虚拟连接。
 type muxAddr string
 
 func (a muxAddr) Network() string { return "mux" }

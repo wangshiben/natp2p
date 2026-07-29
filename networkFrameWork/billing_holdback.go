@@ -41,13 +41,20 @@ type messageHoldbackLimits struct {
 
 func defaultMessageHoldbackLimits() messageHoldbackLimits {
 	return messageHoldbackLimits{
-		maxMessageBytes:                       int64(billingvoucher.CumulativeWindowBytes) + 128<<10,
-		maxMessageFrames:                      2048,
-		maxConnectionBytes:                    8 << 20,
-		maxConnectionMessages:                 16,
-		maxConnectionFrames:                   8192,
-		maxGlobalBytes:                        64 << 20,
-		maxGlobalMessages:                     4096,
+		maxMessageBytes:    int64(billingvoucher.CumulativeWindowBytes) + 128<<10,
+		maxMessageFrames:   2048,
+		maxConnectionBytes: 8 << 20,
+		// The tunnel carrier permits 32 concurrently acknowledged chunks. A
+		// holdback limit below that transport window rejects a healthy stream
+		// before its byte budget is approached. Keep two windows of headroom;
+		// the byte/frame limits below remain the hard memory boundary.
+		maxConnectionMessages: 64,
+		maxConnectionFrames:   8192,
+		maxGlobalBytes:        64 << 20,
+		// 500 service sessions × 32 in-flight tunnel chunks = 16k messages.
+		// Two windows of aggregate headroom avoid a message-count bottleneck
+		// while maxGlobalBytes/maxGlobalFrames still cap retained memory.
+		maxGlobalMessages:                     32768,
 		maxGlobalFrames:                       65536,
 		maxConnections:                        frameRouteMaxPairs,
 		pendingTTL:                            30 * time.Second,

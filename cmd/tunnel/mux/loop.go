@@ -86,9 +86,9 @@ func (s *Session) sendOpen(id uint32) error {
 }
 
 // sendData sends one DATA frame carrying a per-stream sequence number.
-// 占用发送窗口一个槽(限制全会话在途消息数)；conn.Send 阻塞到端到端 ACK 才返回，
-// 期间窗口槽被占用，形成 W 路并发流水线。conn.Send 并发安全(底层每消息独立 messageId/tracker)。
-func (s *Session) sendData(id uint32, seq uint64, data []byte) error {
+// 同时占用本流和 carrier 发送窗口各一个槽；conn.Send 阻塞到端到端 ACK 才返回。
+// 两级窗口既允许多个业务流并行，又对总 ACK tracker 和缓冲内存设置硬上限。
+func (s *Session) sendData(id uint32, seq uint64, data []byte, streamWindow chan struct{}) error {
 	buf := make([]byte, headerSeq+len(data))
 	buf[0] = frameData
 	binary.BigEndian.PutUint32(buf[1:5], id)
@@ -96,22 +96,28 @@ func (s *Session) sendData(id uint32, seq uint64, data []byte) error {
 	copy(buf[headerSeq:], data)
 
 	select {
-	case s.sendWindow <- struct{}{}:
+	case streamWindow <- struct{}{}:
 	case <-s.ctx.Done():
 		return ErrSessionClosed
 	}
-	defer func() { <-s.sendWindow }()
+	defer func() { <-streamWindow }()
+	select {
+	case s.sessionSendWindow <- struct{}{}:
+	case <-s.ctx.Done():
+		return ErrSessionClosed
+	}
+	defer func() { <-s.sessionSendWindow }()
 	return s.conn.Send(s.ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
 }
 
 // sendClose sends a CLOSE frame carrying finalSeq (= total DATA frames sent on this stream).
 // 不占窗口：调用方(Stream.Close)已等齐本流所有 DATA 发送完成，CLOSE 之后再无在途 DATA。
-func (s *Session) sendClose(id uint32, finalSeq uint64) error {
+func (s *Session) sendClose(ctx context.Context, id uint32, finalSeq uint64) error {
 	buf := make([]byte, headerSeq)
 	buf[0] = frameClose
 	binary.BigEndian.PutUint32(buf[1:5], id)
 	binary.BigEndian.PutUint64(buf[5:13], finalSeq)
-	return s.conn.Send(s.ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
+	return s.conn.Send(ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
 }
 
 func (s *Session) sendSessionClose(ctx context.Context) error {

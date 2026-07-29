@@ -498,6 +498,7 @@ func (listener *ServiceListener) acceptVirtualConnection(carrier *serviceCarrier
 			listener.closeVirtualConnection(carrier, connectionID, streamClient)
 			return
 		}
+		stream.StartKeepAlive()
 
 		connection := &serviceConnection{
 			Connection: newNATConnection(peerInfo, streamClient, nil, listener.node.billingMeter,
