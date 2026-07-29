@@ -22,6 +22,7 @@ schema_version=1
 status=RUNNING
 error_code=
 heartbeat_epoch=$(date +%s)
+initial_path_verified=1
 generation=$generation
 observed_triggers=$migrations
 drain_complete=$drain_complete
@@ -48,6 +49,16 @@ EOF
 write_status relay04 control_partition_a relay03 control_partition_a 0 0 0 0 1
 inspect_mixed_adversary_path "$test_root" "$$" "$(date +%s)" 0 \
   || fail "valid initial normal-partition attachment was rejected: $MIXED_PATH_DETAIL"
+
+sed -e 's/^status=RUNNING$/status=MIGRATING/' \
+  -e 's/^initial_path_verified=1$/initial_path_verified=0/' \
+  "$test_root/mixed-adversary-path.status" > "$test_root/unverified.status"
+mv "$test_root/unverified.status" "$test_root/mixed-adversary-path.status"
+if inspect_mixed_adversary_path "$test_root" "$$" "$(date +%s)" 0; then
+  fail 'unverified initial mixed path passed while migrating'
+fi
+[[ $MIXED_PATH_DETAIL == mixed_path_initial_path_unverified ]] \
+  || fail "unexpected initial path detail: $MIXED_PATH_DETAIL"
 
 write_status relay01 control_partition_a relay03 control_partition_a 0 0 0 0 1
 if inspect_mixed_adversary_path "$test_root" "$$" "$(date +%s)" 0; then

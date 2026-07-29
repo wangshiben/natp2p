@@ -166,6 +166,8 @@ async function run() {
     await startNormalProbe(config, maliciousNodeID, state.attachments.normalProbe.currentRelay);
     state.attachments.normalProbe.running = true;
     await probeMixedPath(config, state);
+    if (state.probe.status !== "PASS") throw codedError("mixed_path_initial_probe_failed");
+    state.initialPathVerified = true;
     state.status = "RUNNING";
     state.path.state = "active";
     state.path.nodes = mixedPathNodes(
@@ -689,6 +691,7 @@ function initialState() {
     heartbeatAt: new Date().toISOString(),
     stopReason: "",
     errorCode: "",
+    initialPathVerified: false,
     generation: 0,
     observedTriggers: 0,
     drainComplete: false,
@@ -851,6 +854,7 @@ async function writeStatusAtomic(filename, state) {
     `status=${state.status}`,
     `error_code=${safeCode(state.errorCode)}`,
     `heartbeat_epoch=${heartbeatEpoch}`,
+    `initial_path_verified=${state.initialPathVerified ? 1 : 0}`,
     `generation=${state.generation}`,
     `observed_triggers=${state.observedTriggers}`,
     `drain_complete=${state.drainComplete ? 1 : 0}`,

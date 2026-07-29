@@ -20,10 +20,13 @@ start_mixed_adversary_path() {
       wait "$pid" 2>/dev/null || true
       return 1
     fi
-    if inspect_mixed_adversary_path "$run_dir" "$pid" "$(date +%s)" 0 \
-      && [[ $(mixed_path_field "$run_dir/mixed-adversary-path.status" status) == RUNNING ]]; then
-      printf '%s\n' "$pid"
-      return 0
+    if inspect_mixed_adversary_path "$run_dir" "$pid" "$(date +%s)" 0; then
+      case $(mixed_path_field "$run_dir/mixed-adversary-path.status" status) in
+        RUNNING|MIGRATING)
+          printf '%s\n' "$pid"
+          return 0
+          ;;
+      esac
     fi
     sleep 1
   done
@@ -37,13 +40,14 @@ inspect_mixed_adversary_path() {
   local probe_status consecutive migration_count verified_migration_count latest_two_verified
   local observed_triggers network_event_count network_violation_count network_scenario_coverage required_network_scenarios
   local malicious_natserver_relay malicious_natserver_partition malicious_relay_peer malicious_relay_partition
-  local attachment_verified path_has_normal_partition path_has_malicious_node error_code
+  local attachment_verified path_has_normal_partition path_has_malicious_node error_code initial_path_verified
   MIXED_PATH_DETAIL=
   [[ -s $status_file ]] || { MIXED_PATH_DETAIL=mixed_path_status_invalid; return 1; }
   status_snapshot=$(<"$status_file") \
     || { MIXED_PATH_DETAIL=mixed_path_status_invalid; return 1; }
   status=$(mixed_path_snapshot_field "$status_snapshot" status)
   heartbeat=$(mixed_path_snapshot_field "$status_snapshot" heartbeat_epoch)
+  initial_path_verified=$(mixed_path_snapshot_field "$status_snapshot" initial_path_verified)
   generation=$(mixed_path_snapshot_field "$status_snapshot" generation)
   observed_triggers=$(mixed_path_snapshot_field "$status_snapshot" observed_triggers)
   probe_status=$(mixed_path_snapshot_field "$status_snapshot" probe_status)
@@ -63,7 +67,8 @@ inspect_mixed_adversary_path() {
   path_has_normal_partition=$(mixed_path_snapshot_field "$status_snapshot" path_contains_normal_partition)
   path_has_malicious_node=$(mixed_path_snapshot_field "$status_snapshot" path_contains_malicious_node)
   error_code=$(mixed_path_snapshot_field "$status_snapshot" error_code)
-  if [[ ! $heartbeat =~ ^[0-9]+$ || ! $generation =~ ^[0-9]+$ || ! $observed_triggers =~ ^[0-9]+$ \
+  if [[ ! $heartbeat =~ ^[0-9]+$ || ! $initial_path_verified =~ ^[01]$ \
+    || ! $generation =~ ^[0-9]+$ || ! $observed_triggers =~ ^[0-9]+$ \
     || ! $consecutive =~ ^[0-9]+$ || ! $migration_count =~ ^[0-9]+$ \
     || ! $verified_migration_count =~ ^[0-9]+$ || ! $latest_two_verified =~ ^[01]$ \
     || ! $network_event_count =~ ^[0-9]+$ || ! $network_violation_count =~ ^[0-9]+$ \
@@ -71,6 +76,10 @@ inspect_mixed_adversary_path() {
     || ! $attachment_verified =~ ^[01]$ || ! $path_has_normal_partition =~ ^[01]$ \
     || ! $path_has_malicious_node =~ ^[01]$ ]]; then
     MIXED_PATH_DETAIL=mixed_path_status_invalid
+    return 1
+  fi
+  if (( initial_path_verified != 1 )); then
+    MIXED_PATH_DETAIL=mixed_path_initial_path_unverified
     return 1
   fi
   if ! mixed_path_normal_relay_partition_matches "$malicious_natserver_relay" "$malicious_natserver_partition" \
