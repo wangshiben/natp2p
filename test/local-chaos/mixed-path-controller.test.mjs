@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import {
@@ -8,7 +11,9 @@ import {
   normalPartitionForRelay,
   pendingTriggers,
   publicTrigger,
+  recordControllerFailure,
   selectRandomNormalRelay,
+  waitForFilePattern,
 } from "./mixed-path-controller.mjs";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -125,4 +130,39 @@ test("heartbeat publication continues independently and remains serialized", asy
   assert.ok(snapshots.length >= 3);
   assert.equal(snapshots.at(-1).generation, 1);
   assert.ok(snapshots.every((snapshot) => Number.isFinite(Date.parse(snapshot.heartbeatAt))));
+});
+
+test("process waits retain a stage-specific timeout code", async (context) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-mixed-path-timeout-"));
+  context.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await assert.rejects(
+    waitForFilePattern(
+      path.join(directory, "missing.log"),
+      /ready/,
+      5,
+      { shouldStop: () => false },
+      "mixed_path_relay_control_timeout",
+    ),
+    (error) => error?.code === "mixed_path_relay_control_timeout",
+  );
+});
+
+test("controller failure preserves accumulated migration evidence", () => {
+  const state = {
+    status: "MIGRATING",
+    generation: 11,
+    migrations: [{ generation: 11 }],
+    networkCoverage: [{ scenario: "relay_fee_override", executed: 2, contained: 2, violations: 0 }],
+  };
+  const result = recordControllerFailure(
+    state,
+    Object.assign(new Error("timeout"), { code: "mixed_path_relay_control_timeout" }),
+  );
+
+  assert.equal(result, state);
+  assert.equal(result.status, "FAILED");
+  assert.equal(result.errorCode, "mixed_path_relay_control_timeout");
+  assert.equal(result.generation, 11);
+  assert.deepEqual(result.migrations, [{ generation: 11 }]);
+  assert.equal(result.networkCoverage[0].executed, 2);
 });

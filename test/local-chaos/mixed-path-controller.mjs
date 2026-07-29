@@ -32,6 +32,7 @@ const allowedDefenses = new Set([
   "relay_rejected_invalid_nat_candidate",
 ]);
 const terminalPhases = new Set(["COMPLETED", "FAILED", "RESOURCE_LIMIT", "STOPPED"]);
+const relayControlStartTimeoutMs = 90_000;
 
 export function selectRandomNormalRelay(currentRelay, excludedRelays = [], randomInteger = crypto.randomInt) {
   const excluded = new Set([currentRelay, ...excludedRelays]);
@@ -119,6 +120,12 @@ export function createSerialHeartbeatPublisher(state, publishSnapshot, intervalM
       await tail;
     },
   };
+}
+
+export function recordControllerFailure(state, error) {
+  state.status = "FAILED";
+  state.errorCode = safeCode(error?.code || "mixed_path_controller_failed");
+  return state;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -215,6 +222,11 @@ async function run() {
     }
   } catch (error) {
     if (!stopping) {
+      recordControllerFailure(state, error);
+      try {
+        await publish();
+        error.evidencePublished = true;
+      } catch {}
       await publisher.stop();
       throw error;
     }
@@ -369,12 +381,14 @@ async function startMaliciousRelay(config, recoveryPeer = "") {
     /relay 已就绪/,
     45_000,
     config,
+    "mixed_path_relay_ready_timeout",
   );
   await waitForFilePattern(
     path.join(config.privateRoot, "malicious-relay", "mixed-nodeserver.log"),
     /准入校验通过 control-hello [0-9a-f]{16}: subject=[0-9a-f]{16} role=relay/,
-    45_000,
+    relayControlStartTimeoutMs,
     config,
+    "mixed_path_relay_control_timeout",
   );
 }
 
@@ -396,7 +410,13 @@ async function startMaliciousServer(config, relay) {
     "-billing-private-snapshot /state/mixed-billing-meter.json -ca http://ca:9100",
     "> /state/mixed-tunserver.log 2>&1",
   ].join(" ")]);
-  await waitForFilePattern(logPath, /服务端已就绪/, 45_000, config);
+  await waitForFilePattern(
+    logPath,
+    /服务端已就绪/,
+    45_000,
+    config,
+    "mixed_path_natserver_ready_timeout",
+  );
   await waitForHostedNode(config, relay, targetNodeID, 45_000);
   return targetNodeID;
 }
@@ -452,8 +472,20 @@ async function startNormalProbe(config, targetNodeID, relay) {
   ].join(" ")]);
   const probeNodeID = await waitForNodeID(logPath, 20_000, config);
   await ensureCredit(config, probeNodeID);
-  await waitForFilePattern(logPath, /已建立隧道连接/, 60_000, config);
-  await waitForFilePattern(logPath, /本地监听:/, 10_000, config);
+  await waitForFilePattern(
+    logPath,
+    /已建立隧道连接/,
+    60_000,
+    config,
+    "mixed_path_probe_connect_timeout",
+  );
+  await waitForFilePattern(
+    logPath,
+    /本地监听:/,
+    10_000,
+    config,
+    "mixed_path_probe_listen_timeout",
+  );
 }
 
 async function probeMixedPath(config, state) {
@@ -567,7 +599,13 @@ async function waitForHTTP(config, service, url, timeoutMs) {
   throw codedError("mixed_path_http_start_timeout");
 }
 
-async function waitForFilePattern(filename, pattern, timeoutMs, config) {
+export async function waitForFilePattern(
+  filename,
+  pattern,
+  timeoutMs,
+  config,
+  timeoutCode = "mixed_path_process_start_timeout",
+) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     throwIfStopping(config);
@@ -575,7 +613,7 @@ async function waitForFilePattern(filename, pattern, timeoutMs, config) {
     if (pattern.test(value)) return value;
     await delay(250);
   }
-  throw codedError("mixed_path_process_start_timeout");
+  throw codedError(timeoutCode);
 }
 
 async function waitForHostedNode(config, relay, nodeID, timeoutMs) {
@@ -589,11 +627,17 @@ async function waitForHostedNode(config, relay, nodeID, timeoutMs) {
     } catch {}
     await delay(250);
   }
-  throw codedError("mixed_path_process_start_timeout");
+  throw codedError("mixed_path_natserver_registration_timeout");
 }
 
 async function waitForNodeID(filename, timeoutMs, config) {
-  const contents = await waitForFilePattern(filename, /本节点 ID:\s*[0-9a-f]{64}/, timeoutMs, config);
+  const contents = await waitForFilePattern(
+    filename,
+    /本节点 ID:\s*[0-9a-f]{64}/,
+    timeoutMs,
+    config,
+    "mixed_path_probe_identity_timeout",
+  );
   const match = contents.match(/本节点 ID:\s*([0-9a-f]{64})/);
   if (!match) throw codedError("mixed_path_probe_identity_invalid");
   return match[1];
@@ -644,6 +688,7 @@ function initialState() {
     status: "STARTING",
     heartbeatAt: new Date().toISOString(),
     stopReason: "",
+    errorCode: "",
     generation: 0,
     observedTriggers: 0,
     drainComplete: false,
@@ -804,6 +849,7 @@ async function writeStatusAtomic(filename, state) {
   const contents = [
     "schema_version=1",
     `status=${state.status}`,
+    `error_code=${safeCode(state.errorCode)}`,
     `heartbeat_epoch=${heartbeatEpoch}`,
     `generation=${state.generation}`,
     `observed_triggers=${state.observedTriggers}`,
@@ -897,7 +943,7 @@ async function failAndExit(error) {
     heartbeatAt: new Date().toISOString(),
     errorCode: safeCode(error?.code || "mixed_path_controller_failed"),
   };
-  if (runDir !== path.parse(runDir).root) {
+  if (runDir !== path.parse(runDir).root && error?.evidencePublished !== true) {
     await writeJSONAtomic(path.join(runDir, "mixed-adversary-path.json"), failure).catch(() => {});
     await fs.writeFile(path.join(runDir, "mixed-adversary-path.status"), [
       "schema_version=1",

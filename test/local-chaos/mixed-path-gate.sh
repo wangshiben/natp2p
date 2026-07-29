@@ -37,7 +37,7 @@ inspect_mixed_adversary_path() {
   local probe_status consecutive migration_count verified_migration_count latest_two_verified
   local observed_triggers network_event_count network_violation_count network_scenario_coverage required_network_scenarios
   local malicious_natserver_relay malicious_natserver_partition malicious_relay_peer malicious_relay_partition
-  local attachment_verified path_has_normal_partition path_has_malicious_node
+  local attachment_verified path_has_normal_partition path_has_malicious_node error_code
   MIXED_PATH_DETAIL=
   [[ -s $status_file ]] || { MIXED_PATH_DETAIL=mixed_path_status_invalid; return 1; }
   status_snapshot=$(<"$status_file") \
@@ -62,6 +62,7 @@ inspect_mixed_adversary_path() {
   attachment_verified=$(mixed_path_snapshot_field "$status_snapshot" normal_partition_attachment_verified)
   path_has_normal_partition=$(mixed_path_snapshot_field "$status_snapshot" path_contains_normal_partition)
   path_has_malicious_node=$(mixed_path_snapshot_field "$status_snapshot" path_contains_malicious_node)
+  error_code=$(mixed_path_snapshot_field "$status_snapshot" error_code)
   if [[ ! $heartbeat =~ ^[0-9]+$ || ! $generation =~ ^[0-9]+$ || ! $observed_triggers =~ ^[0-9]+$ \
     || ! $consecutive =~ ^[0-9]+$ || ! $migration_count =~ ^[0-9]+$ \
     || ! $verified_migration_count =~ ^[0-9]+$ || ! $latest_two_verified =~ ^[01]$ \
@@ -114,7 +115,11 @@ inspect_mixed_adversary_path() {
       }
       ;;
     FAILED|DEGRADED)
-      MIXED_PATH_DETAIL=mixed_path_probe_failed
+      if [[ $error_code =~ ^mixed_path_[a-z0-9_]{1,52}$ ]]; then
+        MIXED_PATH_DETAIL=$error_code
+      else
+        MIXED_PATH_DETAIL=mixed_path_probe_failed
+      fi
       return 1
       ;;
     *)

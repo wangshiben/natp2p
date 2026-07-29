@@ -20,6 +20,7 @@ write_status() {
   cat > "$test_root/mixed-adversary-path.status" <<EOF
 schema_version=1
 status=RUNNING
+error_code=
 heartbeat_epoch=$(date +%s)
 generation=$generation
 observed_triggers=$migrations
@@ -85,6 +86,17 @@ write_status relay06 control_partition_b relay03 control_partition_a 9 9 9 1 1 9
 inspect_mixed_adversary_path "$test_root" "$$" "$(date +%s)" 1 \
   || fail "verified mixed-partition migrations were rejected: $MIXED_PATH_DETAIL"
 
+sed -e 's/^status=RUNNING$/status=FAILED/' \
+  -e 's/^error_code=$/error_code=mixed_path_relay_control_timeout/' \
+  "$test_root/mixed-adversary-path.status" > "$test_root/failed.status"
+mv "$test_root/failed.status" "$test_root/mixed-adversary-path.status"
+if inspect_mixed_adversary_path "$test_root" "$$" "$(date +%s)" 0; then
+  fail 'typed mixed-path controller failure passed'
+fi
+[[ $MIXED_PATH_DETAIL == mixed_path_relay_control_timeout ]] \
+  || fail "controller failure detail was lost: $MIXED_PATH_DETAIL"
+
+write_status relay06 control_partition_b relay03 control_partition_a 9 9 9 1 1 9
 cp "$test_root/mixed-adversary-path.status" "$test_root/valid-running.status"
 write_status relay06 control_partition_b relay03 control_partition_a 9 9 9 1 0 9
 sed 's/^status=RUNNING$/status=MIGRATING/' "$test_root/mixed-adversary-path.status" \
