@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,6 +112,78 @@ func (s *healthyReconnectStream) NodeId() string                     { return "n
 func (s *healthyReconnectStream) ConnectionId() string               { return "connection" }
 func (s *healthyReconnectStream) SetCryptoSuite(network.EncrypSuite) {}
 
+func TestDualStreamKeepsPhysicalLegAfterMessageRetransmitExhaustion(t *testing.T) {
+	dual := newDualStream("node", "billing-holdback")
+	defer dual.Close()
+	stream := newHealthyReconnectStream()
+	if err := dual.attach(streamTransportTCP, stream); err != nil {
+		t.Fatal(err)
+	}
+
+	dual.handleSendFailure("primary", streamTransportTCP, stream, ErrMessageMaxRetransmits)
+	dual.mu.RLock()
+	retained := dual.streamLocked(streamTransportTCP) == stream
+	dual.mu.RUnlock()
+	if !retained {
+		t.Fatal("message-level ACK exhaustion detached a healthy physical leg")
+	}
+	select {
+	case <-stream.closed:
+		t.Fatal("message-level ACK exhaustion closed a healthy physical leg")
+	default:
+	}
+}
+
+type peerClosedStream struct {
+	trigger     chan struct{}
+	closed      chan struct{}
+	triggerOnce sync.Once
+	closeOnce   sync.Once
+}
+
+func newPeerClosedStream() *peerClosedStream {
+	return &peerClosedStream{
+		trigger: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (stream *peerClosedStream) signalPeerClose() {
+	stream.triggerOnce.Do(func() { close(stream.trigger) })
+}
+
+func (stream *peerClosedStream) Close() error {
+	stream.closeOnce.Do(func() { close(stream.closed) })
+	return nil
+}
+
+func (stream *peerClosedStream) NextMessage(ctx context.Context) (*network.Message, error) {
+	select {
+	case <-stream.trigger:
+		return nil, ErrConnectionClosedByPeer
+	case <-stream.closed:
+		return nil, errors.New("closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (stream *peerClosedStream) SendMessage(context.Context, *network.Message) error { return nil }
+func (stream *peerClosedStream) SendMessageAsync(
+	ctx context.Context,
+	message *network.Message,
+	callback network.MessageResultCallback,
+) error {
+	err := stream.SendMessage(ctx, message)
+	if callback != nil {
+		callback(network.MessageResult{Success: true})
+	}
+	return err
+}
+func (stream *peerClosedStream) NodeId() string                     { return "node" }
+func (stream *peerClosedStream) ConnectionId() string               { return "connection" }
+func (stream *peerClosedStream) SetCryptoSuite(network.EncrypSuite) {}
+
 func TestLegAvailableSignalBroadcastsToAllWaiters(t *testing.T) {
 	dual := newDualStream("node", "connection")
 	defer dual.Close()
@@ -137,6 +210,145 @@ func TestLegAvailableSignalBroadcastsToAllWaiters(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("leg 恢复通知没有唤醒全部在途发送")
 	}
+}
+
+func TestPeerConnectionCloseTerminatesDualStreamWithoutReconnect(t *testing.T) {
+	dual := newDualStream("node", "connection")
+	closingStream := newPeerClosedStream()
+	backupStream := newHealthyReconnectStream()
+	if err := dual.attachWithID(streamTransportKCP, streamTransportKCP, closingStream); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attachWithID(streamTransportTCP, streamTransportTCP, backupStream); err != nil {
+		t.Fatal(err)
+	}
+
+	var reconnectAttempts atomic.Int32
+	dual.SetReconnectDialer(streamTransportKCP, func(context.Context) (network.Stream, error) {
+		reconnectAttempts.Add(1)
+		return newHealthyReconnectStream(), nil
+	})
+	dual.EnableReconnectSurvival()
+	closingStream.signalPeerClose()
+
+	select {
+	case <-dual.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("peer connection close did not terminate the dual stream")
+	}
+	select {
+	case <-backupStream.closed:
+	case <-time.After(time.Second):
+		t.Fatal("peer connection close left the backup leg open")
+	}
+	time.Sleep(2 * initialReconnectBackoff)
+	if reconnectAttempts.Load() != 0 {
+		t.Fatalf("peer connection close triggered %d reconnect attempts", reconnectAttempts.Load())
+	}
+}
+
+func TestHeartbeatTimeoutPrefersConnectedTCPBackup(t *testing.T) {
+	dual := newDualStream("node", "connection")
+	defer dual.Close()
+	kcpStream := newHealthyReconnectStream()
+	tcpStream := newHealthyReconnectStream()
+	if err := dual.attachWithID(streamTransportKCP, streamTransportKCP, kcpStream); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attachWithID(streamTransportTCP, streamTransportTCP, tcpStream); err != nil {
+		t.Fatal(err)
+	}
+	dual.setPreferred(streamTransportKCP)
+
+	if !dual.preferTCPBackupAfterKCPHeartbeatTimeout() {
+		t.Fatal("KCP heartbeat timeout did not promote the connected TCP backup")
+	}
+	primaryID, primary, _, _ := dual.sendOrder()
+	if primaryID != streamTransportTCP || primary != tcpStream {
+		t.Fatalf("primary after heartbeat timeout = (%s, %p), want TCP %p", primaryID, primary, tcpStream)
+	}
+	if !dual.HasStream(streamTransportKCP) {
+		t.Fatal("quality fallback closed the KCP leg instead of retaining it")
+	}
+	if dual.preferTCPBackupAfterKCPHeartbeatTimeout() {
+		t.Fatal("fallback repeated after TCP was already preferred")
+	}
+}
+
+func TestKCPFailureWithHealthyTCPLimitsReconnectStorm(t *testing.T) {
+	dual := newDualStreamWithPump("node", "connection", false)
+	defer dual.Close()
+	kcpStream := newHealthyReconnectStream()
+	tcpStream := newHealthyReconnectStream()
+	if err := dual.attachWithID(streamTransportKCP, streamTransportKCP, kcpStream); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attachWithID(streamTransportTCP, streamTransportTCP, tcpStream); err != nil {
+		t.Fatal(err)
+	}
+
+	var reconnectAttempts atomic.Int32
+	dual.SetReconnectDialer(streamTransportKCP, func(context.Context) (network.Stream, error) {
+		reconnectAttempts.Add(1)
+		return nil, errors.New("KCP unavailable")
+	})
+	dual.EnableReconnectSurvival()
+	dual.handleLegFailure(streamTransportKCP, kcpStream)
+	waitLifecycleCondition(t, time.Second, func() bool {
+		dual.reconnectMu.Lock()
+		defer dual.reconnectMu.Unlock()
+		return dual.reconnectDisabled[streamTransportKCP]
+	})
+
+	if reconnectAttempts.Load() != maxKCPReconnectAttemptsWithTCP {
+		t.Fatalf("KCP reconnect attempts = %d, want %d while TCP is usable",
+			reconnectAttempts.Load(), maxKCPReconnectAttemptsWithTCP)
+	}
+	dual.reconnectMu.Lock()
+	kcpDisabled := dual.reconnectDisabled[streamTransportKCP]
+	dual.reconnectMu.Unlock()
+	if !kcpDisabled {
+		t.Fatal("failed KCP leg was not disabled after its bounded recovery attempt")
+	}
+	if !dual.HasStream(streamTransportTCP) || dual.IsClosed() {
+		t.Fatal("TCP takeover did not preserve the logical stream")
+	}
+}
+
+func TestDualKeepAliveDelayIsStableAndBounded(t *testing.T) {
+	first := dualKeepAliveDelay("node-a", "connection-a")
+	if first < dualKeepAliveInterval-dualKeepAliveJitter ||
+		first > dualKeepAliveInterval+dualKeepAliveJitter {
+		t.Fatalf("keepalive delay %s outside jitter bounds", first)
+	}
+	if repeated := dualKeepAliveDelay("node-a", "connection-a"); repeated != first {
+		t.Fatalf("keepalive delay changed for the same stream: first=%s repeated=%s", first, repeated)
+	}
+	if second := dualKeepAliveDelay("node-a", "connection-b"); second == first {
+		t.Fatalf("distinct streams received the same deterministic delay: %s", first)
+	}
+}
+
+func TestDualStreamIsClosedRequiresAllCarriersClosed(t *testing.T) {
+	dual := newDualStream("node", "connection")
+	kcpStream := newHealthyReconnectStream()
+	tcpStream := newHealthyReconnectStream()
+	if err := dual.attachWithID(streamTransportKCP, streamTransportKCP, kcpStream); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attachWithID(streamTransportTCP, streamTransportTCP, tcpStream); err != nil {
+		t.Fatal(err)
+	}
+	if dual.IsClosed() {
+		t.Fatal("dual stream with two live carriers reported closed")
+	}
+	_ = kcpStream.Close()
+	if dual.IsClosed() {
+		t.Fatal("dual stream with a live TCP backup reported closed")
+	}
+	_ = tcpStream.Close()
+	waitLifecycleCondition(t, time.Second, dual.IsClosed)
+	_ = dual.Close()
 }
 
 func TestResumeLegMarkerPreservesExtraFlag(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,6 +103,15 @@ type delayedOpenConnection struct {
 type blockingCloseConnection struct {
 	closed chan struct{}
 	once   sync.Once
+}
+
+type blockingOpenConnection struct {
+	blockingCloseConnection
+}
+
+type failFirstDataConnection struct {
+	p2pnode.Connection
+	failed atomic.Bool
 }
 
 type windowProbeConnection struct {
@@ -210,6 +220,26 @@ func (connection *blockingCloseConnection) Receive(ctx context.Context) (*p2pnod
 	case <-connection.closed:
 		return nil, ErrSessionClosed
 	}
+}
+
+func (connection *blockingOpenConnection) Send(ctx context.Context, message *p2pnode.Message) error {
+	if len(message.Payload) == 0 || message.Payload[0] != frameOpen {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-connection.closed:
+		return ErrSessionClosed
+	}
+}
+
+func (connection *failFirstDataConnection) Send(ctx context.Context, message *p2pnode.Message) error {
+	if len(message.Payload) > 0 && message.Payload[0] == frameData &&
+		connection.failed.CompareAndSwap(false, true) {
+		return errors.New("injected data send failure")
+	}
+	return connection.Connection.Send(ctx, message)
 }
 
 func (c *delayedOpenConnection) Send(ctx context.Context, msg *p2pnode.Message) error {
@@ -568,5 +598,101 @@ func TestStreamCloseIsBoundedWhenCloseFrameIsNotAcknowledged(t *testing.T) {
 	}
 	if elapsed > 250*time.Millisecond {
 		t.Fatalf("stream close blocked for %s", elapsed)
+	}
+}
+
+func TestDefaultCloseTimeoutCoversCongestedCarrierRecovery(t *testing.T) {
+	if streamCloseSendTimeout < 30*time.Second || sessionCloseSendTimeout < 30*time.Second {
+		t.Fatalf("close timeouts are too short for a congested carrier: stream=%s session=%s",
+			streamCloseSendTimeout, sessionCloseSendTimeout)
+	}
+}
+
+func TestDataSendFailureResetsOnlyFailedStream(t *testing.T) {
+	clientConnection, serverConnection := newPipePair(0)
+	faultConnection := &failFirstDataConnection{Connection: clientConnection}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	clientSession := NewSession(ctx, faultConnection, true)
+	serverSession := NewSession(ctx, serverConnection, false)
+	defer clientSession.Close()
+	defer serverSession.Close()
+
+	failedStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatalf("open failed stream: %v", err)
+	}
+	remoteFailedStream, err := serverSession.Accept()
+	if err != nil {
+		t.Fatalf("accept failed stream: %v", err)
+	}
+	if _, err := failedStream.Write(make([]byte, 2*defaultMaxChunk)); err == nil {
+		t.Fatal("failed stream write unexpectedly succeeded")
+	}
+	if err := failedStream.Close(); err != nil {
+		t.Fatalf("reset failed stream: %v", err)
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := io.ReadAll(remoteFailedStream)
+		readDone <- readErr
+	}()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("read reset stream: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("peer waited for a DATA sequence that failed before RESET")
+	}
+
+	healthyStream, err := clientSession.OpenStream()
+	if err != nil {
+		t.Fatalf("open healthy stream after reset: %v", err)
+	}
+	remoteHealthyStream, err := serverSession.Accept()
+	if err != nil {
+		t.Fatalf("accept healthy stream after reset: %v", err)
+	}
+	payload := []byte("carrier remains available")
+	if _, err := healthyStream.Write(payload); err != nil {
+		t.Fatalf("write healthy stream after reset: %v", err)
+	}
+	if err := healthyStream.Close(); err != nil {
+		t.Fatalf("close healthy stream after reset: %v", err)
+	}
+	got, err := io.ReadAll(remoteHealthyStream)
+	if err != nil {
+		t.Fatalf("read healthy stream after reset: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("healthy stream payload = %q, want %q", got, payload)
+	}
+}
+
+func TestOpenStreamContextIsBoundedWhenOpenFrameIsNotAcknowledged(t *testing.T) {
+	connection := &blockingOpenConnection{
+		blockingCloseConnection: blockingCloseConnection{closed: make(chan struct{})},
+	}
+	session := NewSession(context.Background(), connection, true)
+	defer session.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	_, err := session.OpenStreamContext(ctx)
+	elapsed := time.Since(startedAt)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("open error=%v, want context deadline exceeded", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("open stream blocked for %s", elapsed)
+	}
+	session.mu.Lock()
+	streamCount := len(session.streams)
+	session.mu.Unlock()
+	if streamCount != 0 {
+		t.Fatalf("timed-out open left %d streams registered", streamCount)
 	}
 }

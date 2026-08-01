@@ -103,6 +103,8 @@ type Message struct {
 	Payload []byte
 }
 
+const TransportControlPath = "/_bnfs/transport-control"
+
 // MessageType 区分 p2p 层的消息类别。
 type MessageType int
 

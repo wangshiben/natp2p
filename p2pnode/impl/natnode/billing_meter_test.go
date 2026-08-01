@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -288,18 +289,31 @@ func TestBillingSendFailureInvalidatesAmbiguousSession(t *testing.T) {
 		relayAddress, sessionID.String(), crypoto.GetPubKeyStr(relayKey.PublicKey()), &emptyRelayState,
 	)
 	if err != nil {
-		t.Fatalf("reconcile ambiguous session to Relay watermark: %v", err)
+		t.Fatalf("request rotation for ambiguous session: %v", err)
 	}
-	if !status.preexisting || status.resetRequired {
-		t.Fatalf("reconciled session = %+v, want recovered session", status)
+	if status.preexisting || !status.resetRequired {
+		t.Fatalf("ambiguous session = %+v, want mandatory rotation", status)
 	}
 	meter.mu.Lock()
 	active = meter.relaySessions[relayAddress]
 	_, invalid = meter.invalidSessions[sessionID]
-	reconciled := meter.sessions[sessionID]
+	ambiguous := meter.sessions[sessionID]
 	meter.mu.Unlock()
-	if active != sessionID || invalid || reconciled.nextAssigned != 1 || reconciled.nextAdvance != 1 {
-		t.Fatal("ambiguous assigned Record was not safely discarded after signed empty Relay watermark")
+	if active != sessionID || !invalid || ambiguous.nextAssigned != 2 || ambiguous.nextAdvance != 1 {
+		t.Fatal("ambiguous assigned Record was rewound before session rotation")
+	}
+	rotatedSessionID := billingvoucher.Identifier{17, 18, 19}
+	status, err = meter.activateRelaySessionWithState(
+		relayAddress, rotatedSessionID.String(), crypoto.GetPubKeyStr(relayKey.PublicKey()), &emptyRelayState,
+	)
+	if err != nil || status.resetRequired {
+		t.Fatalf("activate rotated empty session = (%+v, %v)", status, err)
+	}
+	meter.mu.Lock()
+	active = meter.relaySessions[relayAddress]
+	meter.mu.Unlock()
+	if active != rotatedSessionID {
+		t.Fatal("fresh billing session was not installed after empty-session rotation")
 	}
 }
 
@@ -373,6 +387,413 @@ func TestBillingSendOrderReleasesAfterInitialWrite(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("send %d did not finish", index+1)
 		}
+	}
+}
+
+func TestBillingSendOrderWaitersAreFIFO(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	sessionID := billingvoucher.Identifier{31, 32, 33}
+	relayAddress := "relay-fifo-send:9000"
+	if _, err := meter.activateRelaySession(
+		relayAddress,
+		sessionID.String(),
+		crypoto.GetPubKeyStr(relayKey.PublicKey()),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	firstLease, err := meter.acquireSendOrder(context.Background(), relayAddress, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type acquiredLease struct {
+		index int
+		lease *natBillingSendLease
+		err   error
+	}
+	acquired := make(chan acquiredLease, 3)
+	for index := 0; index < 3; index++ {
+		go func(index int) {
+			lease, acquireErr := meter.acquireSendOrder(
+				context.Background(),
+				relayAddress,
+				fmt.Sprintf("queued-%d", index),
+			)
+			acquired <- acquiredLease{index: index, lease: lease, err: acquireErr}
+		}(index)
+		waitForNatBillingDiagnostics(t, meter, relayAddress, func(diagnostics natBillingRelayDiagnostics) bool {
+			return diagnostics.sendOrderWaiters == index+1
+		}, fmt.Sprintf("%d FIFO waiters", index+1))
+	}
+
+	firstLease.Release()
+	for expected := 0; expected < 3; expected++ {
+		select {
+		case result := <-acquired:
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			if result.index != expected {
+				t.Fatalf("acquisition index=%d, want FIFO index=%d", result.index, expected)
+			}
+			result.lease.Release()
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for FIFO acquisition %d", expected)
+		}
+	}
+}
+
+func TestBillingPrioritySendOrderPreemptsBulkWithoutStarvingIt(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	relayAddress := "relay-priority-send:9000"
+	sessionID := billingvoucher.Identifier{41, 42, 43}
+	if _, err := meter.activateRelaySession(relayAddress, sessionID.String(), crypoto.GetPubKeyStr(relayKey.PublicKey())); err != nil {
+		t.Fatal(err)
+	}
+	first, err := meter.acquireSendOrder(context.Background(), relayAddress, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bulkReady := make(chan *natBillingSendLease, 1)
+	go func() {
+		lease, acquireErr := meter.acquireSendOrder(context.Background(), relayAddress, "bulk")
+		if acquireErr == nil {
+			bulkReady <- lease
+		}
+	}()
+	waitForNatBillingDiagnostics(t, meter, relayAddress, func(diagnostics natBillingRelayDiagnostics) bool {
+		return diagnostics.sendOrderWaiters == 1
+	}, "bulk waiter")
+	priorityReady := make(chan *natBillingSendLease, 1)
+	go func() {
+		lease, acquireErr := meter.acquireSendOrderWithPriority(context.Background(), relayAddress, "close", true)
+		if acquireErr == nil {
+			priorityReady <- lease
+		}
+	}()
+	waitForNatBillingDiagnostics(t, meter, relayAddress, func(diagnostics natBillingRelayDiagnostics) bool {
+		return diagnostics.sendOrderWaiters == 2
+	}, "priority waiter")
+	first.Release()
+	select {
+	case priority := <-priorityReady:
+		priority.Release()
+	case <-bulkReady:
+		t.Fatal("bulk waiter bypassed priority control message")
+	case <-time.After(time.Second):
+		t.Fatal("priority waiter did not acquire")
+	}
+	select {
+	case bulk := <-bulkReady:
+		bulk.Release()
+	case <-time.After(time.Second):
+		t.Fatal("bulk waiter did not acquire after priority message")
+	}
+}
+
+func TestBillingWaitQueuesAreBounded(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	sessionID := billingvoucher.Identifier{34, 35, 36}
+	relayAddress := "relay-bounded-wait:9000"
+	if _, err := meter.activateRelaySession(
+		relayAddress,
+		sessionID.String(),
+		crypoto.GetPubKeyStr(relayKey.PublicKey()),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	meter.mu.Lock()
+	meter.sendOrderWaiters[sessionID] = maximumNatBillingSendOrderWaiters
+	meter.mu.Unlock()
+	if _, err := meter.acquireSendOrder(context.Background(), relayAddress, "over-limit"); !errors.Is(err, ErrBillingSendQueueFull) {
+		t.Fatalf("send queue error=%v, want %v", err, ErrBillingSendQueueFull)
+	}
+
+	meter.invalidateRelaySession(relayAddress)
+	meter.mu.Lock()
+	delete(meter.sendOrderWaiters, sessionID)
+	meter.relaySessionWaiters[relayAddress] = maximumNatBillingRelaySessionWaiters
+	meter.mu.Unlock()
+	if err := meter.waitRelaySession(context.Background(), relayAddress, "over-limit"); !errors.Is(err, ErrBillingRelayWaitQueueFull) {
+		t.Fatalf("Relay wait queue error=%v, want %v", err, ErrBillingRelayWaitQueueFull)
+	}
+}
+
+func TestNATConnectionBillingSendSlotsAreBounded(t *testing.T) {
+	stream := &billingCascadeReproStream{connectionID: "bounded-connection"}
+	meter := &natBillingMeter{enabled: true}
+	connection := newNATConnection(
+		p2pnode.PeerInfo{ID: "peer"},
+		stream,
+		nil,
+		meter,
+		nil,
+		nil,
+	)
+	for index := 0; index < maximumPendingBillingSendsPerConnection; index++ {
+		connection.billingSends <- struct{}{}
+	}
+	err := connection.Send(context.Background(), &p2pnode.Message{Payload: []byte("over-limit")})
+	if !errors.Is(err, ErrBillingSendQueueFull) {
+		t.Fatalf("send error=%v, want %v", err, ErrBillingSendQueueFull)
+	}
+	if !isRecoverableServiceSendError(err) {
+		t.Fatal("per-connection backpressure was not classified as recoverable")
+	}
+	if calls := stream.sendCalls.Load(); calls != 0 {
+		t.Fatalf("transport calls=%d, want 0", calls)
+	}
+}
+
+func TestRepeatedBillingInvalidationPreservesExistingWaiters(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	sessionID := billingvoucher.Identifier{37, 38, 39}
+	relayAddress := "relay-repeated-invalidation:9000"
+	relayPublicKey := crypoto.GetPubKeyStr(relayKey.PublicKey())
+	if _, err := meter.activateRelaySession(relayAddress, sessionID.String(), relayPublicKey); err != nil {
+		t.Fatal(err)
+	}
+
+	meter.invalidateRelaySessionWithCause(relayAddress, "first", "connection-1")
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- meter.waitRelaySession(context.Background(), relayAddress, "waiting-connection")
+	}()
+	waitForNatBillingDiagnostics(t, meter, relayAddress, func(diagnostics natBillingRelayDiagnostics) bool {
+		return diagnostics.relaySessionWaiters == 1
+	}, "one Relay session waiter")
+
+	meter.mu.Lock()
+	firstReady := meter.relayReady[relayAddress]
+	meter.mu.Unlock()
+	meter.invalidateRelaySessionWithCause(relayAddress, "repeated", "connection-2")
+	meter.mu.Lock()
+	secondReady := meter.relayReady[relayAddress]
+	invalidationGeneration := meter.relayInvalidation[relayAddress]
+	meter.mu.Unlock()
+	if firstReady != secondReady {
+		t.Fatal("repeated invalidation replaced relayReady and stranded existing waiters")
+	}
+	if invalidationGeneration != 1 {
+		t.Fatalf("repeated invalidation advanced generation to %d, want 1", invalidationGeneration)
+	}
+
+	emptyRelayState := natBillingSnapshot{}
+	if _, err := meter.activateRelaySessionWithState(
+		relayAddress,
+		sessionID.String(),
+		relayPublicKey,
+		&emptyRelayState,
+	); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("existing waiter did not resume after reconciliation")
+	}
+}
+
+func TestStaleBillingFailureDoesNotInvalidateRotatedSession(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	relayAddress := "relay-stale-invalidation:9000"
+	relayPublicKey := crypoto.GetPubKeyStr(relayKey.PublicKey())
+	oldSessionID := billingvoucher.Identifier{44, 45, 46}
+	newSessionID := billingvoucher.Identifier{47, 48, 49}
+	if _, err := meter.activateRelaySession(relayAddress, oldSessionID.String(), relayPublicKey); err != nil {
+		t.Fatal(err)
+	}
+	meter.invalidateRelaySessionForSession(relayAddress, oldSessionID, "transport_send_error", "first")
+	if _, err := meter.activateRelaySessionWithState(
+		relayAddress, newSessionID.String(), relayPublicKey, &natBillingSnapshot{},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	meter.invalidateRelaySessionForSession(relayAddress, oldSessionID, "late_transport_send_error", "late")
+	diagnostics := meter.relayDiagnostics(relayAddress)
+	if diagnostics.sessionID != newSessionID || diagnostics.invalid || diagnostics.invalidationGeneration != 1 {
+		t.Fatalf("late old-session failure changed rotated session: %+v", diagnostics)
+	}
+}
+
+func waitForNatBillingDiagnostics(
+	t *testing.T,
+	meter *natBillingMeter,
+	relayAddress string,
+	condition func(natBillingRelayDiagnostics) bool,
+	description string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		diagnostics := meter.relayDiagnostics(relayAddress)
+		if condition(diagnostics) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s: %+v", description, diagnostics)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestBillingCallerTimeoutAfterInitialWriteRetainsSharedSession(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	sessionID := billingvoucher.Identifier{17, 18, 19}
+	relayAddress := "relay-soft-timeout:9000"
+	if _, err := meter.activateRelaySession(
+		relayAddress,
+		sessionID.String(),
+		crypoto.GetPubKeyStr(relayKey.PublicKey()),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := newOrderedBillingStream()
+	reset := make(chan struct{}, 1)
+	connection := newNATConnection(
+		p2pnode.PeerInfo{ID: p2pnode.NodeID("peer")},
+		stream,
+		nil,
+		meter,
+		func() string { return relayAddress },
+		func(string) { reset <- struct{}{} },
+	)
+	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancelFirst()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- connection.Send(firstCtx, &p2pnode.Message{Payload: []byte("first")})
+	}()
+	if sequence := waitOrderedBillingInitial(t, stream.initial, firstDone); sequence != 1 {
+		t.Fatalf("first initial sequence=%d, want 1", sequence)
+	}
+	select {
+	case err := <-firstDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("first send error=%v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first send did not observe its caller deadline")
+	}
+
+	meter.mu.Lock()
+	_, invalid := meter.invalidSessions[sessionID]
+	meter.mu.Unlock()
+	if invalid {
+		t.Fatal("caller timeout froze the shared billing session immediately")
+	}
+	select {
+	case <-reset:
+		t.Fatal("caller timeout reset the shared billing control")
+	default:
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- connection.Send(context.Background(), &p2pnode.Message{Payload: []byte("second")})
+	}()
+	if sequence := waitOrderedBillingInitial(t, stream.initial, secondDone); sequence != 2 {
+		t.Fatalf("second initial sequence=%d, want 2", sequence)
+	}
+	stream.release <- struct{}{}
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second send remained frozen behind the timed-out stream")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	meter.mu.Lock()
+	_, invalid = meter.invalidSessions[sessionID]
+	meter.mu.Unlock()
+	if invalid {
+		t.Fatal("caller timeout invalidated the shared billing session asynchronously")
+	}
+	select {
+	case <-reset:
+		t.Fatal("caller timeout asynchronously reset the shared billing control")
+	default:
 	}
 }
 
@@ -664,11 +1085,15 @@ func TestBillingReconciliationRetainsHighConcurrencyEvidenceWindow(t *testing.T)
 	session.nextAdvance = recordCount + 1
 	target := session.snapshots[1]
 	meter := &natBillingMeter{channels: make(map[string]*natVoucherChannel)}
-	if _, err := meter.reconcileRelaySessionLocked(billingvoucher.Identifier{1}, session, target); err != nil {
+	result, err := meter.reconcileRelaySessionStateLocked(billingvoucher.Identifier{1}, session, target)
+	if err != nil {
 		t.Fatalf("reconcile retained high-concurrency watermark: %v", err)
 	}
-	if session.cumulative != target.cumulative || session.nextAdvance != target.lastRecordSequence+1 {
-		t.Fatalf("reconciled session = cumulative %d next %d", session.cumulative, session.nextAdvance)
+	if !result.rotationRequired || result.target != target {
+		t.Fatalf("reconciliation result = %+v, want rotation to retained watermark", result)
+	}
+	if session.cumulative != current.cumulative || session.nextAdvance != current.lastRecordSequence+1 {
+		t.Fatalf("ambiguous session was rewound: cumulative %d next %d", session.cumulative, session.nextAdvance)
 	}
 }
 
@@ -752,7 +1177,7 @@ func TestBillingReconcileRejectsAssignedRecordWithInflatedBytes(t *testing.T) {
 	}
 }
 
-func TestAmbiguousBillingSessionReconcilesOnlyToSignedLocalEvidence(t *testing.T) {
+func TestAmbiguousBillingSessionRotatesInsteadOfReusingSequence(t *testing.T) {
 	payerKey, _ := crypoto.MakeKeyPair()
 	relayKey, _ := crypoto.MakeKeyPair()
 	meter, err := newNatBillingMeter(payerKey)
@@ -785,14 +1210,17 @@ func TestAmbiguousBillingSessionReconcilesOnlyToSignedLocalEvidence(t *testing.T
 
 	status, err := meter.activateRelaySessionWithState(relayAddress, sessionID.String(), relayPublicKey, &first)
 	if err != nil {
-		t.Fatalf("reconcile signed prefix: %v", err)
+		t.Fatalf("request rotation from signed prefix: %v", err)
 	}
-	if status.cumulative != first.cumulative || status.lastRecordSequence != first.lastRecordSequence ||
-		session.nextAssigned != 2 || session.nextAdvance != 2 {
-		t.Fatalf("reconciled status=%+v session=%+v", status, session)
+	if !status.resetRequired || status.preexisting || status.cumulative != first.cumulative ||
+		status.lastRecordSequence != first.lastRecordSequence {
+		t.Fatalf("rotation status=%+v", status)
 	}
-	if _, retained := session.snapshots[second.cumulative]; retained {
-		t.Fatal("evidence beyond the Relay-confirmed watermark was retained")
+	if session.nextAssigned != 3 || session.nextAdvance != 3 {
+		t.Fatalf("ambiguous sequence was rewound: assigned=%d advance=%d", session.nextAssigned, session.nextAdvance)
+	}
+	if _, retained := session.snapshots[second.cumulative]; !retained {
+		t.Fatal("evidence beyond the Relay watermark was discarded before rotation")
 	}
 
 	meter.invalidateRelaySession(relayAddress)
@@ -800,6 +1228,77 @@ func TestAmbiguousBillingSessionReconcilesOnlyToSignedLocalEvidence(t *testing.T
 	unknown.cumulative++
 	if _, err := meter.activateRelaySessionWithState(relayAddress, sessionID.String(), relayPublicKey, &unknown); err == nil {
 		t.Fatal("Relay watermark without matching local evidence was accepted")
+	}
+}
+
+func TestBillingRotationSettlementAllowsFreshSessionWithoutSequenceReuse(t *testing.T) {
+	payerKey, _ := crypoto.MakeKeyPair()
+	relayKey, _ := crypoto.MakeKeyPair()
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayAddress := "relay-rotation-settlement:9000"
+	relayPublicKey := crypoto.GetPubKeyStr(relayKey.PublicKey())
+	oldSessionID := billingvoucher.Identifier{111, 112, 113}
+	if _, err := meter.activateRelaySession(relayAddress, oldSessionID.String(), relayPublicKey); err != nil {
+		t.Fatal(err)
+	}
+	settlement := natBillingSnapshot{
+		cumulative: 128, lastRecord: billingvoucher.Identifier{114},
+		lastRecordSequence: 1, recordSet: billingvoucher.Digest{115},
+	}
+	localHead := natBillingSnapshot{
+		cumulative: 256, lastRecord: billingvoucher.Identifier{116},
+		lastRecordSequence: 2, recordSet: billingvoucher.Digest{117},
+	}
+	session := meter.sessions[oldSessionID]
+	session.cumulative = localHead.cumulative
+	session.lastRecord = localHead.lastRecord
+	session.recordSet = localHead.recordSet
+	session.nextAssigned = 3
+	session.nextAdvance = 3
+	session.snapshots[settlement.cumulative] = settlement
+	session.snapshots[localHead.cumulative] = localHead
+	meter.invalidateRelaySession(relayAddress)
+
+	status, err := meter.activateRelaySessionWithState(
+		relayAddress, oldSessionID.String(), relayPublicKey, &settlement,
+	)
+	if err != nil || !status.resetRequired {
+		t.Fatalf("rotation request = (%+v, %v)", status, err)
+	}
+	body := billingvoucher.VoucherBody{
+		Version: billingvoucher.CurrentVersion, SessionID: oldSessionID,
+		PayerNatID: meter.payerID, PayeeRelayID: session.relayID,
+		Direction: billingvoucher.DirectionPayerOutbound, Sequence: 1,
+		CumulativeUniqueBytes: settlement.cumulative, LastRecordID: settlement.lastRecord,
+		LastRecordSequence: settlement.lastRecordSequence, RecordSetDigest: settlement.recordSet,
+		PolicyDigest: billingvoucher.CurrentPolicyDigest(), AuthorizedThroughBytes: billingvoucher.MaxBillableBytes,
+	}
+	relaySignature, err := billingvoucher.SignRelay(body, relayKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyBytes, err := body.CanonicalBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := meter.cosign(bodyBytes, relaySignature, relayPublicKey); err != nil {
+		t.Fatalf("cosign final rotation settlement: %v", err)
+	}
+
+	freshSessionID := billingvoucher.Identifier{118, 119, 120}
+	empty := natBillingSnapshot{}
+	status, err = meter.activateRelaySessionWithState(
+		relayAddress, freshSessionID.String(), relayPublicKey, &empty,
+	)
+	if err != nil || status.resetRequired {
+		t.Fatalf("activate fresh session = (%+v, %v)", status, err)
+	}
+	if meter.relaySessions[relayAddress] != freshSessionID ||
+		meter.sessions[freshSessionID].nextAssigned != 1 || session.nextAssigned != 3 {
+		t.Fatal("session rotation reused or rewound an ambiguous billing sequence")
 	}
 }
 

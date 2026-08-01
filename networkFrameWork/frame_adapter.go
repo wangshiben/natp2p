@@ -431,8 +431,10 @@ type dualFrameRoute struct {
 	lastAckAt    time.Time
 	createdAt    time.Time
 	lastActive   time.Time
+	submittedAt  time.Time
 	completedAt  time.Time
 	generation   uint64
+	sourceDone   bool
 	replayOff    bool
 }
 
@@ -695,6 +697,15 @@ func (e *DualFrameRelayEndpoint) collect(kind streamTransport, adapter *TcpFrame
 			e.mu.Unlock()
 			return
 		}
+		if f.FrameType == network.FrameTypeConnectionClose {
+			e.mu.Unlock()
+			select {
+			case <-e.stream.ctx.Done():
+				return
+			case e.incoming <- cloneFrame(f):
+			}
+			continue
+		}
 		now := time.Now()
 		logicalID, route, resolveErr := e.resolveIncomingFrameLocked(kind, adapter, f, now)
 		preferred := streamTransportUnknown
@@ -905,6 +916,25 @@ func (e *DualFrameRelayEndpoint) handleFrameRun(ctx context.Context, frames []*n
 	if frame == nil {
 		return errors.New("frame relay: nil frame")
 	}
+	if frame.FrameType == network.FrameTypeConnectionClose {
+		if len(frames) != 1 || frame.ConnectionId == "" {
+			return errors.New("frame relay: invalid connection close frame")
+		}
+		e.mu.Lock()
+		if e.closed {
+			e.mu.Unlock()
+			return errors.New("frame relay endpoint closed")
+		}
+		_, endpoint := e.chooseAdapterLocked(streamTransportUnknown)
+		if endpoint == nil {
+			e.mu.Unlock()
+			return errors.New("stream closed")
+		}
+		out := cloneFrame(frame)
+		out.MessageId = endpoint.AllocMessageId()
+		e.mu.Unlock()
+		return endpoint.HandleFrame(ctx, out)
+	}
 	logicalID := frame.MessageId
 	for _, candidate := range frames {
 		if candidate == nil {
@@ -971,13 +1001,18 @@ func (e *DualFrameRelayEndpoint) handleFrameRun(ctx context.Context, frames []*n
 	}
 	route.lastActive = now
 	if route.completedAt.IsZero() {
-		payloadBefore := route.payloadBytes
 		for _, candidate := range frames {
+			e.markRouteFrameSubmittedLocked(route, candidate, now)
 			if e.cacheFrameLocked(route, candidate) {
 				replayDisabledNow = true
 			}
 		}
-		e.observeKCPDataSentLocked(route, route.payloadBytes-payloadBefore, now)
+		if route.sourceDone && route.qualitySent == 0 {
+			e.observeKCPDataSentLocked(route, route.payloadBytes, now)
+			if route.ackedBytes > 0 {
+				e.observeKCPDataAckedLocked(route, min(route.ackedBytes, route.qualitySent), now)
+			}
+		}
 	}
 	kind := route.kind
 	endpoint := route.endpoint
@@ -1013,6 +1048,17 @@ func (e *DualFrameRelayEndpoint) handleFrameRun(ctx context.Context, frames []*n
 		}
 	}
 	return nil
+}
+
+func (e *DualFrameRelayEndpoint) markRouteFrameSubmittedLocked(route *dualFrameRoute, frame *network.Frame, now time.Time) {
+	if route == nil || frame == nil || route.sourceDone ||
+		(frame.FrameType != network.FrameTypeData && frame.FrameType != network.FrameTypeRetransmit) ||
+		frame.TotalFrames == 0 || frame.TotalFrames != route.totalFrames ||
+		frame.SeqId+1 != frame.TotalFrames {
+		return
+	}
+	route.sourceDone = true
+	route.submittedAt = now
 }
 
 func (e *DualFrameRelayEndpoint) bindAckKeyLocked(logicalID uint64, route *dualFrameRoute, kind streamTransport, adapter *TcpFrameAdapter, dstID uint64) {
@@ -1289,7 +1335,8 @@ func (e *DualFrameRelayEndpoint) prepareQualityReplayLocked(now time.Time) ([]fr
 	jobs := make([]frameRelayQualityReplayJob, 0)
 	for logicalID, route := range e.routes {
 		if route == nil || route.sourceKey != nil || !route.completedAt.IsZero() ||
-			legFamily(route.kind) != streamTransportKCP || route.createdAt.IsZero() || now.Before(route.createdAt) {
+			legFamily(route.kind) != streamTransportKCP || !route.sourceDone ||
+			route.submittedAt.IsZero() || now.Before(route.submittedAt) {
 			continue
 		}
 		reason := ""
@@ -1302,7 +1349,7 @@ func (e *DualFrameRelayEndpoint) prepareQualityReplayLocked(now time.Time) ([]fr
 			if !eligible {
 				continue
 			}
-			progressAt := route.createdAt
+			progressAt := route.submittedAt
 			if route.lastAckAt.After(progressAt) {
 				progressAt = route.lastAckAt
 			}
@@ -1352,7 +1399,8 @@ func (e *DualFrameRelayEndpoint) observeKCPDataSentLocked(route *dualFrameRoute,
 }
 
 func (e *DualFrameRelayEndpoint) observeKCPDataAckedLocked(route *dualFrameRoute, payloadBytes int64, now time.Time) {
-	if route == nil || route.sourceKey != nil || payloadBytes <= 0 || legFamily(route.kind) != streamTransportKCP {
+	if route == nil || route.sourceKey != nil || payloadBytes <= 0 ||
+		legFamily(route.kind) != streamTransportKCP || route.qualitySent <= 0 {
 		return
 	}
 	state := e.kcpGoodputStateLocked(route.kind, now)
@@ -1451,7 +1499,7 @@ func frameRelayRouteQualityBudget(payloadBytes int64) (time.Duration, bool) {
 	if payloadBytes > maximumInt {
 		payloadBytes = maximumInt
 	}
-	return defaultKCPSendQualityPolicy().budget(int(payloadBytes))
+	return defaultKCPSendQualityPolicy().hedgeBudget(int(payloadBytes))
 }
 
 func (e *DualFrameRelayEndpoint) writeQualityReplayJob(ctx context.Context, job frameRelayQualityReplayJob) error {
@@ -1528,14 +1576,14 @@ func (e *DualFrameRelayEndpoint) completeRouteLocked(route *dualFrameRoute, now 
 
 func (e *DualFrameRelayEndpoint) observeCompletedRouteLocked(route *dualFrameRoute, now time.Time) streamTransport {
 	if route.sourceKey != nil || legFamily(route.kind) != streamTransportKCP ||
-		route.createdAt.IsZero() || now.Before(route.createdAt) {
+		!route.sourceDone || route.submittedAt.IsZero() || now.Before(route.submittedAt) {
 		return streamTransportUnknown
 	}
 	budget, eligible := defaultKCPSendQualityPolicy().budget(int(route.payloadBytes))
 	if !eligible {
 		return streamTransportUnknown
 	}
-	if now.Sub(route.createdAt) < budget {
+	if now.Sub(route.submittedAt) < budget {
 		delete(e.slowKCPRoutes, route.kind)
 		return streamTransportUnknown
 	}

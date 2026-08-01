@@ -450,6 +450,44 @@ func TestKCPGoodputBudgetScalesWithPayload(t *testing.T) {
 	}
 }
 
+func TestDualStreamSlowKCPControlMessageHedgesToTCP(t *testing.T) {
+	suite := &countingE2ESuite{}
+	kcpLeg := newBlockingE2ELeg()
+	tcpLeg := newObservingE2ELeg(nil)
+	dual := newDualStream("e2e-test-peer", "control-hedge")
+	dual.kcpSendQuality = kcpSendQualityPolicy{
+		minimumPayloadBytes:       64 * 1024,
+		minimumGoodputBytesPerSec: 1024 * 1024,
+		startupBudget:             time.Second,
+		controlHedgeBudget:        10 * time.Millisecond,
+	}
+	t.Cleanup(func() { _ = dual.Close() })
+	if err := dual.attach(streamTransportKCP, kcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	if err := dual.attach(streamTransportTCP, tcpLeg); err != nil {
+		t.Fatal(err)
+	}
+	dual.SetCryptoSuite(suite)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := dual.SendMessage(ctx, newE2ETestMessage([]byte("mux open"))); err != nil {
+		t.Fatalf("control hedge: %v", err)
+	}
+	kcpPayloads, _ := kcpLeg.snapshot()
+	tcpPayloads, _ := tcpLeg.snapshot()
+	if len(kcpPayloads) != 1 || len(tcpPayloads) != 1 {
+		t.Fatalf("control hedge attempts: KCP=%d TCP=%d, want 1/1", len(kcpPayloads), len(tcpPayloads))
+	}
+	if !bytes.Equal(kcpPayloads[0], tcpPayloads[0]) {
+		t.Fatal("control hedge did not preserve the E2E record")
+	}
+	if dual.preferredTransport() != streamTransportTCP {
+		t.Fatalf("control hedge preferred=%s, want TCP", dual.preferredTransport())
+	}
+}
+
 func TestDualStreamKCPGoodputBudgetDoesNotHedgeSmallMessages(t *testing.T) {
 	suite := &countingE2ESuite{}
 	kcpLeg := newBlockingE2ELeg()

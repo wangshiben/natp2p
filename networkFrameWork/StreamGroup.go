@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -435,6 +436,13 @@ func (s *StreamGroup) latestRelayReceiveTime() time.Time {
 	return activity.LatestReceiveTime()
 }
 
+func (s *StreamGroup) hasLiveRelayCarrier() bool {
+	s.lock.Lock()
+	relayStream := s.relayStream
+	s.lock.Unlock()
+	return relayStream != nil && !streamIsClosed(relayStream)
+}
+
 // CloseTargetConnection 强制关闭挂在本 group 上的某条 client leg。
 //
 // 参数：
@@ -453,6 +461,10 @@ func (s *StreamGroup) closeTargetConnectionIfMatch(connectionId string, expected
 }
 
 func (s *StreamGroup) closeTargetConnectionByFrame(connectionId string, expected FrameRelayEndpoint) {
+	logx.Warnf(
+		"[billing-trace] stage=relay_close_target_by_frame nodeId=%.16s registrationSession=%s connId=%s",
+		s.nodeId, s.registrationSessionID, connectionId,
+	)
 	_ = s.closeTargetConnection(connectionId, nil, expected, false)
 }
 
@@ -515,7 +527,12 @@ func (s *StreamGroup) closeTargetConnection(connectionId string, expectedResourc
 		s.forwardHookConfig.ensureRetransmitCache().forgetConnection(s.nodeId, connectionId)
 		s.forwardHookConfig.forgetHeldConnection(s.nodeId, connectionId)
 	}
+	remainingConnections := len(s.connectionMap)
 	s.lock.Unlock()
+	logx.Debugf(
+		"[billing-trace] stage=relay_target_connection_removed nodeId=%.16s registrationSession=%s connId=%s remainingConnections=%d",
+		s.nodeId, s.registrationSessionID, connectionId, remainingConnections,
+	)
 	c.Close()
 	return nil
 }
@@ -654,6 +671,7 @@ func addBoundedKnownConnectionID(connectionIDs map[string]struct{}, activeConnec
 }
 
 func (s *StreamGroup) Close() {
+	caller := streamGroupCloseCaller()
 	s.closeOnce.Do(func() {
 		s.cancelFunc()
 		s.lock.Lock()
@@ -675,8 +693,20 @@ func (s *StreamGroup) Close() {
 			}
 		}
 		relayStream := s.relayStream
+		connectionCount := len(resources)
 		s.lock.Unlock()
 
+		if connectionCount > 0 {
+			logx.Warnf(
+				"[billing-trace] stage=stream_group_close nodeId=%.16s registrationSession=%s connectionCount=%d caller=%s",
+				s.nodeId, s.registrationSessionID, connectionCount, caller,
+			)
+		} else {
+			logx.Infof(
+				"[billing-trace] stage=stream_group_close nodeId=%.16s registrationSession=%s connectionCount=0 caller=%s",
+				s.nodeId, s.registrationSessionID, caller,
+			)
+		}
 		if relayStream != nil {
 			_ = relayStream.Close()
 		}
@@ -684,4 +714,12 @@ func (s *StreamGroup) Close() {
 			resource.Close()
 		}
 	})
+}
+
+func streamGroupCloseCaller() string {
+	_, file, line, ok := runtime.Caller(3)
+	if !ok {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s:%d", file, line)
 }

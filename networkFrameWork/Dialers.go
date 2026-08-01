@@ -50,6 +50,17 @@ func disableKCP() bool {
 	return false
 }
 
+// singleTCPMode forces a single TCP leg for capacity and constrained-network
+// validation. It implies BNFS_DISABLE_KCP and deliberately skips the extra
+// TCP backup leg; normal deployments keep the dual/failover behavior.
+func singleTCPMode() bool {
+	switch os.Getenv("BNFS_SINGLE_TCP") {
+	case "1", "true", "TRUE", "yes":
+		return true
+	}
+	return false
+}
+
 // TryConnectTCPStream 客户端主动连指定 relay 并把首条消息送出去，
 // 拿到一个已绑定 targetNodeId / connectionId 的逻辑流。
 //
@@ -337,6 +348,58 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 		}
 		return stream, dialErr
 	}
+	waitForReconnect := func(ctx context.Context, target RelayDialTarget, transport string) error {
+		provider, ok := relayPolicy.(RelayReconnectGateProvider)
+		if !ok || provider.ReconnectGate() == nil {
+			return nil
+		}
+		role := "natclient"
+		if roleProvider, ok := relayPolicy.(RelayReconnectRoleProvider); ok {
+			if configuredRole := roleProvider.ReconnectRole(); configuredRole != "" {
+				role = configuredRole
+			}
+		}
+		return provider.ReconnectGate().Wait(ctx, ReconnectGateRequest{
+			RelayAddress: target.Address,
+			Transport:    transport,
+			NodeID:       originalNodeId,
+			ConnectionID: connectionId,
+			Attempt:      reconnectAttempt(ctx),
+			Role:         role,
+		})
+	}
+	dialTCPReconnect := func(ctx context.Context, message *network.Message) (network.Stream, error) {
+		if relayPolicy == nil {
+			return tcpClientStreamContext(ctx, message, tcpAddr, originalNodeId, connectionId, true)
+		}
+		target, err := relayPolicy.CurrentRelay()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrRelayCandidatesExhausted, err)
+		}
+		if err := waitForReconnect(ctx, target, "tcp"); err != nil {
+			return nil, err
+		}
+		stream, dialErr := tcpClientStreamContext(ctx, message, target.Address, originalNodeId, connectionId, true)
+		relayPolicy.ReportRelayDialResult(target, dialErr)
+		return stream, dialErr
+	}
+	dialKCPReconnect := func(ctx context.Context, message *network.Message) (network.Stream, error) {
+		if relayPolicy == nil {
+			return kcpStreamContext(ctx, message, tcpAddr, originalNodeId, connectionId, true)
+		}
+		target, err := relayPolicy.CurrentRelay()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrRelayCandidatesExhausted, err)
+		}
+		if err := waitForReconnect(ctx, target, "kcp"); err != nil {
+			return nil, err
+		}
+		stream, dialErr := kcpStreamContext(ctx, message, target.Address, originalNodeId, connectionId, true)
+		if dialErr == nil {
+			relayPolicy.ReportRelayDialResult(target, nil)
+		}
+		return stream, dialErr
+	}
 
 	// dual 模式：所有 leg 都不自发心跳(noKeepAlive=true)，改由 DualStream 统一只在
 	// 当前 preferred leg 上发心跳（见 startKeepAlive）。这样存活探测与业务发送使用同一
@@ -345,12 +408,12 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 	tcpDialer := func(ctx context.Context) (network.Stream, error) {
 		message := cloneMessage(template)
 		markResumeLeg(message)
-		return dialTCP(ctx, message)
+		return dialTCPReconnect(ctx, message)
 	}
 	kcpDialer := func(ctx context.Context) (network.Stream, error) {
 		message := cloneMessage(template)
 		markResumeLeg(message)
-		return dialKCP(ctx, message)
+		return dialKCPReconnect(ctx, message)
 	}
 	// extraTCPDialer 用于"双 TCP failover 的第二条 TCP"：首帧打 legExtraMarker 标记，
 	// 让 relay 端把它当作并存 leg（而非顶替已有同协议 leg）。同样不自发心跳。
@@ -358,7 +421,7 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 		fm := cloneMessage(template)
 		markExtraLeg(fm)
 		markResumeLeg(fm)
-		return dialTCP(ctx, fm)
+		return dialTCPReconnect(ctx, fm)
 	}
 	setInitialReconnectDialer := func(id streamTransport, dialer streamReconnectDialer, persistent bool) {
 		if persistent {
@@ -367,7 +430,8 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 		}
 		dual.SetReconnectDialer(id, dialer)
 	}
-	kcpDisabled := disableKCP()
+	singleTCP := singleTCPMode()
+	kcpDisabled := disableKCP() || singleTCP
 	if !kcpDisabled {
 		setInitialReconnectDialer(streamTransportKCP, kcpDialer, false)
 	}
@@ -473,7 +537,7 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 
 	// KCP 失败但已有 TCP：补一条 extra TCP leg 保「双 TCP failover」冗余。
 	// extra 首帧带 legExtraMarker，relay 据此并存而非顶替已有同协议 leg。
-	if !kcpOK && tcpOK {
+	if !singleTCP && !kcpOK && tcpOK {
 		// 初始 KCP 已明确失败，不能让完成握手后的 reconnect survival 再用 Resume
 		// 复活这条从未建立过的 leg。即使 extra TCP 首拨失败，冗余恢复也只由
 		// tcp#2 的独立重连拨号器负责。
@@ -560,6 +624,7 @@ func kcpStreamContext(ctx context.Context, FirstMessage *network.Message, tcpAdd
 	// - 窗口从 128/512 提升到 256/1024，容纳更多在途数据
 	conn.SetNoDelay(1, 10, 2, 1)
 	conn.SetMtu(1400)
+	conn.SetReadBuffer(4 * 1024 * 1024)
 	conn.SetWriteBuffer(4 * 1024 * 1024)
 	conn.SetWindowSize(256, 1024)
 

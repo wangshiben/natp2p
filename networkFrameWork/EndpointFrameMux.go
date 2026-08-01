@@ -34,7 +34,8 @@ type EndpointFrameMux struct {
 	// outCh + 单写者 goroutine：所有逻辑连接的出帧按入队顺序 FIFO 写出（按到达公平），
 	// 写者在阻塞的 conn.Write 上等待时不持有任何调用方共享的锁，故一条流的慢写不会
 	// 卡住别的流的握手写——这是避免单连接多路复用 head-of-line 阻塞的关键。
-	outCh chan *network.Frame
+	outCh     chan *network.Frame
+	controlCh chan *network.Frame
 
 	mu                     sync.Mutex
 	conns                  map[string]*muxConn
@@ -46,9 +47,17 @@ type EndpointFrameMux struct {
 	lastQualityMaintenance time.Time
 	outboundFrames         int
 	startOnce              sync.Once
+	controlBurst           int
 
 	// onNew 在首次见到某 ConnectionId 时被调用（持锁外），上层据此 spawn per‑conn handler。
 	onNew func(connId string, conn net.Conn)
+}
+
+type EndpointFrameMuxSnapshot struct {
+	DataQueueDepth       int
+	DataQueueCapacity    int
+	ControlQueueDepth    int
+	ControlQueueCapacity int
 }
 
 // NewEndpointFrameMux 在已注册的 relay 流（应为 *DualStream）上构造复用器。
@@ -71,7 +80,8 @@ func NewEndpointFrameMux(stream network.Stream, onNew func(connId string, conn n
 		retired:    make(map[string]time.Time),
 		kcpGoodput: make(map[streamTransport]*frameRelayGoodputState),
 		onNew:      onNew,
-		outCh:      make(chan *network.Frame, 1024),
+		outCh:      make(chan *network.Frame, endpointMuxDataQueueCapacity),
+		controlCh:  make(chan *network.Frame, 1024),
 	}
 
 	if len(m.attachCurrentLegs()) == 0 {
@@ -96,18 +106,60 @@ func (m *EndpointFrameMux) Start() {
 // Done 在承载注册流关闭或 Close 被调用后关闭。
 func (m *EndpointFrameMux) Done() <-chan struct{} { return m.ctx.Done() }
 
+func (m *EndpointFrameMux) Snapshot() EndpointFrameMuxSnapshot {
+	if m == nil {
+		return EndpointFrameMuxSnapshot{}
+	}
+	return EndpointFrameMuxSnapshot{
+		DataQueueDepth:       len(m.outCh),
+		DataQueueCapacity:    cap(m.outCh),
+		ControlQueueDepth:    len(m.controlCh),
+		ControlQueueCapacity: cap(m.controlCh),
+	}
+}
+
 // writeLoop 是唯一的出帧写者：按入队顺序把帧写到 preferred leg（失败回退另一条）。
 // 阻塞的 conn.Write 只卡住本 goroutine，不持有任何调用方共享的锁，故不会让一条流的
 // 慢写饿死别的流——出帧按到达顺序公平写出。
 func (m *EndpointFrameMux) writeLoop() {
 	for {
-		select {
-		case <-m.ctx.Done():
+		frame, ok := m.nextOutboundFrame()
+		if !ok {
 			return
-		case f := <-m.outCh:
-			m.writeFrame(f)
+		}
+		m.writeFrame(frame)
+	}
+}
+
+func (m *EndpointFrameMux) nextOutboundFrame() (*network.Frame, bool) {
+	var frame *network.Frame
+	// Keep control traffic ahead of bulk data, but force a data turn after a
+	// bounded burst so a busy ACK stream cannot starve the payload queue.
+	if m.controlBurst < endpointMuxMaxControlBurst {
+		select {
+		case frame = <-m.controlCh:
+			m.controlBurst++
+			return frame, true
+		default:
+		}
+	} else {
+		select {
+		case frame = <-m.outCh:
+			m.controlBurst = 0
+			return frame, true
+		default:
+			m.controlBurst = 0
 		}
 	}
+	select {
+	case <-m.ctx.Done():
+		return nil, false
+	case frame = <-m.controlCh:
+		m.controlBurst++
+	case frame = <-m.outCh:
+		m.controlBurst = 0
+	}
+	return frame, true
 }
 
 func (m *EndpointFrameMux) writeFrame(frame *network.Frame) {
@@ -145,7 +197,12 @@ func (m *EndpointFrameMux) Close() {
 
 // CloseConnection 只回收一个逻辑会话，不影响其它 connectionID 或注册载体。
 func (m *EndpointFrameMux) CloseConnection(connID string) {
-	m.removeConn(connID)
+	if m.removeConn(connID) {
+		m.writeControl(&network.Frame{
+			FrameType:    network.FrameTypeConnectionClose,
+			ConnectionId: connID,
+		})
+	}
 }
 
 func (m *EndpointFrameMux) watchLegs() {
@@ -275,7 +332,7 @@ func (m *EndpointFrameMux) dispatchFromAdapter(adapter *TcpFrameAdapter, f *netw
 	}
 	isNew := c == nil
 	if isNew {
-		c = newMuxConn(connId, m.writeShared)
+		c = newMuxConnWithContext(connId, m.writeSharedContext)
 		m.conns[connId] = c
 	}
 	m.mu.Unlock()
@@ -296,7 +353,7 @@ func (m *EndpointFrameMux) dispatchFromAdapter(adapter *TcpFrameAdapter, f *netw
 }
 
 // removeConn 在某逻辑连接结束时清理。供 per‑conn handler defer 调用，避免 map 泄漏。
-func (m *EndpointFrameMux) removeConn(connId string) {
+func (m *EndpointFrameMux) removeConn(connId string) bool {
 	m.mu.Lock()
 	c := m.conns[connId]
 	delete(m.conns, connId)
@@ -315,11 +372,15 @@ func (m *EndpointFrameMux) removeConn(connId string) {
 	if c != nil {
 		c.Close()
 	}
+	return c != nil
 }
 
 const (
-	endpointMuxTombstoneTTL   = 10 * time.Minute
-	endpointMuxTombstoneLimit = 4096
+	endpointMuxTombstoneTTL        = 10 * time.Minute
+	endpointMuxTombstoneLimit      = 4096
+	endpointMuxDataQueueCapacity   = 64
+	endpointMuxMaxControlBurst     = 32
+	endpointMuxKeepAliveMaxPayload = network.HeaderLength + 512
 )
 
 func (m *EndpointFrameMux) isRetiredLocked(connID string, now time.Time) bool {
@@ -367,11 +428,56 @@ func (m *EndpointFrameMux) retireLocked(connID string, now time.Time) {
 // writeShared 把一帧交给单写者 goroutine（入队即返回，除非队列满才施加公平背压）。
 // 不在调用方持锁、不在调用方阻塞于 conn.Write，故一条流的慢写不会卡住别的流。
 func (m *EndpointFrameMux) writeShared(f *network.Frame) error {
+	return m.writeSharedContext(context.Background(), f)
+}
+
+func (m *EndpointFrameMux) writeSharedContext(ctx context.Context, f *network.Frame) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	queue := m.outCh
+	if endpointMuxControlFrame(f) {
+		queue = m.controlCh
+	}
+	if queue == nil {
+		return errors.New("endpoint mux queue unavailable")
+	}
 	select {
-	case m.outCh <- f:
+	case queue <- f:
 		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-m.ctx.Done():
 		return errors.New("endpoint mux closed")
+	}
+}
+
+func endpointMuxControlFrame(frame *network.Frame) bool {
+	if frame == nil {
+		return false
+	}
+	switch frame.FrameType {
+	case network.FrameTypeAck, network.FrameTypeFrameSizeChange, network.FrameTypeConnectionClose:
+		return true
+	case network.FrameTypeData, network.FrameTypeRetransmit:
+		if frame.SeqId != 0 || frame.TotalFrames != 1 ||
+			len(frame.Payload) < network.HeaderLength || len(frame.Payload) > endpointMuxKeepAliveMaxPayload {
+			return false
+		}
+		header, err := network.ParseHeader(frame.Payload[:network.HeaderLength])
+		return err == nil && header.RouteName == KeepAliveRoute
+	default:
+		return false
+	}
+}
+
+func (m *EndpointFrameMux) writeControl(frame *network.Frame) {
+	if m.controlCh == nil {
+		return
+	}
+	select {
+	case m.controlCh <- frame:
+	case <-m.ctx.Done():
 	}
 }
 
@@ -421,7 +527,7 @@ type muxOutboundRoute struct {
 }
 
 const (
-	endpointMuxFramePayload             = 8 * 1024
+	endpointMuxFramePayload             = 32 * 1024
 	endpointMuxQualityRouteTTL          = 2 * time.Minute
 	endpointMuxQualityMaxRoutes         = 8192
 	endpointMuxQualityMaxFramesPerRoute = 32768
@@ -717,7 +823,7 @@ const muxConnMaxQueue = 8192
 
 type muxConn struct {
 	connId  string
-	writeFn func(*network.Frame) error
+	writeFn func(context.Context, *network.Frame) error
 
 	mu     sync.Mutex
 	cond   *sync.Cond
@@ -725,11 +831,21 @@ type muxConn struct {
 	rem    []byte   // 上一帧未被 Read 取完的剩余字节
 	closed bool
 
-	closeCh   chan struct{}
-	closeOnce sync.Once
+	closeCh            chan struct{}
+	closeOnce          sync.Once
+	writeMu            sync.Mutex
+	writeDeadline      time.Time
+	writeGeneration    uint64
+	activeWriteCancels map[uint64]context.CancelFunc
 }
 
 func newMuxConn(connId string, writeFn func(*network.Frame) error) *muxConn {
+	return newMuxConnWithContext(connId, func(_ context.Context, frame *network.Frame) error {
+		return writeFn(frame)
+	})
+}
+
+func newMuxConnWithContext(connId string, writeFn func(context.Context, *network.Frame) error) *muxConn {
 	c := &muxConn{
 		connId:  connId,
 		writeFn: writeFn,
@@ -788,7 +904,7 @@ func (c *muxConn) Write(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if err := c.writeFn(f); err != nil {
+		if err := c.writeFrameContext(f); err != nil {
 			return 0, err
 		}
 	}
@@ -798,6 +914,12 @@ func (c *muxConn) Write(p []byte) (int, error) {
 func (c *muxConn) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closeCh)
+		c.writeMu.Lock()
+		for generation, cancel := range c.activeWriteCancels {
+			cancel()
+			delete(c.activeWriteCancels, generation)
+		}
+		c.writeMu.Unlock()
 		c.mu.Lock()
 		c.closed = true
 		c.mu.Unlock()
@@ -806,11 +928,79 @@ func (c *muxConn) Close() error {
 	return nil
 }
 
-func (c *muxConn) LocalAddr() net.Addr                { return muxAddr(c.connId) }
-func (c *muxConn) RemoteAddr() net.Addr               { return muxAddr(c.connId) }
-func (c *muxConn) SetDeadline(t time.Time) error      { return nil }
-func (c *muxConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *muxConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *muxConn) LocalAddr() net.Addr               { return muxAddr(c.connId) }
+func (c *muxConn) RemoteAddr() net.Addr              { return muxAddr(c.connId) }
+func (c *muxConn) SetDeadline(t time.Time) error     { return nil }
+func (c *muxConn) SetReadDeadline(t time.Time) error { return nil }
+func (c *muxConn) SetWriteDeadline(t time.Time) error {
+	c.writeMu.Lock()
+	c.writeDeadline = t
+	c.writeGeneration++
+	for _, cancel := range c.activeWriteCancels {
+		cancel()
+	}
+	c.writeMu.Unlock()
+	return nil
+}
+
+func (c *muxConn) beginWriteContext() (context.Context, context.CancelFunc, uint64) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.writeGeneration++
+	generation := c.writeGeneration
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if c.writeDeadline.IsZero() {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithDeadline(context.Background(), c.writeDeadline)
+	}
+	if c.activeWriteCancels == nil {
+		c.activeWriteCancels = make(map[uint64]context.CancelFunc)
+	}
+	c.activeWriteCancels[generation] = cancel
+	return ctx, cancel, generation
+}
+
+func (c *muxConn) finishWriteContext(cancel context.CancelFunc, generation uint64) {
+	c.writeMu.Lock()
+	delete(c.activeWriteCancels, generation)
+	c.writeMu.Unlock()
+	cancel()
+}
+
+func (c *muxConn) writeStateChanged(generation uint64) (bool, time.Time) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.writeGeneration != generation, c.writeDeadline
+}
+
+func (c *muxConn) writeFrameContext(frame *network.Frame) error {
+	for {
+		ctx, cancel, generation := c.beginWriteContext()
+		err := c.writeFn(ctx, frame)
+		c.finishWriteContext(cancel, generation)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		changed, deadline := c.writeStateChanged(generation)
+		select {
+		case <-c.closeCh:
+			return io.ErrClosedPipe
+		default:
+		}
+		if !changed {
+			return err
+		}
+		if deadline.IsZero() || time.Now().Before(deadline) {
+			continue
+		}
+		return context.DeadlineExceeded
+	}
+}
 
 // muxAddr 标识不受物理 MTU 限制的进程内虚拟连接。
 type muxAddr string

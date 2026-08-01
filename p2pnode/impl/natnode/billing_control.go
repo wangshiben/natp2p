@@ -54,7 +54,7 @@ func (n *NATNode) maintainBillingControl(relayAddr string) {
 			n.billingControlActive[relayAddr] = stream
 			n.mu.Unlock()
 			err = n.serveBillingControl(relayAddr, client.NewStreamClient(stream))
-			n.billingMeter.invalidateRelaySession(relayAddr)
+			n.billingMeter.invalidateRelaySessionWithCause(relayAddr, "billing_control_disconnected", "")
 		}
 		if n.ctx.Err() != nil {
 			return
@@ -169,7 +169,7 @@ func (n *NATNode) serveBillingControl(relayAddr string, stream *client.StreamCli
 			})
 			cancel()
 			if err != nil {
-				n.billingMeter.invalidateRelaySession(relayAddr)
+				n.billingMeter.invalidateRelaySessionWithCause(relayAddr, "billing_ready_send_error", "")
 				return err
 			}
 			continue

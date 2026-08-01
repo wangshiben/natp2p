@@ -24,10 +24,14 @@ type publicServiceSession struct {
 }
 
 type publicServiceCarrier struct {
-	RelayAddress      string `json:"relayAddress"`
-	Connected         bool   `json:"connected"`
-	CarrierGeneration uint64 `json:"carrierGeneration"`
-	ActiveSessions    int    `json:"activeSessions"`
+	RelayAddress         string `json:"relayAddress"`
+	Connected            bool   `json:"connected"`
+	CarrierGeneration    uint64 `json:"carrierGeneration"`
+	ActiveSessions       int    `json:"activeSessions"`
+	DataQueueDepth       int    `json:"dataQueueDepth"`
+	DataQueueCapacity    int    `json:"dataQueueCapacity"`
+	ControlQueueDepth    int    `json:"controlQueueDepth"`
+	ControlQueueCapacity int    `json:"controlQueueCapacity"`
 }
 
 type serviceListenerStatus struct {
@@ -98,6 +102,8 @@ func writeServiceListenerStatus(file, service, nodeID string, snapshot natnode.S
 		status.Carriers = append(status.Carriers, publicServiceCarrier{
 			RelayAddress: carrier.RelayAddress, Connected: carrier.Connected,
 			CarrierGeneration: carrier.CarrierGeneration, ActiveSessions: carrier.ActiveSessions,
+			DataQueueDepth: carrier.DataQueueDepth, DataQueueCapacity: carrier.DataQueueCapacity,
+			ControlQueueDepth: carrier.ControlQueueDepth, ControlQueueCapacity: carrier.ControlQueueCapacity,
 		})
 	}
 	for _, session := range snapshot.Sessions {

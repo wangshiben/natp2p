@@ -3,6 +3,7 @@ package networkFrameWork
 import (
 	"bnfs_p2p/network"
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -61,6 +62,242 @@ func TestMuxConnFramingRoundTrip(t *testing.T) {
 	}
 	if read.ConnectionId != "conn-A" || string(read.Payload) != "hello" {
 		t.Errorf("读回帧不匹配: %+v", read)
+	}
+}
+
+func TestEndpointMuxControlFramesBypassDataBacklog(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := &EndpointFrameMux{
+		ctx:       ctx,
+		outCh:     make(chan *network.Frame, 1),
+		controlCh: make(chan *network.Frame, 1),
+	}
+	data := &network.Frame{FrameType: network.FrameTypeData, ConnectionId: "data"}
+	mux.outCh <- data
+	ack := &network.Frame{FrameType: network.FrameTypeAck, ConnectionId: "control"}
+	if err := mux.writeSharedContext(ctx, ack); err != nil {
+		t.Fatalf("enqueue control frame: %v", err)
+	}
+	select {
+	case got := <-mux.controlCh:
+		if got != ack {
+			t.Fatalf("control queue frame=%p, want %p", got, ack)
+		}
+	default:
+		t.Fatal("control frame was blocked behind data queue")
+	}
+	if got := <-mux.outCh; got != data {
+		t.Fatalf("data queue frame=%p, want %p", got, data)
+	}
+}
+
+func endpointMuxKeepAliveTestFrame(t *testing.T) *network.Frame {
+	t.Helper()
+	message := &network.Message{
+		Header: &network.Header{RouteName: KeepAliveRoute, NodeId: "peer", ConnectionId: "conn"},
+	}
+	payload, err := message.ParseToBytes()
+	if err != nil {
+		t.Fatalf("encode keepalive: %v", err)
+	}
+	return &network.Frame{
+		MessageId:    1,
+		SeqId:        0,
+		TotalFrames:  1,
+		FrameType:    network.FrameTypeData,
+		ConnectionId: "conn",
+		Payload:      payload,
+	}
+}
+
+func TestEndpointMuxRecognizesBoundedLogicalKeepAliveAsControl(t *testing.T) {
+	frame := endpointMuxKeepAliveTestFrame(t)
+	if !endpointMuxControlFrame(frame) {
+		t.Fatal("logical keepalive was not classified as control traffic")
+	}
+	frame.Payload = append(frame.Payload, make([]byte, endpointMuxKeepAliveMaxPayload)...)
+	if endpointMuxControlFrame(frame) {
+		t.Fatal("oversized route lookalike bypassed the data queue")
+	}
+}
+
+func TestEndpointMuxIncidentBatchKeepAlivesBypassFullDataQueue(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := &EndpointFrameMux{
+		ctx:       ctx,
+		outCh:     make(chan *network.Frame, 1024),
+		controlCh: make(chan *network.Frame, 129),
+	}
+	for index := 0; index < cap(mux.outCh); index++ {
+		mux.outCh <- &network.Frame{FrameType: network.FrameTypeData, ConnectionId: "bulk"}
+	}
+	for index := 0; index < cap(mux.controlCh); index++ {
+		frame := endpointMuxKeepAliveTestFrame(t)
+		frame.MessageId = uint64(index + 1)
+		if err := mux.writeSharedContext(ctx, frame); err != nil {
+			t.Fatalf("enqueue keepalive %d: %v", index, err)
+		}
+	}
+	if got := len(mux.controlCh); got != 129 {
+		t.Fatalf("control queue depth=%d, want 129 incident probes", got)
+	}
+	if got := len(mux.outCh); got != cap(mux.outCh) {
+		t.Fatalf("data queue depth=%d, want full backlog %d", got, cap(mux.outCh))
+	}
+}
+
+func TestEndpointMuxControlBurstStillServicesData(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := &EndpointFrameMux{
+		ctx:       ctx,
+		outCh:     make(chan *network.Frame, 1),
+		controlCh: make(chan *network.Frame, endpointMuxMaxControlBurst+1),
+	}
+	data := &network.Frame{FrameType: network.FrameTypeData, ConnectionId: "data"}
+	mux.outCh <- data
+	for index := 0; index < cap(mux.controlCh); index++ {
+		mux.controlCh <- &network.Frame{FrameType: network.FrameTypeAck, ConnectionId: "control"}
+	}
+	for index := 0; index < endpointMuxMaxControlBurst; index++ {
+		frame, ok := mux.nextOutboundFrame()
+		if !ok || frame == data {
+			t.Fatalf("frame %d did not honor control burst", index)
+		}
+	}
+	frame, ok := mux.nextOutboundFrame()
+	if !ok || frame != data {
+		t.Fatalf("frame after control burst=%p ok=%t, want data %p", frame, ok, data)
+	}
+}
+
+func TestEndpointMuxSnapshotReportsBothQueueClasses(t *testing.T) {
+	mux := &EndpointFrameMux{
+		outCh:     make(chan *network.Frame, 4),
+		controlCh: make(chan *network.Frame, 3),
+	}
+	mux.outCh <- &network.Frame{FrameType: network.FrameTypeData}
+	mux.controlCh <- &network.Frame{FrameType: network.FrameTypeAck}
+	mux.controlCh <- &network.Frame{FrameType: network.FrameTypeAck}
+	snapshot := mux.Snapshot()
+	if snapshot.DataQueueDepth != 1 || snapshot.DataQueueCapacity != 4 ||
+		snapshot.ControlQueueDepth != 2 || snapshot.ControlQueueCapacity != 3 {
+		t.Fatalf("queue snapshot=%+v", snapshot)
+	}
+}
+
+func TestEndpointMuxDataQueueCapacityMatchesCarrierWindow(t *testing.T) {
+	if endpointMuxDataQueueCapacity != 64 {
+		t.Fatalf("data queue capacity=%d, want 64 frames (two frames per carrier slot)", endpointMuxDataQueueCapacity)
+	}
+}
+
+func TestMuxConnWriteHonorsDeadlineWhileSharedQueueIsBlocked(t *testing.T) {
+	started := make(chan struct{})
+	conn := newMuxConnWithContext("deadline", func(ctx context.Context, _ *network.Frame) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	defer conn.Close()
+	frame := &network.Frame{FrameType: network.FrameTypeAck, ConnectionId: "deadline"}
+	wire, err := frame.ParseToBytes()
+	if err != nil {
+		t.Fatalf("encode frame: %v", err)
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("set write deadline: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, writeErr := conn.Write(wire)
+		result <- writeErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("mux write did not start")
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("blocked mux write error=%v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked mux write ignored deadline")
+	}
+}
+
+func TestCallerDeadlineDoesNotPoisonVirtualMuxStream(t *testing.T) {
+	muxContext, cancelMux := context.WithCancel(context.Background())
+	defer cancelMux()
+	mux := &EndpointFrameMux{
+		ctx:       muxContext,
+		outCh:     make(chan *network.Frame),
+		controlCh: make(chan *network.Frame),
+	}
+	conn := newMuxConnWithContext("caller-deadline", mux.writeSharedContext)
+	stream := newTcpStream("peer", "caller-deadline", conn)
+	stream.writeTimeout = 0
+	t.Cleanup(func() { _ = stream.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := stream.SendMessage(ctx, makeTestMessage(8))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SendMessage error=%v, want caller deadline", err)
+	}
+	if fatal := stream.fatal(); fatal != nil {
+		t.Fatalf("caller deadline poisoned virtual stream: %v", fatal)
+	}
+	select {
+	case <-conn.closeCh:
+		t.Fatal("caller deadline closed virtual mux connection")
+	default:
+	}
+}
+
+func TestVirtualMuxStreamUsesCallerControlledWriteLifetime(t *testing.T) {
+	connection := newMuxConnWithContext("write-lifetime", func(context.Context, *network.Frame) error {
+		return nil
+	})
+	stream := newTcpStream("peer", "write-lifetime", connection)
+	t.Cleanup(func() { _ = stream.Close() })
+
+	if stream.writeTimeout != 0 {
+		t.Fatalf("virtual mux write timeout=%s, want caller-controlled lifetime", stream.writeTimeout)
+	}
+}
+
+func TestKeepAliveDoesNotKillLocallyBackpressuredMux(t *testing.T) {
+	muxContext, cancelMux := context.WithCancel(context.Background())
+	defer cancelMux()
+	mux := &EndpointFrameMux{
+		ctx:       muxContext,
+		outCh:     make(chan *network.Frame),
+		controlCh: make(chan *network.Frame),
+	}
+	conn := newMuxConnWithContext("keepalive-backpressure", mux.writeSharedContext)
+	stream := newTcpStream("peer", "keepalive-backpressure", conn)
+	stream.writeTimeout = 0
+	stream.keepAlivePolicy = streamKeepAlivePolicy{
+		idleBaseline: 5 * time.Millisecond,
+		probeBase:    5 * time.Millisecond,
+		maxProbes:    2,
+		probeTimeout: 10 * time.Millisecond,
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	stream.StartKeepAlive()
+	time.Sleep(120 * time.Millisecond)
+	if fatal := stream.fatal(); fatal != nil {
+		t.Fatalf("local mux backpressure was treated as peer death: %v", fatal)
+	}
+	select {
+	case <-conn.closeCh:
+		t.Fatal("local mux backpressure closed virtual connection")
+	default:
 	}
 }
 
@@ -130,10 +367,11 @@ func TestEndpointMuxClosedConnectionDropsLateFramesWithoutRecreation(t *testing.
 
 	var newConnections int
 	mux := &EndpointFrameMux{
-		ctx:     ctx,
-		conns:   make(map[string]*muxConn),
-		inbound: make(map[muxFrameKey]muxInboundRoute),
-		retired: make(map[string]time.Time),
+		ctx:       ctx,
+		conns:     make(map[string]*muxConn),
+		inbound:   make(map[muxFrameKey]muxInboundRoute),
+		retired:   make(map[string]time.Time),
+		controlCh: make(chan *network.Frame, 1),
 		onNew: func(string, net.Conn) {
 			newConnections++
 		},
@@ -144,6 +382,15 @@ func TestEndpointMuxClosedConnectionDropsLateFramesWithoutRecreation(t *testing.
 	}
 	mux.dispatch(first)
 	mux.CloseConnection(first.ConnectionId)
+	select {
+	case control := <-mux.controlCh:
+		if control.FrameType != network.FrameTypeConnectionClose ||
+			control.ConnectionId != first.ConnectionId {
+			t.Fatalf("close control = %+v", control)
+		}
+	default:
+		t.Fatal("closing a logical connection did not enqueue close control")
+	}
 
 	for index := 0; index < 1000; index++ {
 		frame := *first

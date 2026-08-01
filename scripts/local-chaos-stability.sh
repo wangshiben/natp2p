@@ -17,6 +17,7 @@ DEFAULT_MAX_INFLIGHT=1
 DEFAULT_DASHBOARD_HOST=0.0.0.0
 DEFAULT_DASHBOARD_PORT=8911
 DEFAULT_CA_PORT=19100
+DEFAULT_RECONNECT_GATE_PORT=18912
 DEFAULT_SOAK_CREDIT_BYTES=2199023255552
 DEFAULT_WORKLOAD_LIMIT_MIBPS=5
 DEFAULT_FAILURE_WATCHER_HEARTBEAT_TIMEOUT_SECONDS=15
@@ -439,6 +440,31 @@ stop_dashboard_process() {
   return 1
 }
 
+stop_reconnect_gate_process() {
+  local run_dir=$1 pid start attempt
+  [[ -f $run_dir/reconnect-gate.pid && -f $run_dir/reconnect-gate.starttime ]] || return 0
+  pid=$(cat "$run_dir/reconnect-gate.pid" 2>/dev/null || true)
+  start=$(cat "$run_dir/reconnect-gate.starttime" 2>/dev/null || true)
+  pid_matches "$pid" "$start" 'reconnect-gate.mjs' \
+    && process_identity_alive "$pid" "$start" "$pid" || return 0
+
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  for attempt in $(seq 1 30); do
+    pid_matches "$pid" "$start" 'reconnect-gate.mjs' \
+      && process_identity_alive "$pid" "$start" "$pid" || return 0
+    sleep 0.1
+  done
+  if pid_matches "$pid" "$start" 'reconnect-gate.mjs' \
+    && process_identity_alive "$pid" "$start" "$pid"; then
+    kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  fi
+  for attempt in $(seq 1 20); do
+    pid_matches "$pid" "$start" 'reconnect-gate.mjs' || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 dashboard_run_for_pid() {
   local target_pid=$1 pid_file run_dir tracked_pid tracked_start
   for pid_file in "$SOAK_HOME"/runs/*/dashboard.pid; do
@@ -788,6 +814,10 @@ start_run() {
   fi
   if [[ -n $previous ]] && ! stop_dashboard_process "$previous"; then
     printf 'unable to stop the previous stability dashboard: %s\n' "$previous" >&2
+    exit 2
+  fi
+  if [[ -n $previous ]] && ! stop_reconnect_gate_process "$previous"; then
+    printf 'unable to stop the previous reconnect gate: %s\n' "$previous" >&2
     exit 2
   fi
 
@@ -1481,6 +1511,51 @@ free_dashboard_port() {
   return 1
 }
 
+free_reconnect_gate_port() {
+  local port=$1 pids pid run_dir attempt
+  pids=$(ss -lntpH "sport = :$port" 2>/dev/null \
+    | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u)
+  for pid in $pids; do
+    [[ $pid =~ ^[1-9][0-9]*$ && $pid != $$ ]] || return 1
+    run_dir=$(reconnect_gate_run_for_pid "$pid" 2>/dev/null || true)
+    [[ -n $run_dir ]] || return 1
+    printf 'stopping previous reconnect gate: port=%s run=%s\n' "$port" "$(basename "$run_dir")"
+    stop_reconnect_gate_process "$run_dir" || return 1
+  done
+  for attempt in $(seq 1 20); do
+    ss -lntH "sport = :$port" 2>/dev/null | grep -q . || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_reconnect_gate_health() {
+  local port=$1 token=$2 deadline
+  deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    if curl -fsS --connect-timeout 1 --max-time 2 \
+      -H "Authorization: Bearer $token" \
+      "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+capture_reconnect_gate_snapshot() {
+  local run_dir=$1 port=$2 token=$3
+  local output=$run_dir/reconnect-gate-final.json temporary=$run_dir/reconnect-gate-final.json.tmp.$$
+  if ! curl -fsS --connect-timeout 1 --max-time 3 \
+    -H "Authorization: Bearer $token" \
+    "http://127.0.0.1:$port/metrics" > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  chmod 600 "$temporary"
+  mv -f -- "$temporary" "$output"
+}
+
 start_client_and_credit() {
   local service=$1 relay=$2 target_id=$3 listen_port=$4 scenario=$5 ca_port=$6
   local log_file=$RUNTIME_DIR/$scenario/$service.log
@@ -1753,6 +1828,23 @@ validate_client_entry_table() {
     ' "$table") || return 1
     [[ $actual_relay == "$expected_relay" ]] || return 1
   done
+}
+
+reconnect_gate_run_for_pid() {
+  local target_pid=$1 pid_file run_dir tracked_pid tracked_start
+  for pid_file in "$SOAK_HOME"/runs/*/reconnect-gate.pid; do
+    [[ -f $pid_file ]] || continue
+    run_dir=${pid_file%/reconnect-gate.pid}
+    [[ -f $run_dir/reconnect-gate.starttime ]] || continue
+    tracked_pid=$(cat "$pid_file" 2>/dev/null || true)
+    tracked_start=$(cat "$run_dir/reconnect-gate.starttime" 2>/dev/null || true)
+    if [[ $tracked_pid == "$target_pid" ]] \
+      && pid_matches "$tracked_pid" "$tracked_start" 'reconnect-gate.mjs'; then
+      printf '%s\n' "$run_dir"
+      return 0
+    fi
+  done
+  return 1
 }
 
 stop_random_nat_processes() {
@@ -3254,6 +3346,7 @@ finalize_run_terminal_result() {
 run_internal() {
   local run_dir=$1
   local scenario duration cpu_limit memory_limit disk_limit sample_seconds probe_seconds max_inflight workload_limit_mibps per_transfer_limit_mibps dashboard_host dashboard_port ca_port billing_adversary_mode validation_mode ip_family_coverage ip_family_plan_path random_attempt_timeout random_worker_drain_timeout enable_container_adversaries project
+  local reconnect_gate_port=$DEFAULT_RECONNECT_GATE_PORT reconnect_gate_token reconnect_gate_pid= reconnect_gate_start=
   source "$run_dir/metadata.env"
   scenario=${scenario:?}
   duration=${duration_seconds:?}
@@ -3322,13 +3415,24 @@ run_internal() {
   export COMPOSE_FILE=$compose_file
   export COMPOSE_PROJECT=$project
   export BNFS_CHAOS_IMAGE=${BNFS_CHAOS_IMAGE:-bnfs-local-chaos:latest}
+  reconnect_gate_token=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
+  [[ $reconnect_gate_token =~ ^[[:xdigit:]]{64}$ ]] || return 1
+  printf '%s\n' "$reconnect_gate_token" > "$run_dir/reconnect-gate.token"
+  chmod 600 "$run_dir/reconnect-gate.token"
   BNFS_CHAOS_ENABLE_CA=1 BNFS_CHAOS_ENABLE_ADVERSARIES="$enable_container_adversaries" BNFS_CHAOS_CA_HOST_PORT="$ca_port" \
     BNFS_CHAOS_IP_FAMILY_PLAN_FILE="$ip_family_plan_path" \
+    BNFS_CHAOS_RECONNECT_GATE_URL="http://host.docker.internal:$reconnect_gate_port" \
+    BNFS_CHAOS_RECONNECT_GATE_TOKEN="$reconnect_gate_token" \
     node "$ROOT_DIR/test/local-chaos/generate-compose.mjs" "$RUNTIME_DIR" > "$COMPOSE_FILE"
   source "$ROOT_DIR/test/local-chaos/lib.sh"
 
 	if ! free_dashboard_port "$dashboard_port"; then
 		printf 'outcome=FAILED\ndetail=dashboard_port_busy\n' > "$run_dir/status.env"
+    set_phase "$run_dir" FAILED
+    return 1
+  fi
+  if ! free_reconnect_gate_port "$reconnect_gate_port"; then
+    printf 'outcome=FAILED\ndetail=reconnect_gate_port_busy\n' > "$run_dir/status.env"
     set_phase "$run_dir" FAILED
     return 1
   fi
@@ -3351,11 +3455,31 @@ run_internal() {
     return 1
   fi
 
+  setsid env BNFS_RECONNECT_GATE_TOKEN="$reconnect_gate_token" \
+    node "$ROOT_DIR/test/local-chaos/reconnect-gate.mjs" \
+      --listen "0.0.0.0:$reconnect_gate_port" \
+      > "$run_dir/reconnect-gate.log" 2>&1 < /dev/null &
+  reconnect_gate_pid=$!
+  reconnect_gate_start=$(process_starttime "$reconnect_gate_pid" 2>/dev/null || true)
+  printf '%s\n' "$reconnect_gate_pid" > "$run_dir/reconnect-gate.pid"
+  printf '%s\n' "$reconnect_gate_start" > "$run_dir/reconnect-gate.starttime"
+  if ! wait_file_pattern "$run_dir/reconnect-gate.log" 'RECONNECT_GATE_LISTEN' 10 \
+    || ! pid_matches "$reconnect_gate_pid" "$reconnect_gate_start" 'reconnect-gate.mjs' \
+    || ! wait_reconnect_gate_health "$reconnect_gate_port" "$reconnect_gate_token"; then
+    stop_reconnect_gate_process "$run_dir" || true
+    stop_failure_watcher "$failure_watcher_pid"
+    printf 'outcome=FAILED\ndetail=reconnect_gate_start_failed\n' > "$run_dir/status.env"
+    set_phase "$run_dir" FAILED
+    return 1
+  fi
+
   # The Dashboard owns an independent session so terminal evidence remains
   # available after the runner and Compose project have stopped. Explicit stop
   # and the next start reclaim it through the recorded PID identity.
   setsid env HOST="$dashboard_host" PORT="$dashboard_port" RUN_DIR="$run_dir" \
     COMPOSE_PROJECT="$project" COMPOSE_FILE="$compose_file" CA_PORT="$ca_port" \
+    BNFS_RECONNECT_GATE_MONITOR_URL="http://127.0.0.1:$reconnect_gate_port" \
+    BNFS_RECONNECT_GATE_TOKEN="$reconnect_gate_token" \
     node "$ROOT_DIR/test/local-chaos/monitor/server.mjs" > "$run_dir/dashboard.log" 2>&1 < /dev/null &
   dashboard_pid=$!
   dashboard_start=$(process_starttime "$dashboard_pid" 2>/dev/null || true)
@@ -3367,6 +3491,7 @@ run_internal() {
     || ! wait_dashboard_status "$dashboard_host" "$dashboard_port" "$dashboard_status_probe_file"; then
     stop_dashboard_process "$run_dir" || true
     wait "$dashboard_pid" 2>/dev/null || true
+    stop_reconnect_gate_process "$run_dir" || true
     stop_failure_watcher "$failure_watcher_pid"
     printf 'outcome=FAILED\ndetail=dashboard_start_failed\n' > "$run_dir/status.env"
     set_phase "$run_dir" FAILED
@@ -3713,6 +3838,11 @@ run_internal() {
     outcome=FAILED
     detail=$BILLING_ADVERSARY_DETAIL
   fi
+  capture_reconnect_gate_snapshot "$run_dir" "$reconnect_gate_port" "$reconnect_gate_token" || true
+  if ! stop_reconnect_gate_process "$run_dir"; then
+    outcome=FAILED
+    detail=reconnect_gate_stop_failed
+  fi
   stop_failure_watcher "$failure_watcher_pid"
   capture_project_evidence "$run_dir" final
   if [[ -n $guard_pid ]]; then
@@ -3882,6 +4012,7 @@ stop_run() {
   cleanup_project "$compose_file" "$project"
   stop_mixed_adversary_path_run "$run_dir"
   stop_billing_adversary_run "$run_dir"
+  stop_reconnect_gate_process "$run_dir" || true
   stop_dashboard_process "$run_dir" || true
   if [[ -f $run_dir/dashboard-public.pid && -f $run_dir/dashboard-public.starttime ]]; then
     public_pid=$(cat "$run_dir/dashboard-public.pid")

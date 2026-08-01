@@ -2,6 +2,7 @@ package natnode
 
 import (
 	"bnfs_p2p/DHTable"
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
@@ -80,10 +81,14 @@ type ServiceSessionSnapshot struct {
 }
 
 type ServiceCarrierSnapshot struct {
-	RelayAddress      string `json:"relayAddress"`
-	Connected         bool   `json:"connected"`
-	CarrierGeneration uint64 `json:"carrierGeneration"`
-	ActiveSessions    int    `json:"activeSessions"`
+	RelayAddress         string `json:"relayAddress"`
+	Connected            bool   `json:"connected"`
+	CarrierGeneration    uint64 `json:"carrierGeneration"`
+	ActiveSessions       int    `json:"activeSessions"`
+	DataQueueDepth       int    `json:"dataQueueDepth"`
+	DataQueueCapacity    int    `json:"dataQueueCapacity"`
+	ControlQueueDepth    int    `json:"controlQueueDepth"`
+	ControlQueueCapacity int    `json:"controlQueueCapacity"`
 }
 
 type ServiceListenerSnapshot struct {
@@ -250,9 +255,15 @@ func (listener *ServiceListener) Snapshot() ServiceListenerSnapshot {
 		if carrier.entry != nil && carrier.entry.addr != "" {
 			relay = carrier.entry.addr
 		}
+		muxSnapshot := networkFrameWork.EndpointFrameMuxSnapshot{}
+		if carrier.mux != nil {
+			muxSnapshot = carrier.mux.Snapshot()
+		}
 		carriers = append(carriers, ServiceCarrierSnapshot{
 			RelayAddress: relay, Connected: connected, CarrierGeneration: carrier.generation,
 			ActiveSessions: carrierSessions[carrier],
+			DataQueueDepth: muxSnapshot.DataQueueDepth, DataQueueCapacity: muxSnapshot.DataQueueCapacity,
+			ControlQueueDepth: muxSnapshot.ControlQueueDepth, ControlQueueCapacity: muxSnapshot.ControlQueueCapacity,
 		})
 	}
 	listener.mu.Unlock()
@@ -318,6 +329,7 @@ func (listener *ServiceListener) Close() error {
 }
 
 func (listener *ServiceListener) maintainCarrier(carrier *serviceCarrier) {
+	attempt := 0
 	for {
 		listener.mu.Lock()
 		mux := carrier.mux
@@ -351,7 +363,22 @@ func (listener *ServiceListener) maintainCarrier(carrier *serviceCarrier) {
 				return
 			case <-timer.C:
 			}
+			attempt++
+			if gate, ok := listener.node.transport.(interface {
+				WaitForReconnect(context.Context, networkFrameWork.ReconnectGateRequest) error
+			}); ok {
+				if err := gate.WaitForReconnect(listener.ctx, networkFrameWork.ReconnectGateRequest{
+					RelayAddress: carrier.addr,
+					Transport:    "carrier",
+					NodeID:       string(listener.node.ID()),
+					Attempt:      attempt,
+					Role:         "natserver",
+				}); err != nil {
+					return
+				}
+			}
 			if err := listener.openCarrier(carrier); err == nil {
+				attempt = 0
 				break
 			}
 			if retryDelay < 5*time.Second {
@@ -416,8 +443,14 @@ func (listener *ServiceListener) clearCarrier(carrier *serviceCarrier, expected 
 		listener.mux = nil
 	}
 	active := listener.drainCarrierSessionsLocked(carrier)
+	relayAddr := carrier.addr
+	generation := carrier.generation
 	listener.mu.Unlock()
 
+	logx.Warnf(
+		"[billing-trace] stage=service_carrier_clear relay=%s carrierGeneration=%d activeSessions=%d",
+		relayAddr, generation, len(active),
+	)
 	expected.Close()
 	for _, connection := range active {
 		_ = connection.Close()
@@ -498,6 +531,11 @@ func (listener *ServiceListener) acceptVirtualConnection(carrier *serviceCarrier
 			listener.closeVirtualConnection(carrier, connectionID, streamClient)
 			return
 		}
+		if _, err := listener.node.exchangeMetadata(streamClient, peerInfo.ID); err != nil {
+			listener.rejectedTotal.Add(1)
+			listener.closeVirtualConnection(carrier, connectionID, streamClient)
+			return
+		}
 		stream.StartKeepAlive()
 
 		connection := &serviceConnection{
@@ -555,7 +593,18 @@ func (listener *ServiceListener) removeSession(connectionID string) {
 	if carrier != nil {
 		mux = carrier.mux
 	}
+	activeSessions := len(listener.active)
+	relayAddr := ""
+	carrierGeneration := uint64(0)
+	if carrier != nil {
+		relayAddr = carrier.addr
+		carrierGeneration = carrier.generation
+	}
 	listener.mu.Unlock()
+	logx.Debugf(
+		"[billing-trace] stage=service_session_removed relay=%s carrierGeneration=%d connId=%s existed=%t activeSessions=%d",
+		relayAddr, carrierGeneration, connectionID, exists, activeSessions,
+	)
 	if mux != nil {
 		mux.CloseConnection(connectionID)
 	}
@@ -704,7 +753,7 @@ func (n *NATNode) registerServiceCarrier(addr string, exact bool) (*relayEntry, 
 	n.startBillingControl(addr)
 	if n.billingMeter.certificate() != nil {
 		billingCtx, cancel := context.WithTimeout(n.ctx, 8*time.Second)
-		err = n.billingMeter.waitRelaySession(billingCtx, addr)
+		err = n.billingMeter.waitRelaySession(billingCtx, addr, "")
 		cancel()
 		if err != nil {
 			n.removeRegistrationEntry(entry)
@@ -735,6 +784,10 @@ func (n *NATNode) DialService(ctx context.Context, target p2pnode.NodeID) (p2pno
 		return nil, fmt.Errorf("natnode: service handshake with %s: %w", target, err)
 	}
 	networkFrameWork.EnableReconnectSurvival(rawStream)
+	if _, err := n.exchangeMetadata(streamClient, target); err != nil {
+		_ = streamClient.Close()
+		return nil, fmt.Errorf("natnode: service metadata exchange with %s: %w", target, err)
+	}
 	return newNATConnection(peerInfo, streamClient, nil, n.billingMeter,
 		func() string { return n.currentBillingRelay(targetRelay.address) }, n.resetBillingControl), nil
 }
@@ -748,10 +801,19 @@ type serviceConnection struct {
 func (connection *serviceConnection) Close() error {
 	var err error
 	connection.closeOnce.Do(func() {
+		peerID, connectionID := serviceConnectionIdentity(connection.Connection)
+		logx.Debugf(
+			"[billing-trace] stage=service_connection_close_begin peer=%.16s connId=%s",
+			peerID, connectionID,
+		)
 		err = connection.Connection.Close()
 		if connection.closeFn != nil {
 			connection.closeFn()
 		}
+		logx.Debugf(
+			"[billing-trace] stage=service_connection_close_done peer=%.16s connId=%s err=%v",
+			peerID, connectionID, err,
+		)
 	})
 	return err
 }
@@ -759,6 +821,18 @@ func (connection *serviceConnection) Close() error {
 func (connection *serviceConnection) Send(ctx context.Context, message *p2pnode.Message) error {
 	err := connection.Connection.Send(ctx, message)
 	if err != nil {
+		peerID, connectionID := serviceConnectionIdentity(connection.Connection)
+		if isRecoverableServiceSendError(err) {
+			logx.Debugf(
+				"[billing-trace] stage=service_send_error_recoverable peer=%.16s connId=%s errorType=%T err=%v",
+				peerID, connectionID, err, err,
+			)
+			return err
+		}
+		logx.Warnf(
+			"[billing-trace] stage=service_send_error_close peer=%.16s connId=%s errorType=%T err=%v",
+			peerID, connectionID, err, err,
+		)
 		_ = connection.Close()
 	}
 	return err
@@ -767,7 +841,24 @@ func (connection *serviceConnection) Send(ctx context.Context, message *p2pnode.
 func (connection *serviceConnection) Receive(ctx context.Context) (*p2pnode.Message, error) {
 	message, err := connection.Connection.Receive(ctx)
 	if err != nil {
+		peerID, connectionID := serviceConnectionIdentity(connection.Connection)
+		logx.Warnf(
+			"[billing-trace] stage=service_receive_error_close peer=%.16s connId=%s errorType=%T err=%v",
+			peerID, connectionID, err, err,
+		)
 		_ = connection.Close()
 	}
 	return message, err
+}
+
+func serviceConnectionIdentity(connection p2pnode.Connection) (p2pnode.NodeID, string) {
+	if connection == nil {
+		return "", ""
+	}
+	peerID := connection.Peer().ID
+	raw := connection.Raw()
+	if raw == nil {
+		return peerID, ""
+	}
+	return peerID, raw.ConnectionId()
 }

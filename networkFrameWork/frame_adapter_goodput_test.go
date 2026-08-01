@@ -114,6 +114,8 @@ func completeFrameRouteQuality(
 		ackKeys:     make(map[frameEndpointKey]struct{}),
 		createdAt:   createdAt,
 		lastActive:  createdAt,
+		submittedAt: createdAt,
+		sourceDone:  true,
 		generation:  1,
 	}
 	if source {
@@ -375,6 +377,116 @@ func TestDualFrameRelayIdleWindowWithCarriedOutstandingDoesNotTriggerFallback(t 
 	}
 }
 
+func TestDualFrameRelayIncompleteSourceDoesNotTriggerQualityReplay(t *testing.T) {
+	harness := newFrameRouteQualityHarness(t)
+	const logicalID = 76
+	createdAt := time.Unix(1_801_150_000, 0)
+	route := &dualFrameRoute{
+		kind:        streamTransportKCP,
+		connId:      "source-still-appending",
+		endpoint:    harness.kcpAdapter,
+		dstID:       1,
+		totalFrames: 4,
+		framesBySeq: make(map[uint32]*network.Frame),
+		ackKeys:     make(map[frameEndpointKey]struct{}),
+		createdAt:   createdAt,
+		lastActive:  createdAt,
+		generation:  1,
+	}
+	frames := []*network.Frame{
+		{MessageId: logicalID, SeqId: 0, TotalFrames: 4, FrameType: network.FrameTypeData, Payload: make([]byte, 32<<10)},
+		{MessageId: logicalID, SeqId: 1, TotalFrames: 4, FrameType: network.FrameTypeData, Payload: make([]byte, 32<<10)},
+		{MessageId: logicalID, SeqId: 2, TotalFrames: 4, FrameType: network.FrameTypeData, Payload: make([]byte, 32<<10)},
+		{MessageId: logicalID, SeqId: 3, TotalFrames: 4, FrameType: network.FrameTypeData, Payload: make([]byte, 32<<10)},
+	}
+
+	harness.endpoint.mu.Lock()
+	harness.endpoint.routes[logicalID] = route
+	harness.endpoint.bindAckKeyLocked(logicalID, route, streamTransportKCP, harness.kcpAdapter, route.dstID)
+	for _, frame := range frames[:2] {
+		harness.endpoint.cacheFrameLocked(route, frame)
+	}
+	budget := frameRouteQualityBudget(t, int(route.payloadBytes))
+	jobs, decisions, unavailable := harness.endpoint.prepareQualityReplayLocked(createdAt.Add(10 * budget))
+	harness.endpoint.mu.Unlock()
+
+	if unavailable != 0 || len(decisions) != 0 || len(jobs) != 0 {
+		t.Fatalf("incomplete source replay=(%d jobs, %d decisions, unavailable=%d)", len(jobs), len(decisions), unavailable)
+	}
+	if route.kind != streamTransportKCP || route.endpoint != harness.kcpAdapter {
+		t.Fatalf("incomplete source was rebound to %s/%p", route.kind, route.endpoint)
+	}
+
+	submittedAt := createdAt.Add(10 * budget)
+	harness.endpoint.mu.Lock()
+	for _, frame := range frames[2:] {
+		harness.endpoint.cacheFrameLocked(route, frame)
+		harness.endpoint.markRouteFrameSubmittedLocked(route, frame, submittedAt)
+	}
+	budget = frameRouteQualityBudget(t, int(route.payloadBytes))
+	beforeBudgetJobs, _, beforeBudgetUnavailable := harness.endpoint.prepareQualityReplayLocked(
+		submittedAt.Add(budget - time.Millisecond),
+	)
+	afterBudgetJobs, _, afterBudgetUnavailable := harness.endpoint.prepareQualityReplayLocked(
+		submittedAt.Add(budget),
+	)
+	harness.endpoint.mu.Unlock()
+
+	if beforeBudgetUnavailable != 0 || len(beforeBudgetJobs) != 0 {
+		t.Fatalf("completed source replayed before post-submit budget: jobs=%d unavailable=%d", len(beforeBudgetJobs), beforeBudgetUnavailable)
+	}
+	if afterBudgetUnavailable != 0 || len(afterBudgetJobs) != 1 || afterBudgetJobs[0].logicalID != logicalID {
+		t.Fatalf("completed source replay=(%d jobs, unavailable=%d)", len(afterBudgetJobs), afterBudgetUnavailable)
+	}
+}
+
+func TestDualFrameRelaySmallControlRouteFallsBackAfterControlBudget(t *testing.T) {
+	harness := newFrameRouteQualityHarness(t)
+	const logicalID = 78
+	submittedAt := time.Unix(1_801_175_000, 0)
+	route := &dualFrameRoute{
+		kind:        streamTransportKCP,
+		connId:      "mux-close-control",
+		endpoint:    harness.kcpAdapter,
+		dstID:       1,
+		totalFrames: 1,
+		framesBySeq: make(map[uint32]*network.Frame),
+		ackKeys:     make(map[frameEndpointKey]struct{}),
+		createdAt:   submittedAt,
+		lastActive:  submittedAt,
+		generation:  1,
+	}
+	frame := &network.Frame{
+		MessageId: logicalID, TotalFrames: 1, FrameType: network.FrameTypeData,
+		Payload: []byte("mux-close"),
+	}
+
+	harness.endpoint.mu.Lock()
+	harness.endpoint.routes[logicalID] = route
+	harness.endpoint.bindAckKeyLocked(logicalID, route, streamTransportKCP, harness.kcpAdapter, route.dstID)
+	harness.endpoint.cacheFrameLocked(route, frame)
+	harness.endpoint.markRouteFrameSubmittedLocked(route, frame, submittedAt)
+	budget, enabled := frameRelayRouteQualityBudget(route.payloadBytes)
+	if !enabled {
+		harness.endpoint.mu.Unlock()
+		t.Fatal("small control route did not receive a quality budget")
+	}
+	beforeJobs, _, beforeUnavailable := harness.endpoint.prepareQualityReplayLocked(
+		submittedAt.Add(budget - time.Millisecond),
+	)
+	afterJobs, _, afterUnavailable := harness.endpoint.prepareQualityReplayLocked(
+		submittedAt.Add(budget),
+	)
+	harness.endpoint.mu.Unlock()
+
+	if beforeUnavailable != 0 || len(beforeJobs) != 0 {
+		t.Fatalf("small control replayed before budget: jobs=%d unavailable=%d", len(beforeJobs), beforeUnavailable)
+	}
+	if afterUnavailable != 0 || len(afterJobs) != 1 || afterJobs[0].logicalID != logicalID {
+		t.Fatalf("small control replay=(%d jobs, unavailable=%d)", len(afterJobs), afterUnavailable)
+	}
+}
+
 func TestDualFrameRelayHealthyKCPWindowResetsLowStreak(t *testing.T) {
 	harness := newFrameRouteQualityHarness(t)
 	route := &dualFrameRoute{kind: streamTransportKCP}
@@ -413,6 +525,8 @@ func TestDualFrameRelayLowGoodputRebindsActiveRouteAndStartsCooldown(t *testing.
 		ackKeys:     make(map[frameEndpointKey]struct{}),
 		createdAt:   startedAt,
 		lastActive:  startedAt,
+		submittedAt: startedAt,
+		sourceDone:  true,
 		generation:  1,
 	}
 	frames := []*network.Frame{

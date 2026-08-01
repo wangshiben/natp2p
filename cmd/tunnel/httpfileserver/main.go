@@ -214,21 +214,14 @@ func main() {
 	var checksumMu sync.Mutex
 	checksumFor := func(requestedMB int, variant string) string {
 		checksumMu.Lock()
+		defer checksumMu.Unlock()
 		key := checksumKey{sizeMB: requestedMB, variant: variant}
 		if checksum, ok := checksums[key]; ok {
-			checksumMu.Unlock()
 			return checksum
 		}
-		checksumMu.Unlock()
 
 		checksum := checksumPayload(data[:requestedMB*bytesPerMiB], variant)
-		checksumMu.Lock()
-		if cached, ok := checksums[key]; ok {
-			checksumMu.Unlock()
-			return cached
-		}
 		checksums[key] = checksum
-		checksumMu.Unlock()
 		return checksum
 	}
 	defaultChecksum := checksumFor(*sizeMB, "")
@@ -315,7 +308,7 @@ func main() {
 		Handler: mux,
 		// 高并发限速传输可能受 Relay 总带宽约束，避免完整性测试被
 		// HTTP 层先于传输截止时间中断。
-		WriteTimeout: 2 * time.Hour,
+		WriteTimeout: 24 * time.Hour,
 		ReadTimeout:  1 * time.Minute,
 	}
 	if err := srv.ListenAndServe(); err != nil {

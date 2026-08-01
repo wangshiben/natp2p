@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/xtaci/kcp-go/v5"
+	"hash/crc32"
 	"net"
 	"strings"
 	"sync"
@@ -16,11 +17,16 @@ import (
 
 const (
 	maxReconnectAttempts            = 10
+	maxKCPReconnectAttemptsWithTCP  = 1
 	initialReconnectBackoff         = 200 * time.Millisecond
 	maxReconnectBackoff             = 5 * time.Second
 	defaultKCPGoodputMinPayload     = 64 * 1024
 	defaultKCPGoodputBytesPerSecond = 1024 * 1024
 	defaultKCPGoodputStartupBudget  = 2 * time.Second
+	defaultKCPControlHedgeBudget    = 750 * time.Millisecond
+	dualKeepAliveInterval           = 5 * time.Second
+	dualKeepAliveJitter             = 2 * time.Second
+	dualKeepAliveTimeout            = 3 * time.Second
 )
 
 var (
@@ -116,6 +122,7 @@ type kcpSendQualityPolicy struct {
 	minimumPayloadBytes       int
 	minimumGoodputBytesPerSec int64
 	startupBudget             time.Duration
+	controlHedgeBudget        time.Duration
 }
 
 func defaultKCPSendQualityPolicy() kcpSendQualityPolicy {
@@ -123,6 +130,7 @@ func defaultKCPSendQualityPolicy() kcpSendQualityPolicy {
 		minimumPayloadBytes:       defaultKCPGoodputMinPayload,
 		minimumGoodputBytesPerSec: defaultKCPGoodputBytesPerSecond,
 		startupBudget:             defaultKCPGoodputStartupBudget,
+		controlHedgeBudget:        defaultKCPControlHedgeBudget,
 	}
 }
 
@@ -150,6 +158,17 @@ func (policy kcpSendQualityPolicy) budget(payloadBytes int) (time.Duration, bool
 		return maximumDuration, true
 	}
 	return policy.startupBudget + transferBudget, true
+}
+
+func (policy kcpSendQualityPolicy) hedgeBudget(payloadBytes int) (time.Duration, bool) {
+	if budget, enabled := policy.budget(payloadBytes); enabled {
+		return budget, true
+	}
+	if payloadBytes >= 0 && policy.minimumPayloadBytes > 0 &&
+		payloadBytes < policy.minimumPayloadBytes && policy.controlHedgeBudget > 0 {
+		return policy.controlHedgeBudget, true
+	}
+	return 0, false
 }
 
 // DualStream 把同一逻辑连接下的 KCP/TCP 两条底层流聚合成一个 network.Stream。
@@ -251,6 +270,29 @@ func (d *DualStream) Close() error {
 		}
 	})
 	return nil
+}
+
+// IsClosed reports whether the logical stream has stopped or no usable carrier
+// remains. Relay registration cleanup uses this instead of treating receive
+// silence as proof that a still-connected TCP backup is dead.
+func (d *DualStream) IsClosed() bool {
+	select {
+	case <-d.ctx.Done():
+		return true
+	default:
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if len(d.legs) == 0 {
+		return true
+	}
+	for _, entry := range d.legs {
+		if entry != nil && entry.stream != nil && !streamIsClosed(entry.stream) {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *DualStream) NextMessage(ctx context.Context) (*network.Message, error) {
@@ -450,7 +492,7 @@ func (d *DualStream) sendMessage(
 				d.mu.RLock()
 				stillCurrentBackup := d.streamLocked(backupKind) == backup
 				d.mu.RUnlock()
-				if stillCurrentBackup {
+				if stillCurrentBackup && !errors.Is(retryErr, ErrMessageMaxRetransmits) {
 					logx.Warnf("[DualStream] SendMessage backup %s 也失败: nodeId=%.16s connId=%s err=%v",
 						transportName(legFamily(backupKind)), d.NodeId(), d.ConnectionId(), retryErr)
 					d.handleLegFailure(backupKind, backup)
@@ -494,7 +536,7 @@ func (d *DualStream) sendWithKCPGoodputBudget(
 	d.mu.RLock()
 	qualityPolicy := d.kcpSendQuality
 	d.mu.RUnlock()
-	qualityBudget, qualityEnabled := qualityPolicy.budget(payloadBytes)
+	qualityBudget, qualityEnabled := qualityPolicy.hedgeBudget(payloadBytes)
 	if message != nil && message.Header != nil && message.Header.RouteName == KeepAliveRoute {
 		qualityEnabled = false
 	}
@@ -581,6 +623,11 @@ func sendMessageWithInitialWrite(
 
 func (d *DualStream) handleSendFailure(role string, kind streamTransport, stream network.Stream, err error) {
 	if stream == nil || err == nil {
+		return
+	}
+	if errors.Is(err, ErrMessageMaxRetransmits) {
+		logx.Warnf("[DualStream] 端到端 ACK 重传耗尽但物理 leg 仍存活，保留 leg 等待上层计费恢复: nodeId=%.16s connId=%s transport=%s",
+			d.NodeId(), d.ConnectionId(), transportName(legFamily(kind)))
 		return
 	}
 	d.mu.RLock()
@@ -1096,6 +1143,12 @@ func (d *DualStream) startPump(id streamTransport, stream network.Stream) {
 		for {
 			msg, err := stream.NextMessage(d.ctx)
 			if err != nil {
+				if errors.Is(err, ErrConnectionClosedByPeer) {
+					logx.Infof("[DualStream] 收到对端逻辑连接关闭: nodeId=%.16s connId=%s leg=%s",
+						d.NodeId(), d.ConnectionId(), id)
+					_ = d.Close()
+					return
+				}
 				if d.ctx.Err() != nil || isContextError(err) {
 					return
 				}
@@ -1171,6 +1224,18 @@ func (d *DualStream) handleLegFailure(id streamTransport, stream network.Stream)
 	if hasDialer {
 		d.scheduleReconnect(id)
 	}
+}
+
+func (d *DualStream) hasUsableFamily(family streamTransport) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for _, entry := range d.legs {
+		if entry != nil && entry.family == family && entry.stream != nil &&
+			!streamIsClosed(entry.stream) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *DualStream) watchRelayChanges(notifier RelayChangeNotifier) {
@@ -1314,8 +1379,14 @@ func (d *DualStream) runReconnectWithBackoff(id streamTransport, dial streamReco
 	d.reconnectMu.Lock()
 	persistent := d.reconnectPersistent[id]
 	d.reconnectMu.Unlock()
+	attemptLimit := maxReconnectAttempts
+	tcpFallbackAvailable := family == streamTransportKCP && d.hasUsableFamily(streamTransportTCP)
+	if tcpFallbackAvailable {
+		attemptLimit = maxKCPReconnectAttemptsWithTCP
+		persistent = false
+	}
 	attempt := 0
-	for persistent || attempt < maxReconnectAttempts {
+	for persistent || attempt < attemptLimit {
 		attempt++
 		select {
 		case <-d.ctx.Done():
@@ -1327,7 +1398,7 @@ func (d *DualStream) runReconnectWithBackoff(id streamTransport, dial streamReco
 			return
 		}
 
-		stream, err := dial(d.ctx)
+		stream, err := dial(withReconnectAttempt(d.ctx, attempt))
 		if err == nil && stream != nil {
 			if attachErr := d.attachWithID(id, family, stream); attachErr == nil {
 				d.setPreferred(id)
@@ -1350,7 +1421,7 @@ func (d *DualStream) runReconnectWithBackoff(id streamTransport, dial streamReco
 					kindStr, d.nodeId, d.connectionId, id, attempt, err)
 			} else {
 				logx.Warnf("[DualStream] %s 重连拨号失败: nodeId=%.16s connId=%s leg=%s 第%d/%d次尝试 err=%v",
-					kindStr, d.nodeId, d.connectionId, id, attempt, maxReconnectAttempts, err)
+					kindStr, d.nodeId, d.connectionId, id, attempt, attemptLimit, err)
 			}
 		}
 
@@ -1411,20 +1482,37 @@ func (d *DualStream) setPreferred(kind streamTransport) {
 	}
 }
 
-// startKeepAlive 启动 DualStream 级统一心跳：每 900ms 经 SendMessage 发一帧 /ping。
+func dualKeepAliveDelay(nodeID, connectionID string) time.Duration {
+	jitterWindowMillis := uint32((2 * dualKeepAliveJitter) / time.Millisecond)
+	if jitterWindowMillis == 0 {
+		return dualKeepAliveInterval
+	}
+	checksum := crc32.ChecksumIEEE([]byte(nodeID + "\x00" + connectionID))
+	offset := time.Duration(checksum%(jitterWindowMillis+1))*time.Millisecond - dualKeepAliveJitter
+	return dualKeepAliveInterval + offset
+}
+
+// startKeepAlive 启动 DualStream 级统一心跳。
 // SendMessage 只走当前 preferred leg（失败才切 backup 并触发 handleLegFailure），
 // 因此心跳与业务帧使用同一主备状态；failover 后 preferred 迁移，心跳自动跟随。
 // 仅 dual 模式调用一次；单 leg 路径仍各自 keepLive。
 func (d *DualStream) startKeepAlive() {
 	go func() {
-		ticker := time.NewTicker(900 * time.Millisecond)
-		defer ticker.Stop()
+		delay := dualKeepAliveDelay(d.NodeId(), d.ConnectionId())
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
 		for {
 			select {
 			case <-d.ctx.Done():
 				return
-			case <-ticker.C:
-				hbCtx, cancel := context.WithTimeout(d.ctx, 3*time.Second)
+			case <-timer.C:
+				if lastReceive := d.LatestReceiveTime(); !lastReceive.IsZero() {
+					if idle := time.Since(lastReceive); idle < delay {
+						timer.Reset(delay - idle)
+						continue
+					}
+				}
+				hbCtx, cancel := context.WithTimeout(d.ctx, dualKeepAliveTimeout)
 				err := d.SendMessage(hbCtx, &network.Message{
 					Header: &network.Header{
 						RouteName:     KeepAliveRoute,
@@ -1433,16 +1521,50 @@ func (d *DualStream) startKeepAlive() {
 						ConnectionId:  d.ConnectionId(),
 					},
 				})
+				heartbeatTimedOut := errors.Is(err, context.DeadlineExceeded) ||
+					errors.Is(hbCtx.Err(), context.DeadlineExceeded)
 				cancel()
+				if heartbeatTimedOut && d.preferTCPBackupAfterKCPHeartbeatTimeout() {
+					logx.Warnf("[DualStream] KCP 心跳在质量预算内无响应，保留 KCP 并切换 TCP: nodeId=%.16s connId=%s",
+						d.NodeId(), d.ConnectionId())
+				}
 				if err != nil && d.ctx.Err() == nil && !isContextError(err) {
 					// SendMessage 内部已对失败 leg 触发 handleLegFailure/重连；
 					// 这里仅记录，不关闭整个 DualStream（另一条 leg 可能仍可用）。
 					logx.Debugf("[DualStream] keepalive 发送失败(已交由 leg failover 处理): nodeId=%.16s connId=%s err=%v",
 						d.NodeId(), d.ConnectionId(), err)
 				}
+				timer.Reset(delay)
 			}
 		}
 	}()
+}
+
+// preferTCPBackupAfterKCPHeartbeatTimeout handles the one failure mode that the
+// generic SendMessage path intentionally cannot classify: its caller deadline
+// expired while a KCP send was waiting for ACK. Application deadlines must not
+// evict a carrier, but a dedicated heartbeat deadline is a transport-quality
+// signal. Keep the KCP leg available for later recovery and move subsequent
+// traffic to an already-connected TCP backup.
+func (d *DualStream) preferTCPBackupAfterKCPHeartbeatTimeout() bool {
+	primaryID, primary, backupID, backup := d.sendOrder()
+	if primary == nil || backup == nil ||
+		legFamily(primaryID) != streamTransportKCP ||
+		legFamily(backupID) != streamTransportTCP {
+		return false
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	current := d.legs[primaryID]
+	tcpBackup := d.legs[backupID]
+	if current == nil || current.stream != primary ||
+		tcpBackup == nil || tcpBackup.stream != backup ||
+		d.preferred != primaryID {
+		return false
+	}
+	d.preferred = backupID
+	return true
 }
 
 // streamLocked 返回指定 leg ID 的现役流（调用方持锁）。

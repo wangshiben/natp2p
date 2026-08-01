@@ -59,6 +59,11 @@ type inboundPeerSession struct {
 	generation uint64
 }
 
+type hostRouteBroadcastEvent struct {
+	message      *controlMessage
+	exceptPeerID string
+}
+
 // RelayNode 是公网中继节点，实现 p2pnode.Node 接口。
 type RelayNode struct {
 	identity *DHTable.Node
@@ -90,6 +95,13 @@ type RelayNode struct {
 	hostRouteSequence    map[string]uint64
 	hostRouteIncarnation string
 	hostRouteCursor      atomic.Uint64
+	// hostRouteBroadcastQueue 把托管路由的本地状态更新与慢控制链路发送解耦。
+	// 单 worker 保持 offline/online 等事件顺序；固定容量避免异常邻居造成 goroutine/
+	// 内存无界累计。队列满时只丢弃可由租约续期最终收敛的软状态广播。
+	hostRouteBroadcastQueue   chan hostRouteBroadcastEvent
+	hostRouteBroadcastDone    chan struct{}
+	hostRouteBroadcastDropped atomic.Uint64
+	hostRouteBroadcastSend    func(context.Context, *peerLink, *controlMessage) error
 
 	pendingFinds map[uint64]*pendingFind
 	findCounter  atomic.Uint64
@@ -214,29 +226,34 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 
 	ctx, cancel := context.WithCancel(context.Background())
 	n := &RelayNode{
-		identity:             identity,
-		privKey:              privKey,
-		addr:                 publicAddr,
-		natNodes:             natNodes,
-		relayNodes:           relayNodes,
-		starter:              networkFrameWork.NewRelayStarter(listenAddr),
-		peerLinks:            make(map[string]*peerLink),
-		inboundByPeerID:      make(map[string]inboundPeerSession),
-		inboundSessionGens:   make(map[string]uint64),
-		peerIDToAddr:         make(map[string]string),
-		relayAddrIndex:       make(map[p2pnode.NodeID][]string),
-		relayOnlineSince:     make(map[string]time.Time),
-		relayLastControlSeen: make(map[string]time.Time),
-		relayActiveLinks:     make(map[string]int),
-		pendingFinds:         make(map[uint64]*pendingFind),
-		hostedNatAddr:        make(map[string]string),
-		hostRoutes:           make(map[string]map[string]hostRouteRecord),
-		hostRouteMultipath:   make(map[string]bool),
-		hostRouteSequence:    make(map[string]uint64),
-		hostRouteIncarnation: uuid.New().String(),
-		ctx:                  ctx,
-		cancel:               cancel,
-		startedAt:            time.Now(),
+		identity:                identity,
+		privKey:                 privKey,
+		addr:                    publicAddr,
+		natNodes:                natNodes,
+		relayNodes:              relayNodes,
+		starter:                 networkFrameWork.NewRelayStarter(listenAddr),
+		peerLinks:               make(map[string]*peerLink),
+		inboundByPeerID:         make(map[string]inboundPeerSession),
+		inboundSessionGens:      make(map[string]uint64),
+		peerIDToAddr:            make(map[string]string),
+		relayAddrIndex:          make(map[p2pnode.NodeID][]string),
+		relayOnlineSince:        make(map[string]time.Time),
+		relayLastControlSeen:    make(map[string]time.Time),
+		relayActiveLinks:        make(map[string]int),
+		pendingFinds:            make(map[uint64]*pendingFind),
+		hostedNatAddr:           make(map[string]string),
+		hostRoutes:              make(map[string]map[string]hostRouteRecord),
+		hostRouteMultipath:      make(map[string]bool),
+		hostRouteSequence:       make(map[string]uint64),
+		hostRouteIncarnation:    uuid.New().String(),
+		hostRouteBroadcastQueue: make(chan hostRouteBroadcastEvent, hostRouteBroadcastQueueCapacity),
+		hostRouteBroadcastDone:  make(chan struct{}),
+		ctx:                     ctx,
+		cancel:                  cancel,
+		startedAt:               time.Now(),
+	}
+	n.hostRouteBroadcastSend = func(ctx context.Context, link *peerLink, message *controlMessage) error {
+		return link.sendContext(ctx, message)
 	}
 
 	n.localLegs = make(map[string]*localBridgeEntry)
@@ -249,6 +266,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 	cover.SetRegisterHook(n.onRegister)
 	cover.SetUnregisterHook(n.onUnregister)
 	cover.SetMissingGroupHandler(n.onMissingGroup)
+	go n.runHostRouteBroadcasts()
 	go n.maintainHostRoutes()
 
 	return n, nil
@@ -1374,6 +1392,9 @@ func (n *RelayNode) relayAddrIndexSnapshot() map[p2pnode.NodeID][]p2pnode.PeerAd
 func (n *RelayNode) Close() error {
 	n.closeOnce.Do(func() {
 		n.cancel()
+		if n.hostRouteBroadcastDone != nil {
+			<-n.hostRouteBroadcastDone
+		}
 		n.mu.RLock()
 		pipeline := n.billingPipeline
 		n.mu.RUnlock()

@@ -33,8 +33,8 @@ const defaultMaxChunk = 64 * 1024
 const (
 	defaultStreamSendWindow  = 8
 	defaultSessionSendWindow = 32
-	sessionCloseSendTimeout  = 2 * time.Second
-	streamCloseSendTimeout   = 2 * time.Second
+	sessionCloseSendTimeout  = 30 * time.Second
+	streamCloseSendTimeout   = 30 * time.Second
 )
 
 var streamMaxChunk = resolveMaxChunk()
@@ -71,6 +71,7 @@ const (
 	frameData         byte = 2
 	frameClose        byte = 3
 	frameSessionClose byte = 4
+	frameReset        byte = 5
 )
 
 // 帧头布局：
@@ -158,6 +159,10 @@ func (s *Session) Accept() (*Stream, error) {
 
 // OpenStream allocates a new stream ID and sends an OPEN frame to the peer.
 func (s *Session) OpenStream() (*Stream, error) {
+	return s.OpenStreamContext(s.ctx)
+}
+
+func (s *Session) OpenStreamContext(ctx context.Context) (*Stream, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -169,7 +174,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streams[id] = st
 	s.mu.Unlock()
 
-	if err := s.sendOpen(id); err != nil {
+	if err := s.sendOpen(ctx, id); err != nil {
 		s.removeStream(id)
 		return nil, fmt.Errorf("open stream: %w", err)
 	}

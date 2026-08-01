@@ -15,6 +15,7 @@ type Stream struct {
 
 	// sendSeq 是本流出站 DATA 帧的单调序号分配器(每帧 +1)。Close 时其值即 finalSeq。
 	sendSeq    atomic.Uint64
+	sendFailed atomic.Bool
 	sendWindow chan struct{}
 
 	mu       sync.Mutex
@@ -162,6 +163,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 		go func(seq uint64, data []byte) {
 			defer wg.Done()
 			if err := st.sess.sendData(st.id, seq, data, st.sendWindow); err != nil {
+				st.sendFailed.Store(true)
 				e := err
 				firstErr.CompareAndSwap(nil, &e)
 			}
@@ -184,10 +186,15 @@ func (st *Stream) Close() error {
 	already := st.closed
 	st.mu.Unlock()
 	if !already {
-		finalSeq := st.sendSeq.Load()
 		closeCtx, cancel := context.WithTimeout(st.sess.ctx, st.sess.streamCloseTimeout)
 		defer cancel()
-		if err := st.sess.sendClose(closeCtx, st.id, finalSeq); err != nil {
+		var err error
+		if st.sendFailed.Load() {
+			err = st.sess.sendReset(closeCtx, st.id)
+		} else {
+			err = st.sess.sendClose(closeCtx, st.id, st.sendSeq.Load())
+		}
+		if err != nil {
 			st.sess.removeStream(st.id)
 			st.closeLocal()
 			return err

@@ -5,7 +5,7 @@ source "${ROOT_DIR:?}/test/local-chaos/lib.sh"
 
 scenario=04_concurrent_service_dashboard
 scenario_dir=$RUNTIME_DIR/$scenario
-dashboard_port=18912
+dashboard_port=${BNFS_CHAOS_DASHBOARD_TEST_PORT:-18913}
 dashboard_pid=
 failures=0
 mkdir -p "$scenario_dir"

@@ -2,23 +2,35 @@ package natnode
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/ecdh"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"bnfs_p2p/admission"
 	"bnfs_p2p/billingrecord"
 	"bnfs_p2p/billingvoucher"
 	"bnfs_p2p/crypoto"
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 )
 
 const (
 	maximumNatBillingEvidenceEntries         = 4096
 	maximumNatBillingReconciliationSnapshots = 65536
+	maximumNatBillingSendOrderWaiters        = 4096
+	maximumNatBillingRelaySessionWaiters     = 4096
+	maximumNatBillingPriorityBurst           = 8
+)
+
+var (
+	ErrBillingSessionReconciling = errors.New("natnode: billing session requires reconciliation")
+	ErrBillingSendQueueFull      = errors.New("natnode: billing send queue is full")
+	ErrBillingRelayWaitQueueFull = errors.New("natnode: billing Relay wait queue is full")
 )
 
 type natBillingRecord struct {
@@ -51,11 +63,51 @@ type natBillingSession struct {
 	cumulative             uint64
 	lastRecord             billingvoucher.Identifier
 	recordSet              billingvoucher.Digest
+	lastSendActivity       time.Time
 }
 
 type natVoucherChannel struct {
 	last billingvoucher.MutualVoucher
 	has  bool
+}
+
+type natBillingSendWaiter struct {
+	ready    chan struct{}
+	granted  bool
+	priority bool
+	element  *list.Element
+}
+
+type natBillingSendGate struct {
+	active        bool
+	priorityBurst int
+	priorityQueue list.List
+	queue         list.List
+}
+
+type natBillingSendLease struct {
+	meter        *natBillingMeter
+	gate         *natBillingSendGate
+	sessionID    billingvoucher.Identifier
+	relayAddr    string
+	connectionID string
+	generation   uint64
+	releaseOnce  sync.Once
+}
+
+func (lease *natBillingSendLease) Release() {
+	if lease == nil || lease.meter == nil || lease.gate == nil {
+		return
+	}
+	lease.releaseOnce.Do(func() {
+		lease.meter.mu.Lock()
+		lease.meter.releaseSendOrderLocked(lease.sessionID, lease.gate)
+		lease.meter.mu.Unlock()
+		logx.Debugf(
+			"[billing-trace] stage=send_order_released relay=%s session=%s connId=%s",
+			lease.relayAddr, lease.sessionID.String(), lease.connectionID,
+		)
+	})
 }
 
 type natBillingMeter struct {
@@ -66,8 +118,13 @@ type natBillingMeter struct {
 	relaySessions         map[string]billingvoucher.Identifier
 	relayReady            map[string]chan struct{}
 	invalidSessions       map[billingvoucher.Identifier]struct{}
-	sendOrder             map[billingvoucher.Identifier]chan struct{}
+	sendOrder             map[billingvoucher.Identifier]*natBillingSendGate
+	sendOrderWaiters      map[billingvoucher.Identifier]int
+	relaySessionWaiters   map[string]int
+	relayInvalidation     map[string]uint64
 	channels              map[string]*natVoucherChannel
+	rotationTargets       map[billingvoucher.Identifier]natBillingSnapshot
+	rotationSettled       map[billingvoucher.Identifier]natBillingSnapshot
 	cert                  *admission.SignedCert
 	enabled               bool
 	privateSnapshotWriter *natBillingPrivateSnapshotWriter
@@ -84,6 +141,18 @@ type natBillingSessionStatus struct {
 	recoveryVoucher    *billingvoucher.MutualVoucher
 }
 
+type natBillingRelayDiagnostics struct {
+	sessionID              billingvoucher.Identifier
+	sessionExists          bool
+	invalid                bool
+	sendOrderWaiters       int
+	relaySessionWaiters    int
+	activeSends            int
+	nextAssigned           uint64
+	nextAdvance            uint64
+	invalidationGeneration uint64
+}
+
 func newNatBillingMeter(privateKey *ecdh.PrivateKey) (*natBillingMeter, error) {
 	payerID, err := billingvoucher.NodeIDFromPublicKey(privateKey.PublicKey())
 	if err != nil {
@@ -91,19 +160,64 @@ func newNatBillingMeter(privateKey *ecdh.PrivateKey) (*natBillingMeter, error) {
 	}
 	meter := &natBillingMeter{
 		privateKey: privateKey, payerID: payerID,
-		sessions:        make(map[billingvoucher.Identifier]*natBillingSession),
-		relaySessions:   make(map[string]billingvoucher.Identifier),
-		relayReady:      make(map[string]chan struct{}),
-		invalidSessions: make(map[billingvoucher.Identifier]struct{}),
-		sendOrder:       make(map[billingvoucher.Identifier]chan struct{}),
-		channels:        make(map[string]*natVoucherChannel),
+		sessions:            make(map[billingvoucher.Identifier]*natBillingSession),
+		relaySessions:       make(map[string]billingvoucher.Identifier),
+		relayReady:          make(map[string]chan struct{}),
+		invalidSessions:     make(map[billingvoucher.Identifier]struct{}),
+		sendOrder:           make(map[billingvoucher.Identifier]*natBillingSendGate),
+		sendOrderWaiters:    make(map[billingvoucher.Identifier]int),
+		relaySessionWaiters: make(map[string]int),
+		relayInvalidation:   make(map[string]uint64),
+		channels:            make(map[string]*natVoucherChannel),
+		rotationTargets:     make(map[billingvoucher.Identifier]natBillingSnapshot),
+		rotationSettled:     make(map[billingvoucher.Identifier]natBillingSnapshot),
 	}
 	return meter, nil
 }
 
-func (meter *natBillingMeter) acquireSendOrder(ctx context.Context, relayAddr string) (func(), error) {
+func (meter *natBillingMeter) ensureDiagnosticMapsLocked() {
+	if meter.sendOrderWaiters == nil {
+		meter.sendOrderWaiters = make(map[billingvoucher.Identifier]int)
+	}
+	if meter.relaySessionWaiters == nil {
+		meter.relaySessionWaiters = make(map[string]int)
+	}
+	if meter.relayInvalidation == nil {
+		meter.relayInvalidation = make(map[string]uint64)
+	}
+	if meter.rotationTargets == nil {
+		meter.rotationTargets = make(map[billingvoucher.Identifier]natBillingSnapshot)
+	}
+	if meter.rotationSettled == nil {
+		meter.rotationSettled = make(map[billingvoucher.Identifier]natBillingSnapshot)
+	}
+}
+
+func (meter *natBillingMeter) sendsEnabled() bool {
 	if meter == nil {
-		return func() {}, nil
+		return false
+	}
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	return meter.enabled
+}
+
+func (meter *natBillingMeter) acquireSendOrder(
+	ctx context.Context,
+	relayAddr,
+	connectionID string,
+) (*natBillingSendLease, error) {
+	return meter.acquireSendOrderWithPriority(ctx, relayAddr, connectionID, false)
+}
+
+func (meter *natBillingMeter) acquireSendOrderWithPriority(
+	ctx context.Context,
+	relayAddr,
+	connectionID string,
+	priority bool,
+) (*natBillingSendLease, error) {
+	if meter == nil {
+		return &natBillingSendLease{}, nil
 	}
 	if ctx == nil {
 		return nil, errors.New("natnode: nil context while acquiring billing send order")
@@ -111,8 +225,9 @@ func (meter *natBillingMeter) acquireSendOrder(ctx context.Context, relayAddr st
 	meter.mu.Lock()
 	if !meter.enabled {
 		meter.mu.Unlock()
-		return func() {}, nil
+		return &natBillingSendLease{}, nil
 	}
+	meter.ensureDiagnosticMapsLocked()
 	sessionID, exists := meter.relaySessions[relayAddr]
 	if !exists {
 		meter.mu.Unlock()
@@ -120,27 +235,147 @@ func (meter *natBillingMeter) acquireSendOrder(ctx context.Context, relayAddr st
 	}
 	if _, invalid := meter.invalidSessions[sessionID]; invalid {
 		meter.mu.Unlock()
-		return nil, errors.New("natnode: billing relay session requires reconciliation")
+		return nil, fmt.Errorf("%w for Relay %s", ErrBillingSessionReconciling, relayAddr)
+	}
+	if meter.sendOrderWaiters[sessionID] >= maximumNatBillingSendOrderWaiters {
+		meter.mu.Unlock()
+		return nil, fmt.Errorf(
+			"%w for Relay %s: limit=%d",
+			ErrBillingSendQueueFull, relayAddr, maximumNatBillingSendOrderWaiters,
+		)
 	}
 	gate := meter.sendOrder[sessionID]
 	if gate == nil {
-		gate = make(chan struct{}, 1)
-		gate <- struct{}{}
+		gate = &natBillingSendGate{}
 		meter.sendOrder[sessionID] = gate
 	}
+	waiter := &natBillingSendWaiter{ready: make(chan struct{}), priority: priority}
+	if gate.active {
+		if priority {
+			waiter.element = gate.priorityQueue.PushBack(waiter)
+		} else {
+			waiter.element = gate.queue.PushBack(waiter)
+		}
+	} else {
+		gate.active = true
+		if priority {
+			gate.priorityBurst = 1
+		} else {
+			gate.priorityBurst = 0
+		}
+		waiter.granted = true
+		close(waiter.ready)
+	}
+	meter.sendOrderWaiters[sessionID]++
+	waiters := meter.sendOrderWaiters[sessionID]
+	queuedGeneration := meter.relayInvalidation[relayAddr]
 	meter.mu.Unlock()
+	logx.Debugf(
+		"[billing-trace] stage=send_order_enqueue relay=%s session=%s connId=%s waiters=%d invalidationGeneration=%d",
+		relayAddr, sessionID.String(), connectionID, waiters, queuedGeneration,
+	)
 
 	select {
 	case <-ctx.Done():
+		meter.mu.Lock()
+		meter.decrementSendOrderWaiterLocked(sessionID)
+		if waiter.granted {
+			meter.releaseSendOrderLocked(sessionID, gate)
+		} else {
+			meter.removeSendOrderWaiterLocked(gate, waiter)
+		}
+		remaining := meter.sendOrderWaiters[sessionID]
+		currentGeneration := meter.relayInvalidation[relayAddr]
+		_, invalid := meter.invalidSessions[sessionID]
+		meter.mu.Unlock()
+		logx.Debugf(
+			"[billing-trace] stage=send_order_canceled relay=%s session=%s connId=%s remainingWaiters=%d queuedGeneration=%d currentGeneration=%d invalid=%t err=%v",
+			relayAddr, sessionID.String(), connectionID, remaining, queuedGeneration, currentGeneration, invalid, ctx.Err(),
+		)
 		return nil, ctx.Err()
-	case <-gate:
+	case <-waiter.ready:
 	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			gate <- struct{}{}
-		})
-	}, nil
+	meter.mu.Lock()
+	meter.decrementSendOrderWaiterLocked(sessionID)
+	remaining := meter.sendOrderWaiters[sessionID]
+	currentGeneration := meter.relayInvalidation[relayAddr]
+	currentSessionID := meter.relaySessions[relayAddr]
+	_, invalid := meter.invalidSessions[sessionID]
+	meter.mu.Unlock()
+	logx.Debugf(
+		"[billing-trace] stage=send_order_acquired relay=%s session=%s currentSession=%s connId=%s remainingWaiters=%d queuedGeneration=%d currentGeneration=%d generationChanged=%t invalid=%t",
+		relayAddr, sessionID.String(), currentSessionID.String(), connectionID, remaining,
+		queuedGeneration, currentGeneration, queuedGeneration != currentGeneration, invalid,
+	)
+	lease := &natBillingSendLease{
+		meter: meter, gate: gate, sessionID: sessionID, relayAddr: relayAddr,
+		connectionID: connectionID, generation: queuedGeneration,
+	}
+	if currentSessionID != sessionID || currentGeneration != queuedGeneration || invalid {
+		lease.Release()
+		return nil, fmt.Errorf(
+			"%w for Relay %s: queued_session=%s current_session=%s queued_generation=%d current_generation=%d",
+			ErrBillingSessionReconciling, relayAddr, sessionID.String(), currentSessionID.String(),
+			queuedGeneration, currentGeneration,
+		)
+	}
+	return lease, nil
+}
+
+func (meter *natBillingMeter) decrementSendOrderWaiterLocked(sessionID billingvoucher.Identifier) {
+	if meter.sendOrderWaiters[sessionID] <= 1 {
+		delete(meter.sendOrderWaiters, sessionID)
+		return
+	}
+	meter.sendOrderWaiters[sessionID]--
+}
+
+func (meter *natBillingMeter) removeSendOrderWaiterLocked(
+	gate *natBillingSendGate,
+	waiter *natBillingSendWaiter,
+) {
+	if gate == nil || waiter == nil {
+		return
+	}
+	if waiter.element != nil {
+		if waiter.priority {
+			gate.priorityQueue.Remove(waiter.element)
+		} else {
+			gate.queue.Remove(waiter.element)
+		}
+		waiter.element = nil
+	}
+}
+
+func (meter *natBillingMeter) releaseSendOrderLocked(
+	sessionID billingvoucher.Identifier,
+	gate *natBillingSendGate,
+) {
+	if gate == nil || !gate.active {
+		return
+	}
+	if gate.queue.Len() == 0 && gate.priorityQueue.Len() == 0 {
+		gate.active = false
+		if meter.sendOrder[sessionID] == gate {
+			delete(meter.sendOrder, sessionID)
+		}
+		return
+	}
+	var nextElement *list.Element
+	if gate.priorityQueue.Len() > 0 &&
+		(gate.priorityBurst < maximumNatBillingPriorityBurst || gate.queue.Len() == 0) {
+		nextElement = gate.priorityQueue.Front()
+		gate.priorityQueue.Remove(nextElement)
+		gate.priorityBurst++
+	} else {
+		nextElement = gate.queue.Front()
+		gate.queue.Remove(nextElement)
+		gate.priorityBurst = 0
+	}
+	next := nextElement.Value.(*natBillingSendWaiter)
+	next.element = nil
+	next.granted = true
+	close(next.ready)
 }
 
 func newNatBillingSession() *natBillingSession {
@@ -238,7 +473,22 @@ func (meter *natBillingMeter) activateRelaySessionWithState(
 					recoveryVoucher: result.recoveryVoucher,
 				}, nil
 			}
+			if result.rotationRequired {
+				meter.ensureDiagnosticMapsLocked()
+				meter.rotationTargets[sessionID] = result.target
+				if result.recoveryVoucher != nil || billingSnapshotEmpty(result.target) {
+					meter.rotationSettled[sessionID] = result.target
+				}
+				return natBillingSessionStatus{
+					resetRequired: true, cumulative: result.target.cumulative,
+					lastRecord:         result.target.lastRecord,
+					lastRecordSequence: result.target.lastRecordSequence,
+					recordSet:          result.target.recordSet, recoveryVoucher: result.recoveryVoucher,
+				}, nil
+			}
 			delete(meter.invalidSessions, sessionID)
+			delete(meter.rotationTargets, sessionID)
+			delete(meter.rotationSettled, sessionID)
 			if hasPrevious && previousID != sessionID {
 				meter.invalidSessions[previousID] = struct{}{}
 			}
@@ -304,6 +554,7 @@ func (meter *natBillingMeter) sessionBoundLocked(sessionID billingvoucher.Identi
 }
 
 func (meter *natBillingMeter) markRelayReadyLocked(relayAddr string) {
+	meter.ensureDiagnosticMapsLocked()
 	ready := meter.relayReady[relayAddr]
 	if ready == nil {
 		ready = make(chan struct{})
@@ -313,6 +564,26 @@ func (meter *natBillingMeter) markRelayReadyLocked(relayAddr string) {
 	case <-ready:
 	default:
 		close(ready)
+	}
+	sessionID, sessionExists := meter.relaySessions[relayAddr]
+	_, invalid := meter.invalidSessions[sessionID]
+	logx.Debugf(
+		"[billing-trace] stage=session_ready relay=%s session=%s sessionExists=%t invalid=%t relayWaiters=%d invalidationGeneration=%d",
+		relayAddr, sessionID.String(), sessionExists, invalid, meter.relaySessionWaiters[relayAddr],
+		meter.relayInvalidation[relayAddr],
+	)
+}
+
+func (meter *natBillingMeter) markRelayWaitingLocked(relayAddr string) {
+	ready := meter.relayReady[relayAddr]
+	if ready == nil {
+		meter.relayReady[relayAddr] = make(chan struct{})
+		return
+	}
+	select {
+	case <-ready:
+		meter.relayReady[relayAddr] = make(chan struct{})
+	default:
 	}
 }
 
@@ -326,9 +597,10 @@ func (meter *natBillingMeter) reconcileRelaySessionLocked(
 }
 
 type natBillingReconciliationResult struct {
-	target          natBillingSnapshot
-	recoveryVoucher *billingvoucher.MutualVoucher
-	draining        bool
+	target           natBillingSnapshot
+	recoveryVoucher  *billingvoucher.MutualVoucher
+	draining         bool
+	rotationRequired bool
 }
 
 func (meter *natBillingMeter) reconcileRelaySessionStateLocked(
@@ -396,6 +668,12 @@ func (meter *natBillingMeter) reconcileRelaySessionStateLocked(
 		session.reconciliationDraining = true
 		return natBillingReconciliationResult{
 			target: target, recoveryVoucher: recoveryVoucher, draining: true,
+		}, nil
+	}
+	if target.lastRecordSequence < current.lastRecordSequence ||
+		(!assignedAdvance && (session.nextAssigned != session.nextAdvance || len(session.assignedBytes) != 0)) {
+		return natBillingReconciliationResult{
+			target: target, recoveryVoucher: recoveryVoucher, rotationRequired: true,
 		}, nil
 	}
 	if assignedAdvance {
@@ -506,7 +784,24 @@ func (meter *natBillingMeter) sessionSafeToReplaceLocked(sessionID billingvouche
 	session := meter.sessions[sessionID]
 	if session == nil || session.nextAssigned == 0 || session.nextAdvance == 0 ||
 		len(session.pending) != 0 || len(session.activeSends) != 0 ||
-		session.reconciliationDraining || session.nextAssigned != session.nextAdvance {
+		session.reconciliationDraining {
+		return false
+	}
+	if target, settled := meter.rotationSettled[sessionID]; settled {
+		if billingSnapshotEmpty(target) {
+			return true
+		}
+		channel := meter.channels[sessionID.String()+"|"+session.relayID.String()]
+		if channel == nil || !channel.has {
+			return false
+		}
+		body := channel.last.Body
+		return body.SessionID == sessionID && body.PayerNatID == meter.payerID &&
+			body.PayeeRelayID == session.relayID && body.CumulativeUniqueBytes == target.cumulative &&
+			body.LastRecordID == target.lastRecord && body.LastRecordSequence == target.lastRecordSequence &&
+			body.RecordSetDigest == target.recordSet
+	}
+	if session.nextAssigned != session.nextAdvance {
 		return false
 	}
 	lastRecordSequence := session.nextAdvance - 1
@@ -522,48 +817,172 @@ func (meter *natBillingMeter) sessionSafeToReplaceLocked(sessionID billingvouche
 }
 
 func (meter *natBillingMeter) invalidateRelaySession(relayAddr string) {
+	meter.invalidateRelaySessionWithCause(relayAddr, "unspecified", "")
+}
+
+func (meter *natBillingMeter) invalidateRelaySessionWithCause(relayAddr, cause, connectionID string) {
+	meter.invalidateRelaySessionForSession(relayAddr, billingvoucher.Identifier{}, cause, connectionID)
+}
+
+func (meter *natBillingMeter) invalidateRelaySessionForSession(
+	relayAddr string,
+	expectedSessionID billingvoucher.Identifier,
+	cause,
+	connectionID string,
+) {
 	if meter == nil || relayAddr == "" {
 		return
 	}
 	meter.mu.Lock()
-	if sessionID, ok := meter.relaySessions[relayAddr]; ok {
-		meter.invalidSessions[sessionID] = struct{}{}
+	meter.ensureDiagnosticMapsLocked()
+	sessionID, sessionExists := meter.relaySessions[relayAddr]
+	if expectedSessionID != (billingvoucher.Identifier{}) &&
+		(!sessionExists || sessionID != expectedSessionID) {
+		generation := meter.relayInvalidation[relayAddr]
+		meter.mu.Unlock()
+		logx.Warnf(
+			"[billing-trace] stage=session_invalidation_ignored relay=%s expectedSession=%s currentSession=%s sessionExists=%t connId=%s cause=%s invalidationGeneration=%d",
+			relayAddr, expectedSessionID.String(), sessionID.String(), sessionExists, connectionID, cause, generation,
+		)
+		return
 	}
-	meter.relayReady[relayAddr] = make(chan struct{})
-	meter.notifyPrivateSnapshotLocked()
+	alreadyInvalid := false
+	if sessionExists {
+		_, alreadyInvalid = meter.invalidSessions[sessionID]
+		if !alreadyInvalid {
+			meter.invalidSessions[sessionID] = struct{}{}
+		}
+	}
+	if !alreadyInvalid {
+		meter.relayInvalidation[relayAddr]++
+		meter.markRelayWaitingLocked(relayAddr)
+		meter.notifyPrivateSnapshotLocked()
+	}
+	generation := meter.relayInvalidation[relayAddr]
+	waiters := meter.sendOrderWaiters[sessionID]
+	relayWaiters := meter.relaySessionWaiters[relayAddr]
+	activeSends := 0
+	nextAssigned := uint64(0)
+	nextAdvance := uint64(0)
+	if session := meter.sessions[sessionID]; session != nil {
+		activeSends = len(session.activeSends)
+		nextAssigned = session.nextAssigned
+		nextAdvance = session.nextAdvance
+	}
 	meter.mu.Unlock()
+	logx.Warnf(
+		"[billing-trace] stage=session_invalidated relay=%s session=%s sessionExists=%t connId=%s cause=%s alreadyInvalid=%t sendOrderWaiters=%d relayWaiters=%d activeSends=%d nextAssigned=%d nextAdvance=%d invalidationGeneration=%d",
+		relayAddr, sessionID.String(), sessionExists, connectionID, cause, alreadyInvalid, waiters,
+		relayWaiters, activeSends, nextAssigned, nextAdvance, generation,
+	)
 }
 
-func (meter *natBillingMeter) waitRelaySession(ctx context.Context, relayAddr string) error {
+func (meter *natBillingMeter) waitRelaySession(ctx context.Context, relayAddr, connectionID string) error {
 	if meter == nil {
 		return nil
 	}
-	meter.mu.Lock()
-	if !meter.enabled {
-		meter.mu.Unlock()
-		return nil
-	}
-	if sessionID, ok := meter.relaySessions[relayAddr]; ok {
-		if _, invalid := meter.invalidSessions[sessionID]; !invalid {
+	for {
+		meter.mu.Lock()
+		meter.ensureDiagnosticMapsLocked()
+		if !meter.enabled {
 			meter.mu.Unlock()
 			return nil
 		}
-	}
-	ready := meter.relayReady[relayAddr]
-	if ready == nil {
-		ready = make(chan struct{})
-		meter.relayReady[relayAddr] = ready
-	}
-	meter.mu.Unlock()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-ready:
-		return nil
+		if sessionID, ok := meter.relaySessions[relayAddr]; ok {
+			if _, invalid := meter.invalidSessions[sessionID]; !invalid {
+				meter.mu.Unlock()
+				return nil
+			}
+		}
+		if meter.relaySessionWaiters[relayAddr] >= maximumNatBillingRelaySessionWaiters {
+			meter.mu.Unlock()
+			return fmt.Errorf(
+				"%w for Relay %s: limit=%d",
+				ErrBillingRelayWaitQueueFull, relayAddr, maximumNatBillingRelaySessionWaiters,
+			)
+		}
+		meter.markRelayWaitingLocked(relayAddr)
+		ready := meter.relayReady[relayAddr]
+		sessionID, sessionExists := meter.relaySessions[relayAddr]
+		_, invalid := meter.invalidSessions[sessionID]
+		meter.relaySessionWaiters[relayAddr]++
+		waiters := meter.relaySessionWaiters[relayAddr]
+		generation := meter.relayInvalidation[relayAddr]
+		meter.mu.Unlock()
+		logx.Debugf(
+			"[billing-trace] stage=relay_session_wait relay=%s session=%s sessionExists=%t connId=%s invalid=%t relayWaiters=%d invalidationGeneration=%d",
+			relayAddr, sessionID.String(), sessionExists, connectionID, invalid, waiters, generation,
+		)
+		select {
+		case <-ctx.Done():
+			meter.mu.Lock()
+			meter.decrementRelaySessionWaiterLocked(relayAddr)
+			remaining := meter.relaySessionWaiters[relayAddr]
+			currentGeneration := meter.relayInvalidation[relayAddr]
+			meter.mu.Unlock()
+			logx.Debugf(
+				"[billing-trace] stage=relay_session_wait_canceled relay=%s session=%s connId=%s remainingWaiters=%d queuedGeneration=%d currentGeneration=%d err=%v",
+				relayAddr, sessionID.String(), connectionID, remaining, generation, currentGeneration, ctx.Err(),
+			)
+			return ctx.Err()
+		case <-ready:
+			meter.mu.Lock()
+			meter.decrementRelaySessionWaiterLocked(relayAddr)
+			remaining := meter.relaySessionWaiters[relayAddr]
+			currentSessionID := meter.relaySessions[relayAddr]
+			currentGeneration := meter.relayInvalidation[relayAddr]
+			_, currentInvalid := meter.invalidSessions[currentSessionID]
+			meter.mu.Unlock()
+			logx.Debugf(
+				"[billing-trace] stage=relay_session_wait_ready relay=%s previousSession=%s currentSession=%s connId=%s remainingWaiters=%d queuedGeneration=%d currentGeneration=%d invalid=%t",
+				relayAddr, sessionID.String(), currentSessionID.String(), connectionID, remaining,
+				generation, currentGeneration, currentInvalid,
+			)
+		}
 	}
 }
 
+func (meter *natBillingMeter) decrementRelaySessionWaiterLocked(relayAddr string) {
+	if meter.relaySessionWaiters[relayAddr] <= 1 {
+		delete(meter.relaySessionWaiters, relayAddr)
+		return
+	}
+	meter.relaySessionWaiters[relayAddr]--
+}
+
+func (meter *natBillingMeter) relayDiagnostics(relayAddr string) natBillingRelayDiagnostics {
+	if meter == nil {
+		return natBillingRelayDiagnostics{}
+	}
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	meter.ensureDiagnosticMapsLocked()
+	sessionID, sessionExists := meter.relaySessions[relayAddr]
+	diagnostics := natBillingRelayDiagnostics{
+		sessionID:              sessionID,
+		sessionExists:          sessionExists,
+		sendOrderWaiters:       meter.sendOrderWaiters[sessionID],
+		relaySessionWaiters:    meter.relaySessionWaiters[relayAddr],
+		invalidationGeneration: meter.relayInvalidation[relayAddr],
+	}
+	_, diagnostics.invalid = meter.invalidSessions[sessionID]
+	if session := meter.sessions[sessionID]; session != nil {
+		diagnostics.activeSends = len(session.activeSends)
+		diagnostics.nextAssigned = session.nextAssigned
+		diagnostics.nextAdvance = session.nextAdvance
+	}
+	return diagnostics
+}
+
 func (meter *natBillingMeter) prepare(message *network.Message, relayAddr string) error {
+	return meter.prepareWithLease(message, relayAddr, nil)
+}
+
+func (meter *natBillingMeter) prepareWithLease(
+	message *network.Message,
+	relayAddr string,
+	lease *natBillingSendLease,
+) error {
 	if meter == nil || message == nil || message.Header == nil {
 		return nil
 	}
@@ -576,8 +995,16 @@ func (meter *natBillingMeter) prepare(message *network.Message, relayAddr string
 	if !ok {
 		return fmt.Errorf("natnode: secure billing session is not ready for Relay %s", relayAddr)
 	}
+	if lease != nil &&
+		(lease.sessionID != sessionID || lease.generation != meter.relayInvalidation[relayAddr]) {
+		return fmt.Errorf(
+			"%w for Relay %s: leased_session=%s current_session=%s leased_generation=%d current_generation=%d",
+			ErrBillingSessionReconciling, relayAddr, lease.sessionID.String(), sessionID.String(),
+			lease.generation, meter.relayInvalidation[relayAddr],
+		)
+	}
 	if _, invalid := meter.invalidSessions[sessionID]; invalid {
-		return fmt.Errorf("natnode: secure billing session for Relay %s requires reconciliation", relayAddr)
+		return fmt.Errorf("%w for Relay %s", ErrBillingSessionReconciling, relayAddr)
 	}
 	billableBytes := uint64(len(message.Payload))
 	if billableBytes == 0 || billableBytes > billingvoucher.CumulativeWindowBytes {
@@ -602,6 +1029,7 @@ func (meter *natBillingMeter) prepare(message *network.Message, relayAddr string
 	}
 	session.assignedBytes[sequence] = billableBytes
 	session.activeSends[sequence] = struct{}{}
+	session.lastSendActivity = time.Now()
 	session.nextAssigned++
 	message.Header.BillingSessionID = [32]byte(sessionID)
 	message.Header.BillingSequence = sequence
@@ -889,7 +1317,9 @@ func (meter *natBillingMeter) cosign(bodyBytes, relaySignature []byte, relayPubl
 		snapshot.recordSet != body.RecordSetDigest {
 		return billingvoucher.MutualVoucher{}, errors.New("natnode: Relay usage does not match local E2E record evidence")
 	}
-	if len(session.claimable) == 0 || session.claimable[0] != snapshot {
+	rotationTarget, rotationRequired := meter.rotationTargets[body.SessionID]
+	rotationClaim := rotationRequired && rotationTarget == snapshot
+	if !rotationClaim && (len(session.claimable) == 0 || session.claimable[0] != snapshot) {
 		return billingvoucher.MutualVoucher{}, errors.New("natnode: Relay requested a voucher before the deterministic billing threshold")
 	}
 	payerSignature, err := billingvoucher.SignPayer(body, meter.privateKey)
@@ -908,8 +1338,12 @@ func (meter *natBillingMeter) cosign(bodyBytes, relaySignature []byte, relayPubl
 	channel.last = voucher
 	channel.has = true
 	session.cosignedRecordSequence = body.LastRecordSequence
-	delete(session.claimableCumulative, session.claimable[0].cumulative)
-	session.claimable = session.claimable[1:]
+	if rotationClaim {
+		meter.rotationSettled[body.SessionID] = snapshot
+	} else {
+		delete(session.claimableCumulative, session.claimable[0].cumulative)
+		session.claimable = session.claimable[1:]
+	}
 	for cumulative := range session.snapshots {
 		if cumulative < body.CumulativeUniqueBytes {
 			delete(session.snapshots, cumulative)

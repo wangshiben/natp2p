@@ -2,9 +2,11 @@ package natnode
 
 import (
 	"bnfs_p2p/network"
+	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/p2pnode"
 
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -13,13 +15,61 @@ import (
 )
 
 type serviceSnapshotTestConnection struct {
-	peer   p2pnode.PeerInfo
-	closed atomic.Bool
+	peer       p2pnode.PeerInfo
+	sendErr    error
+	closed     atomic.Bool
+	closeCalls atomic.Int32
+}
+
+type carrierReconnectTestTransport struct {
+	gateRequests  chan networkFrameWork.ReconnectGateRequest
+	gateRelease   chan struct{}
+	registerCalls atomic.Int32
+	registerSeen  chan struct{}
+}
+
+func newCarrierReconnectTestTransport() *carrierReconnectTestTransport {
+	return &carrierReconnectTestTransport{
+		gateRequests: make(chan networkFrameWork.ReconnectGateRequest, 4),
+		gateRelease:  make(chan struct{}),
+		registerSeen: make(chan struct{}, 4),
+	}
+}
+
+func (transport *carrierReconnectTestTransport) Register(
+	context.Context,
+	string,
+	string,
+) (network.Stream, error) {
+	transport.registerCalls.Add(1)
+	transport.registerSeen <- struct{}{}
+	return nil, errors.New("test registration failure")
+}
+
+func (*carrierReconnectTestTransport) Dial(
+	context.Context,
+	string,
+	p2pnode.NodeID,
+) (network.Stream, string, error) {
+	return nil, "", context.Canceled
+}
+
+func (transport *carrierReconnectTestTransport) WaitForReconnect(
+	ctx context.Context,
+	request networkFrameWork.ReconnectGateRequest,
+) error {
+	transport.gateRequests <- request
+	select {
+	case <-transport.gateRelease:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (connection *serviceSnapshotTestConnection) Peer() p2pnode.PeerInfo { return connection.peer }
 func (connection *serviceSnapshotTestConnection) Send(context.Context, *p2pnode.Message) error {
-	return nil
+	return connection.sendErr
 }
 func (connection *serviceSnapshotTestConnection) Receive(context.Context) (*p2pnode.Message, error) {
 	return nil, context.Canceled
@@ -27,7 +77,112 @@ func (connection *serviceSnapshotTestConnection) Receive(context.Context) (*p2pn
 func (connection *serviceSnapshotTestConnection) Raw() network.Stream { return nil }
 func (connection *serviceSnapshotTestConnection) Close() error {
 	connection.closed.Store(true)
+	connection.closeCalls.Add(1)
 	return nil
+}
+
+func TestServiceConnectionOnlyClosesOnFatalSendError(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		sendErr   error
+		wantClose bool
+	}{
+		{
+			name:    "recoverable reconciliation wait",
+			sendErr: markRecoverableServiceSendError(context.DeadlineExceeded),
+		},
+		{
+			name:      "fatal transport failure",
+			sendErr:   errors.New("transport stream closed"),
+			wantClose: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			underlying := &serviceSnapshotTestConnection{
+				peer:    p2pnode.PeerInfo{ID: "peer"},
+				sendErr: testCase.sendErr,
+			}
+			connection := &serviceConnection{Connection: underlying}
+			err := connection.Send(context.Background(), &p2pnode.Message{Payload: []byte("payload")})
+			if !errors.Is(err, testCase.sendErr) {
+				t.Fatalf("Send error=%v, want %v", err, testCase.sendErr)
+			}
+			if underlying.closed.Load() != testCase.wantClose {
+				t.Fatalf("closed=%t, want %t", underlying.closed.Load(), testCase.wantClose)
+			}
+			wantCloseCalls := int32(0)
+			if testCase.wantClose {
+				wantCloseCalls = 1
+			}
+			if got := underlying.closeCalls.Load(); got != wantCloseCalls {
+				t.Fatalf("close calls=%d, want %d", got, wantCloseCalls)
+			}
+		})
+	}
+}
+
+func TestServiceCarrierFirstRecoveryWaitsForReconnectGate(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		releaseGate bool
+	}{
+		{name: "cancellation prevents dial"},
+		{name: "grant permits dial", releaseGate: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			node, err := NewNATNode(nil, "relay.test:9000")
+			if err != nil {
+				t.Fatalf("NewNATNode: %v", err)
+			}
+			defer node.Close()
+			transport := newCarrierReconnectTestTransport()
+			node.transport = transport
+			listenerCtx, cancel := context.WithCancel(context.Background())
+			listener := &ServiceListener{node: node, ctx: listenerCtx, cancel: cancel}
+			carrier := &serviceCarrier{addr: "relay.test:9000"}
+			done := make(chan struct{})
+			go func() {
+				listener.maintainCarrier(carrier)
+				close(done)
+			}()
+
+			select {
+			case request := <-transport.gateRequests:
+				if request.RelayAddress != carrier.addr || request.Transport != "carrier" ||
+					request.Role != "natserver" || request.Attempt != 1 ||
+					request.NodeID != string(node.ID()) {
+					t.Fatalf("first recovery request = %+v", request)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("first carrier recovery did not enter reconnect gate")
+			}
+			if calls := transport.registerCalls.Load(); calls != 0 {
+				t.Fatalf("carrier dialed before gate grant: calls=%d", calls)
+			}
+
+			if testCase.releaseGate {
+				close(transport.gateRelease)
+				select {
+				case <-transport.registerSeen:
+				case <-time.After(time.Second):
+					t.Fatal("carrier did not dial after gate grant")
+				}
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("carrier recovery did not stop after cancellation")
+			}
+			wantCalls := int32(0)
+			if testCase.releaseGate {
+				wantCalls = 1
+			}
+			if calls := transport.registerCalls.Load(); calls != wantCalls {
+				t.Fatalf("carrier register calls=%d, want %d", calls, wantCalls)
+			}
+		})
+	}
 }
 
 func TestServiceListenerAcceptsConcurrentClients(t *testing.T) {

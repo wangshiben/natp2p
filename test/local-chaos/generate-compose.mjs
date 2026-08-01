@@ -11,6 +11,8 @@ const enableAdversaries = enableCA && process.env.BNFS_CHAOS_ENABLE_ADVERSARIES 
 const caHostPort = process.env.BNFS_CHAOS_CA_HOST_PORT ?? "19100";
 const adversarySeed = process.env.BNFS_CHAOS_ADVERSARY_SEED ?? "bnfs-container-adversary-v1";
 const ipFamilyPlanFile = process.env.BNFS_CHAOS_IP_FAMILY_PLAN_FILE ?? "";
+const reconnectGateURL = process.env.BNFS_CHAOS_RECONNECT_GATE_URL ?? "";
+const reconnectGateToken = process.env.BNFS_CHAOS_RECONNECT_GATE_TOKEN ?? "";
 const accessNetworkSecondOctet = parseAccessNetworkSecondOctet(
   process.env.BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET ?? "211",
 );
@@ -19,6 +21,7 @@ const natServerCount = 13;
 const natClientCount = 6;
 const caCredentials = enableCA ? provisionCACredentials() : null;
 const ipFamilyPlan = readIPFamilyPlan(ipFamilyPlanFile);
+validateReconnectGateConfiguration();
 const ipFamilySpecs = Object.freeze({
   ipv4: Object.freeze({
     network: "ip_family_ipv4",
@@ -274,7 +277,26 @@ function idleNatService(name, attachedNetworks) {
   if (enableCA && caCredentials) {
     service.environment = ["BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue.token"];
   }
+  if (reconnectGateURL !== "") {
+    service.environment ??= [];
+    service.environment.push(
+      `BNFS_RECONNECT_GATE_URL=${reconnectGateURL}`,
+      `BNFS_RECONNECT_GATE_TOKEN=${reconnectGateToken}`,
+    );
+    service.extra_hosts = ["host.docker.internal:host-gateway"];
+  }
   return attachIPFamilyNetwork(service, name);
+}
+
+function validateReconnectGateConfiguration() {
+  if (reconnectGateURL === "" && reconnectGateToken === "") return;
+  if (!/^http:\/\/host\.docker\.internal:[1-9][0-9]{0,4}$/.test(reconnectGateURL)) {
+    throw new Error("invalid reconnect gate URL");
+  }
+  const port = Number.parseInt(reconnectGateURL.slice(reconnectGateURL.lastIndexOf(":") + 1), 10);
+  if (port > 65535 || !/^[a-f0-9]{64}$/.test(reconnectGateToken)) {
+    throw new Error("invalid reconnect gate credentials");
+  }
 }
 
 function adversaryService(name, role, peerURL, attachedNetworks) {

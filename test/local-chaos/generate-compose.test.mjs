@@ -173,6 +173,44 @@ test("malicious Compose actors receive neither management credentials nor shared
   assert.equal(JSON.stringify(compose.services["malicious-relay"]).includes("ca-issue.token"), false);
 });
 
+test("reconnect gate credentials are injected only into NAT test containers", async (context) => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-reconnect-gate-runtime-"));
+  context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
+  const token = "a".repeat(64);
+  const gateURL = "http://host.docker.internal:18912";
+  const { stdout } = await execFileAsync(process.execPath, [generator, runtimeDir], {
+    env: {
+      ...process.env,
+      BNFS_CHAOS_ENABLE_CA: "1",
+      BNFS_CHAOS_RECONNECT_GATE_URL: gateURL,
+      BNFS_CHAOS_RECONNECT_GATE_TOKEN: token,
+    },
+    maxBuffer: 1024 * 1024,
+  });
+  const compose = JSON.parse(stdout);
+  const natServices = [
+    ...numbered("natserver", 13),
+    ...numbered("natclient", 6),
+    "malicious-random-natserver",
+    "malicious-natclient",
+  ];
+  for (const serviceName of natServices) {
+    assert.equal(compose.services[serviceName].environment.includes(
+      `BNFS_RECONNECT_GATE_URL=${gateURL}`,
+    ), true);
+    assert.equal(compose.services[serviceName].environment.includes(
+      `BNFS_RECONNECT_GATE_TOKEN=${token}`,
+    ), true);
+    assert.deepEqual(compose.services[serviceName].extra_hosts, [
+      "host.docker.internal:host-gateway",
+    ]);
+  }
+  for (const serviceName of ["ca", "index", ...numbered("relay", 7)]) {
+    assert.equal(JSON.stringify(compose.services[serviceName]).includes("RECONNECT_GATE"), false);
+    assert.equal(JSON.stringify(compose.services[serviceName]).includes(token), false);
+  }
+});
+
 test("IP-family plan assigns isolated IPv4, IPv6 and dual-stack paths", async (context) => {
   const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-ip-family-runtime-"));
   context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));

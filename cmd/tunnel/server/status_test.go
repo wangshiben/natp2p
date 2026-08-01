@@ -22,8 +22,8 @@ func TestWriteServiceListenerStatusRedactsIdentifiers(t *testing.T) {
 		AcceptedTotal:     7,
 		RejectedTotal:     2,
 		Carriers: []natnode.ServiceCarrierSnapshot{
-			{RelayAddress: "relay02:9000", Connected: true, CarrierGeneration: 4, ActiveSessions: 0},
-			{RelayAddress: "relay03:9000", Connected: true, CarrierGeneration: 2, ActiveSessions: 1},
+			{RelayAddress: "relay02:9000", Connected: true, CarrierGeneration: 4, ActiveSessions: 0, DataQueueCapacity: 1024, ControlQueueCapacity: 1024},
+			{RelayAddress: "relay03:9000", Connected: true, CarrierGeneration: 2, ActiveSessions: 1, DataQueueDepth: 17, DataQueueCapacity: 1024, ControlQueueDepth: 3, ControlQueueCapacity: 1024},
 		},
 		Sessions: []natnode.ServiceSessionSnapshot{{
 			ConnectionID: "12345678-1234-1234-1234-123456789abc",
@@ -51,6 +51,10 @@ func TestWriteServiceListenerStatusRedactsIdentifiers(t *testing.T) {
 	}
 	if len(status.Carriers) != 2 || status.Sessions[0].RelayAddress != "relay03:9000" {
 		t.Fatalf("multi-Relay status was not preserved: %+v", status)
+	}
+	if status.Carriers[1].DataQueueDepth != 17 || status.Carriers[1].ControlQueueDepth != 3 ||
+		status.Carriers[1].DataQueueCapacity != 1024 || status.Carriers[1].ControlQueueCapacity != 1024 {
+		t.Fatalf("mux queue status was not preserved: %+v", status.Carriers[1])
 	}
 	info, err := os.Stat(file)
 	if err != nil {

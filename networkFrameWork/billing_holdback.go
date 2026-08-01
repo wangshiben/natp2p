@@ -3,6 +3,7 @@ package networkFrameWork
 import (
 	"bnfs_p2p/billingvoucher"
 	"bnfs_p2p/crypoto"
+	"bnfs_p2p/logx"
 	"bnfs_p2p/network"
 	"bytes"
 	"container/list"
@@ -654,6 +655,12 @@ func (state *forwardHookState) framesForForward(ctx context.Context, frame *netw
 				}
 				return authorized, nil
 			}
+			header := completion.message.Header
+			logx.Warnf(
+				"[billing-trace] stage=holdback_validation_rejected nodeId=%.16s connId=%s direction=%s phase=%d billingSession=%x billingSequence=%d billingBytes=%d err=%v",
+				state.nodeID, completion.entry.key.connectionID, direction, phase,
+				header.BillingSessionID, header.BillingSequence, header.BillingBytes, validateErr,
+			)
 			holdback.reject(completion.entry)
 			return authorized, validateErr
 		}

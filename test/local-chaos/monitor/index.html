@@ -215,21 +215,21 @@
 
   <section class="grid">
     <article class="panel summary"><div class="muted">剩余时间</div><div class="value" id="remaining">--:--:--</div><div class="small muted" id="deadline">等待进入 RUNNING</div></article>
-    <article class="panel summary"><div class="muted">核心节点健康</div><div class="value" id="core">0 / 9</div><div class="small muted">CA + Index + 7 Relay</div></article>
-    <article class="panel summary"><div class="muted">NAT / 恶意节点运行</div><div class="value" id="nat">0 / 21</div><div class="small muted" id="maliciousSummary">13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client</div></article>
-    <article class="panel summary"><div class="muted">容器重启总数</div><div class="value" id="restarts">0</div><div class="small muted" id="caStatus">CA Web 探测中</div></article>
+    <article class="panel summary"><div class="muted" id="coreLabel">核心节点健康</div><div class="value" id="core">0 / 9</div><div class="small muted" id="coreSummary">CA + Index + 7 Relay</div></article>
+    <article class="panel summary"><div class="muted" id="natLabel">NAT / 恶意节点运行</div><div class="value" id="nat">0 / 21</div><div class="small muted" id="maliciousSummary">13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client</div></article>
+    <article class="panel summary"><div class="muted" id="restartsLabel">容器重启总数</div><div class="value" id="restarts">0</div><div class="small muted" id="caStatus">CA Web 探测中</div></article>
 
-    <article class="panel resource"><div class="split-title"><h2>项目 CPU</h2><strong id="cpuText">0%</strong></div><div class="meter"><i id="cpuMeter"></i></div><div class="small muted" id="cpuHost">阈值 55%</div></article>
-    <article class="panel resource"><div class="split-title"><h2>项目内存</h2><strong id="memText">0%</strong></div><div class="meter"><i id="memMeter"></i></div><div class="small muted" id="memHost">阈值 40%</div></article>
-    <article class="panel resource"><div class="split-title"><h2>磁盘占用</h2><strong id="diskText">0%</strong></div><div class="meter"><i id="diskMeter"></i></div><div class="small muted" id="diskHost">阈值 40%</div></article>
+    <article class="panel resource"><div class="split-title"><h2 id="cpuTitle">项目 CPU</h2><strong id="cpuText">0%</strong></div><div class="meter"><i id="cpuMeter"></i></div><div class="small muted" id="cpuHost">阈值 55%</div></article>
+    <article class="panel resource"><div class="split-title"><h2 id="memTitle">项目内存</h2><strong id="memText">0%</strong></div><div class="meter"><i id="memMeter"></i></div><div class="small muted" id="memHost">阈值 40%</div></article>
+    <article class="panel resource"><div class="split-title"><h2 id="diskTitle">磁盘占用</h2><strong id="diskText">0%</strong></div><div class="meter"><i id="diskMeter"></i></div><div class="small muted" id="diskHost">阈值 40%</div></article>
 
-    <article class="panel chart-panel"><div class="split-title"><h2>资源历史</h2><div class="legend"><span><i style="background:#65b9ff"></i>CPU</span><span><i style="background:#49d49d"></i>内存</span><span><i style="background:#f5c45e"></i>磁盘</span></div></div><canvas id="chart"></canvas></article>
-    <article class="panel probe-panel"><h2>最新端到端探测</h2><div id="probe" class="muted">尚无探测记录</div></article>
+    <article class="panel chart-panel" id="chaosHistoryPanel"><div class="split-title"><h2>资源历史</h2><div class="legend"><span><i style="background:#65b9ff"></i>CPU</span><span><i style="background:#49d49d"></i>内存</span><span><i style="background:#f5c45e"></i>磁盘</span></div></div><canvas id="chart"></canvas></article>
+    <article class="panel probe-panel" id="chaosProbePanel"><h2>最新端到端探测</h2><div id="probe" class="muted">尚无探测记录</div></article>
   </section>
 
   <section class="panel" id="capacityPanel" style="margin-bottom:14px">
     <div class="split-title">
-      <h2>公网 Relay 100 × 100 MiB 同时传输容量验证</h2>
+      <h2 id="capacityTitle">公网 Relay 同时传输容量验证</h2>
       <span class="status warn" id="capacityPhase">NOT STARTED</span>
     </div>
     <div class="muted small" id="capacityFreshness">等待正式容量测试</div>
@@ -252,6 +252,16 @@
     </div>
     <div class="transfer-summary" id="serviceSessionSummary"></div>
     <div class="service-session-grid" id="serviceListeners"><div class="empty-state">等待 NatServer listener 状态文件</div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <div class="split-title">
+      <h2>NAT 重连随机退避 Gate</h2>
+      <span class="muted small" id="reconnectGateFreshness">等待测试环境 Gate</span>
+    </div>
+    <div class="failure-watcher" id="reconnectGateStatus"><strong>重连调度</strong><span>未配置</span></div>
+    <div class="transfer-summary" id="reconnectGateSummary"></div>
+    <div class="capacity-targets" id="reconnectGateTransports"></div>
   </section>
 
   <section class="panel" style="margin-bottom:14px">
@@ -367,28 +377,72 @@ function render(data) {
   const capacityCompleted = capacity.available && capacity.phase === 'COMPLETED';
   $('phase').textContent = capacityActive || capacityCompleted ? `CAPACITY · ${capacity.phase}` : phase;
   $('phaseBadge').className = `badge ${capacityActive || capacityCompleted ? (capacity.healthy ? 'ok' : 'bad') : phaseClass(phase)}`;
+  const capacityTransferMiB = Math.max(0, num(capacity.transferMiB)) || 100;
   $('identity').textContent = capacity.available
-    ? `公网 Relay 容量验证 · ${num(capacity.transfer?.clients) || num(capacity.connected)} Client × 100 MiB`
+    ? `公网 Relay 容量验证 · ${num(capacity.transfer?.clients) || num(capacity.connected)} Client × ${capacityTransferMiB} MiB`
     : `稳定性轮次 · 场景 ${data.metadata.scenario || '?'} ${data.metadata.scenario_name || ''}`;
   $('updated').textContent = `刷新于 ${new Date(data.generatedAt).toLocaleString()} · 每 2 秒`;
-  $('remaining').textContent = duration(data.timing.remainingSeconds);
-  $('deadline').textContent = data.timing.durationSeconds ? `计划时长 ${duration(data.timing.durationSeconds)}` : '集群初始化中';
-  $('core').textContent = `${data.summary.coreHealthy} / ${data.summary.coreExpected}`;
-  $('nat').textContent = `${data.summary.natRunning} / ${data.summary.natExpected}`;
+  if (capacityActive || capacityCompleted) {
+    const capacityResources = capacity.resources || {};
+    const capacityRelay = capacityResources.relay || {};
+    const capacityNatServers = Array.isArray(capacityResources.natServers) ? capacityResources.natServers : [];
+    const activeSessions = capacityNatServers.reduce((total, item) => total + num(item.activeSessions), 0);
+    const expectedBytes = num(capacity.transfer?.expectedBytes);
+    const completedBytes = num(capacity.transfer?.bytes);
+    const bytesPerSecond = num(capacity.transfer?.mibPerSecond) * 1048576;
+    const remainingSeconds = capacityCompleted || bytesPerSecond <= 0
+      ? 0
+      : Math.max(0, (expectedBytes - completedBytes) / bytesPerSecond);
+    $('remaining').textContent = capacityCompleted ? '00:00:00' : duration(remainingSeconds);
+    $('deadline').textContent = capacityCompleted
+      ? '容量传输已完成'
+      : `预计剩余 · 已运行 ${capacity.transfer?.elapsed || '--'}`;
+    $('coreLabel').textContent = '公网 Relay 健康';
+    $('core').textContent = capacity.healthy && num(capacityRelay.restarts) === 0 ? '1 / 1' : '0 / 1';
+    $('coreSummary').textContent = `远端 Relay · ${num(capacityRelay.tcpEstablished)} TCP · ${num(capacityRelay.restarts)} 重启`;
+    $('natLabel').textContent = 'NatServer 活动会话';
+    $('nat').textContent = `${activeSessions} / ${num(capacity.plannedClients)}`;
+    $('maliciousSummary').textContent = `${capacityNatServers.length} 台 NatServer · 会话 ${capacityNatServers.map(item => num(item.activeSessions)).join(' / ')}`;
+    $('maliciousSummary').style.color = activeSessions === num(capacity.plannedClients) ? '' : 'var(--red)';
+    $('restartsLabel').textContent = '公网 Relay 重启';
+    $('restarts').textContent = num(capacityRelay.restarts);
+    $('caStatus').textContent = capacity.clientRunning ? '容量 Client 正在运行' : capacityCompleted ? '容量 Client 已完成' : '容量 Client 已停止';
+  } else {
+    $('remaining').textContent = duration(data.timing.remainingSeconds);
+    $('deadline').textContent = data.timing.durationSeconds ? `计划时长 ${duration(data.timing.durationSeconds)}` : '集群初始化中';
+    $('coreLabel').textContent = '核心节点健康';
+    $('core').textContent = `${data.summary.coreHealthy} / ${data.summary.coreExpected}`;
+    $('coreSummary').textContent = 'CA + Index + 7 Relay';
+    $('natLabel').textContent = 'NAT / 恶意节点运行';
+    $('nat').textContent = `${data.summary.natRunning} / ${data.summary.natExpected}`;
+    $('restartsLabel').textContent = '容器重启总数';
+    $('restarts').textContent = data.summary.totalRestarts;
+    $('caStatus').textContent = data.ca.reachable ? `CA Web ${round(data.ca.latencyMs,1)} ms` : `CA Web 不可达${data.ca.error ? ' · '+data.ca.error : ''}`;
+  }
   const maliciousRuntime = Array.isArray(data.maliciousNodes) ? data.maliciousNodes : [];
   const maliciousHealthy = maliciousRuntime.filter(node => node?.running === true && ['healthy','running'].includes(String(node?.health || ''))).length;
   const mixedPathHealthy = data.mixedPath?.healthy === true;
-  $('maliciousSummary').textContent = '13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client + 1 混合探针 · 计费恶意节点 ' + maliciousHealthy + ' / 2 · P2P ' + (mixedPathHealthy ? 'PASS' : 'WAIT');
-  $('maliciousSummary').style.color = maliciousHealthy === 2 && (mixedPathHealthy || data.phase !== 'RUNNING') ? '' : 'var(--red)';
-  $('restarts').textContent = data.summary.totalRestarts;
-  $('caStatus').textContent = data.ca.reachable ? `CA Web ${round(data.ca.latencyMs,1)} ms` : `CA Web 不可达${data.ca.error ? ' · '+data.ca.error : ''}`;
+  if (!capacityActive && !capacityCompleted) {
+    $('maliciousSummary').textContent = '13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client + 1 混合探针 · 计费恶意节点 ' + maliciousHealthy + ' / 2 · P2P ' + (mixedPathHealthy ? 'PASS' : 'WAIT');
+    $('maliciousSummary').style.color = maliciousHealthy === 2 && (mixedPathHealthy || data.phase !== 'RUNNING') ? '' : 'var(--red)';
+  }
   const latest = data.resources.latest || {};
-  resource('cpu', num(latest.project_cpu_host_pct), data.thresholds.cpu, `宿主机 CPU ${round(num(latest.host_cpu_pct),1)}%`);
-  resource('mem', num(latest.project_memory_host_pct), data.thresholds.memory, `宿主机内存 ${round(num(latest.host_memory_pct),1)}%`);
-  resource('disk', num(latest.guard_disk_pct), data.thresholds.disk, `Docker ${latest.docker_disk_pct || 0}% · 证据盘 ${latest.artifact_disk_pct || 0}%`);
+  $('chaosHistoryPanel').style.display = capacityActive || capacityCompleted ? 'none' : '';
+  $('chaosProbePanel').style.display = capacityActive || capacityCompleted ? 'none' : '';
+  if (capacityActive || capacityCompleted) {
+    renderCapacityTopResources(capacity.resources);
+  } else {
+    $('cpuTitle').textContent = '项目 CPU';
+    $('memTitle').textContent = '项目内存';
+    $('diskTitle').textContent = '磁盘占用';
+    resource('cpu', num(latest.project_cpu_host_pct), data.thresholds.cpu, `宿主机 CPU ${round(num(latest.host_cpu_pct),1)}%`);
+    resource('mem', num(latest.project_memory_host_pct), data.thresholds.memory, `宿主机内存 ${round(num(latest.host_memory_pct),1)}%`);
+    resource('disk', num(latest.guard_disk_pct), data.thresholds.disk, `Docker ${latest.docker_disk_pct || 0}% · 证据盘 ${latest.artifact_disk_pct || 0}%`);
+  }
   renderProbe(data.largeProbes?.latest || data.probes.latest);
   renderCapacityTest(capacity);
   renderServiceSessions(data.serviceSessions);
+  renderReconnectGate(data.reconnectGate);
   renderWorkers(data.workers);
   renderRandomBatches(data.randomBatches);
   renderClientTransfers(data.clientTransfers, data.metadata, data.maliciousNodes, data.billingAdversary?.containerProbe?.recent, data.mixedPath);
@@ -407,6 +461,9 @@ function render(data) {
   const terminalBad = ['FAILED','RESOURCE_LIMIT'].includes(phase);
   const watcherNewFailures = num(data.failureWatcher?.observed?.newFailureRecords);
   const watcherUnhealthy = phase === 'RUNNING' && (!data.failureWatcher?.available || !data.failureWatcher?.healthy);
+  const reconnectGateUnhealthy = phase === 'RUNNING'
+    && data.reconnectGate?.status !== 'NOT_CONFIGURED'
+    && data.reconnectGate?.healthy !== true;
   const adversaryEnabled = String(data.metadata?.billing_adversary_mode || 'enforce') !== 'off';
   const adversaryMisses = num(data.billingAdversary?.summary?.missedChecks);
   const adversaryUnhealthy = phase === 'RUNNING' && adversaryEnabled && (!data.billingAdversary?.available || !data.billingAdversary?.healthy);
@@ -420,6 +477,7 @@ function render(data) {
   else if (mixedPathUnhealthy) showAlert('真实混合 P2P 路径异常：' + (data.mixedPath?.status || 'NOT_STARTED'));
   else if (watcherNewFailures > 0) showAlert('实时失败监视器发现 ' + watcherNewFailures + ' 条新失败，请查看失败诊断与拓扑路径');
   else if (watcherUnhealthy) showAlert('实时失败监视器状态异常：' + (data.failureWatcher?.status || 'UNKNOWN'));
+  else if (reconnectGateUnhealthy) showAlert('NAT 重连 Gate 不可达，当前已降级到本地 30–60 秒随机退避');
   else if (workersUnhealthy) showAlert('随机传输 Worker 异常：' + num(data.workers?.running) + ' / ' + num(data.workers?.expected));
   else if (capacityActive && num(capacity.transfer?.failures) > 0) showAlert('公网容量测试出现 ' + num(capacity.transfer?.failures) + ' 条传输失败，正在保留现场');
   else if (!capacityActive && (terminalBad || (phase === 'RUNNING' && badCore))) showAlert(data.status.detail || data.resourceGuard || '存在核心节点异常');
@@ -430,14 +488,24 @@ function renderCapacityTest(capacity = {}) {
   const transfer = capacity.transfer || {};
   const resources = capacity.resources || {};
   const healthy = capacity.available && capacity.healthy;
+  const plannedClients = Math.max(
+    num(capacity.plannedClients),
+    num(transfer.clients),
+    num(capacity.checksumWarmup?.clients),
+    num(capacity.connected),
+  );
+  const transferMiB = Math.max(0, num(capacity.transferMiB)) || 100;
+  $('capacityTitle').textContent = plannedClients
+    ? `公网 Relay ${plannedClients} × ${transferMiB} MiB 同时传输容量验证`
+    : '公网 Relay 同时传输容量验证';
   $('capacityPhase').textContent = phase;
   $('capacityPhase').className = 'status ' + (healthy ? 'ok' : capacity.available ? 'bad' : 'warn');
   $('capacityFreshness').textContent = capacity.available
     ? '开始 ' + transferTimestamp(capacity.startedAt) + (transfer.observedAt ? ' · 最新进度 ' + transferTimestamp(transfer.observedAt) : '')
     : '等待正式容量测试';
   $('capacitySummary').innerHTML =
-    capacityStat('已连接', num(capacity.connected) + ' / 100') +
-    capacityStat('唯一预期 SHA', num(capacity.checksumWarmup?.uniqueChecksums) + ' / 100') +
+    capacityStat('已连接', num(capacity.connected) + ' / ' + plannedClients) +
+    capacityStat('唯一预期 SHA', num(capacity.checksumWarmup?.uniqueChecksums) + ' / ' + plannedClients) +
     capacityStat('完整传输', num(transfer.successes) + ' / ' + num(transfer.clients)) +
     capacityStat('失败', num(transfer.failures), num(transfer.failures) ? 'var(--red)' : 'var(--green)') +
     capacityStat('总进度', round(num(transfer.progressPct), 3) + '%') +
@@ -504,11 +572,77 @@ function renderServiceSessions(serviceSessions = {}) {
     ).join('') : '<span class="muted small">当前无活跃 NatClient</span>';
     return '<article class="service-listener ' + (healthy ? '' : 'bad') + '">' +
       '<div class="service-listener-head"><strong>' + escapeHtml(listener.service) + '</strong><span class="status ' + (healthy ? 'ok' : 'bad') + '">' + (healthy ? 'LISTENING' : 'STALE') + '</span></div>' +
-      '<div class="service-listener-path">' + escapeHtml(listener.relay || 'relay?') + ' → ' + escapeHtml(listener.service) + ' · carrier gen ' + num(listener.carrierGeneration) + '</div>' +
-      '<div class="service-session-list">' + sessionChips + '</div>' +
-      '<div class="node-meta">Active ' + num(listener.activeSessions) + ' / ' + num(listener.maxSessions) + ' · Queue ' + num(listener.acceptQueueDepth) + ' / ' + num(listener.acceptQueue) + ' · Accepted ' + num(listener.acceptedTotal) + ' · Rejected ' + num(listener.rejectedTotal) + '</div>' +
-      '</article>';
+	      '<div class="service-listener-path">' + escapeHtml(listener.relay || 'relay?') + ' → ' + escapeHtml(listener.service) + ' · carrier gen ' + num(listener.carrierGeneration) + '</div>' +
+	      '<div class="service-session-list">' + sessionChips + '</div>' +
+	      '<div class="node-meta">Active ' + num(listener.activeSessions) + ' / ' + num(listener.maxSessions) + ' · Queue ' + num(listener.acceptQueueDepth) + ' / ' + num(listener.acceptQueue) + ' · Accepted ' + num(listener.acceptedTotal) + ' · Rejected ' + num(listener.rejectedTotal) + '</div>' +
+	      '<div class="node-meta">MUX Data ' + num(listener.muxDataQueueDepth) + ' / ' + num(listener.muxDataQueueCapacity) + ' · Control ' + num(listener.muxControlQueueDepth) + ' / ' + num(listener.muxControlQueueCapacity) + '</div>' +
+	      '</article>';
   }).join('');
+}
+function renderReconnectGate(gate = {}) {
+  const status = String(gate.status || 'NOT_CONFIGURED');
+  const active = gate.live === true && gate.healthy === true;
+  const unavailable = status === 'UNAVAILABLE';
+  $('reconnectGateFreshness').textContent = gate.available
+    ? (active ? '实时指标' : '测试结束后的最终快照') + (gate.observedAt ? ' · ' + transferTimestamp(gate.observedAt) : '')
+    : (unavailable ? 'Gate 不可达；NAT 将使用本地 30–60 秒抖动回退' : '本轮未启用');
+  $('reconnectGateStatus').className = 'failure-watcher ' + (active ? 'ok' : unavailable ? 'bad' : 'warn');
+  $('reconnectGateStatus').innerHTML =
+    '<strong>重连调度：' + escapeHtml(status) + '</strong><span>' +
+    (active
+      ? '每个 Relay / 协议作用域独立限额，不修改 Relay 侧连接策略'
+      : unavailable
+        ? 'HTTP Gate 不可达，连接端已进入本地 full-jitter 回退'
+        : '仅 NatClient / NatServer 恢复连接时请求') +
+    '</span>';
+  $('reconnectGateSummary').innerHTML =
+    '<span class="transfer-stat">每作用域速率<strong>' + num(gate.safeRate) + ' / s</strong></span>' +
+    '<span class="transfer-stat">滑动窗口<strong>' + num(gate.windowSeconds) + ' s</strong></span>' +
+    '<span class="transfer-stat">已放行<strong style="color:var(--green)">' + num(gate.granted) + '</strong></span>' +
+    '<span class="transfer-stat">排队等待<strong>' + num(gate.queued) + '</strong></span>' +
+    '<span class="transfer-stat">拒绝 / 重试<strong style="color:' + (num(gate.denied) ? 'var(--yellow)' : 'var(--green)') + '">' + num(gate.denied) + '</strong></span>' +
+    '<span class="transfer-stat">峰值压力<strong>' + round(num(gate.pressurePct), 2) + '%</strong></span>';
+  const transports = Array.isArray(gate.transports) ? gate.transports : [];
+  $('reconnectGateTransports').innerHTML = transports.length
+    ? transports.map(item => '<span class="capacity-target">' + escapeHtml(String(item.transport || 'unknown').toUpperCase()) +
+      ' · 放行 ' + num(item.granted) + ' · 排队 ' + num(item.queued) + ' · 拒绝 ' + num(item.denied) + '</span>').join('')
+    : '<span class="muted small">尚无恢复拨号事件</span>';
+}
+function renderCapacityTopResources(resources = {}) {
+  const client = resources.client || {};
+  const natServers = Array.isArray(resources.natServers) ? resources.natServers : [];
+  const relay = resources.relay || {};
+  const network = resources.network || {};
+  const trend = resources.trends?.tenMinutes || {};
+  const localCpu = num(client.cpuPct) + natServers.reduce(
+    (total, item) => total + num(item.cpuPct) + num(item.httpCPUPercent),
+    0,
+  );
+  const localRSSMiB = num(client.rssMiB) + natServers.reduce(
+    (total, item) => total + num(item.rssMiB) + num(item.httpRSSMiB),
+    0,
+  );
+  $('cpuTitle').textContent = '容量进程 CPU';
+  capacityMetric('cpu', `${round(localCpu, 2)}%`, Math.min(100, localCpu), '本地 Client + 3 NatServer + HTTP；进程单核计量，不与宿主机阈值比较');
+  $('memTitle').textContent = '容量进程 RSS';
+  const trendMinutes = Math.max(0, num(trend.windowSeconds) / 60);
+  const trendDetail = trendMinutes > 0
+    ? ` · 近 ${round(trendMinutes, 1)}m ${signed(num(trend.localRSSDeltaMiB))} MiB / ${signed(num(trend.localRSSMiBPerMinute))} MiB/min · FD ${signed(num(trend.localFDDelta))}`
+    : '';
+  capacityMetric('mem', `${round(localRSSMiB / 1024, 2)} GiB`, Math.min(100, localRSSMiB / 40.96), `本地聚合 · 4 GiB 显示尺度 · Relay ${round(num(relay.rssMiB), 2)} MiB${trendDetail}`);
+  $('diskTitle').textContent = '实时网络速率';
+  const receive = num(network.localRxMiBps);
+  const transmit = num(network.localTxMiBps);
+  capacityMetric('disk', `↓ ${round(receive, 2)} / ↑ ${round(transmit, 2)} MiB/s`, Math.min(100, Math.max(receive, transmit) * 10), `10 MiB/s 显示尺度 · 公网 Relay ↓ ${round(num(network.relayRxMiBps), 2)} / ↑ ${round(num(network.relayTxMiBps), 2)} MiB/s`);
+}
+function capacityMetric(prefix, text, fillPct, detail) {
+  $(`${prefix}Text`).textContent = text;
+  $(`${prefix}Meter`).style.width = `${Math.max(0, Math.min(100, fillPct))}%`;
+  $(`${prefix}Host`).textContent = detail;
+}
+function signed(value) {
+  const rounded = round(value, 2);
+  return rounded > 0 ? `+${rounded}` : String(rounded);
 }
 function resource(prefix, value, limit, suffix) {
   $(`${prefix}Text`).textContent = `${round(value,2)}% / ${limit}%`;

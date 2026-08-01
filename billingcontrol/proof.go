@@ -335,7 +335,7 @@ func readyStateProofDigest(binding ReadyStateProofBinding) ([sha256.Size]byte, e
 	if err != nil {
 		return [sha256.Size]byte{}, err
 	}
-	if binding.SessionResetRequired && (binding.SessionPreexisting || binding.RecoveryVoucherID != "") {
+	if binding.SessionResetRequired && binding.SessionPreexisting {
 		return [sha256.Size]byte{}, errors.New("billingcontrol: reset-required ready state is inconsistent")
 	}
 	recoveryVoucherID := make([]byte, canonicalIdentifier)

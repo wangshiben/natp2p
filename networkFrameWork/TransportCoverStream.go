@@ -77,8 +77,8 @@ type TransportCover struct {
 	onRegister func(nodeId, remoteAddr string)
 
 	// onUnregister 只在当前 StreamGroup 被 compare-delete 确认退出后调用。
-	// 回调在 TransportCover 锁内执行，不得回调 TransportCover；这样新注册无法夹在
-	// map 删除与 Relay 托管状态删除之间，旧代次也不会清掉新代次的 DHT 条目。
+	// 回调与注册回调由 registrationLifecycle 串行化，但绝不在 TransportCover 主锁内执行；
+	// 这样既保持旧代注销先于新代注册的顺序，也避免控制面广播阻塞所有业务连接。
 	onUnregister func(nodeId string)
 
 	// onRegisterVerify 是可选的「注册准入校验」钩子，在【建 StreamGroup 之前】被调用。
@@ -113,6 +113,7 @@ type TransportCover struct {
 	registrationIdleTimeout time.Duration
 	registrationSweepPeriod time.Duration
 	idleSweeperRunning      bool
+	registrationLifecycle   sync.Mutex
 }
 
 // SetBusinessConnectHook 安装「业务连接接入校验」钩子（StreamOn 前调用，返回 error 则拒绝接入）。传 nil 卸载。
@@ -331,6 +332,11 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 
 		if len(message.Header.ConnectionId) == 0 {
 			// 注册流：ConnectionId 为空表示这是 relay 注册流。
+			// 注册代次切换与注销回调共用一把独立生命周期锁。它不能是 TransportCover
+			// 主锁：RelayNode 的 onRegister/onUnregister 会广播托管路由，慢控制链路可能
+			// 阻塞数秒；若广播期间持有主锁，所有业务 StreamOn 都会形成全局 HOL。
+			t.registrationLifecycle.Lock()
+			defer t.registrationLifecycle.Unlock()
 			_ = stream.AckFirstMessage()
 
 			// 网络准入(indexSign): 注册 payload 可能是「裸公钥 hex」(旧/无证书)或「JSON 信封
@@ -566,15 +572,23 @@ func (t *TransportCover) listenGroup(nodeID string, group *StreamGroup) {
 	t.ensureIdleSweeperLocked()
 	t.lock.Unlock()
 	group.StartListen()
+
+	// 与新注册串行化 compare-delete 和生命周期回调，但回调必须在主锁外执行。
+	// 新注册若先取得此锁，会原子替换旧 group，下面 compare-delete 随即跳过；
+	// 注销若先取得此锁，则先完整发布离线事件，新注册随后再发布上线事件。
+	t.registrationLifecycle.Lock()
+	defer t.registrationLifecycle.Unlock()
+	var unregisterHook func(string)
 	t.lock.Lock()
 	if t.StreamGroup[nodeID] == group {
 		delete(t.StreamGroup, nodeID)
 		t.rememberDormantRegistrationSessionLocked(nodeID, group, time.Now())
-		if t.onUnregister != nil {
-			t.onUnregister(nodeID)
-		}
+		unregisterHook = t.onUnregister
 	}
 	t.lock.Unlock()
+	if unregisterHook != nil {
+		unregisterHook(nodeID)
+	}
 }
 
 func (t *TransportCover) ensureIdleSweeperLocked() {
@@ -617,7 +631,15 @@ func (t *TransportCover) runIdleSweeper(period time.Duration) {
 			if lastReceive.IsZero() || lastReceive.After(time.Now().Add(-timeout)) {
 				continue
 			}
-			logx.Warnf("[relay] 回收持续静默的注册 StreamGroup: nodeId=%.16s idle=%s timeout=%s",
+			// Receive silence is a congestion/quality signal, not proof of death.
+			// In particular a busy KCP scheduler can starve the preferred leg while
+			// a connected TCP backup remains immediately usable. The endpoint
+			// heartbeat now promotes that backup; only reap after all carriers have
+			// actually closed so a valid long-idle registration is never destroyed.
+			if group.hasLiveRelayCarrier() {
+				continue
+			}
+			logx.Warnf("[relay] 回收已无存活 carrier 的静默注册 StreamGroup: nodeId=%.16s idle=%s timeout=%s",
 				nodeID, time.Since(lastReceive).Round(time.Second), timeout)
 			group.Close()
 		}

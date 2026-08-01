@@ -75,6 +75,157 @@ func TestTcpStreamSendBlocksUntilAck(t *testing.T) {
 	}
 }
 
+func TestTcpStreamHandleFrameBoundsBlockedTransportWrite(t *testing.T) {
+	local, remote := net.Pipe()
+	stream := newTcpStream("node", uuid.New().String(), local)
+	stream.writeTimeout = 25 * time.Millisecond
+	t.Cleanup(func() {
+		stream.Close()
+		remote.Close()
+	})
+
+	frames, err := makeTestMessage(32).SplitToFrames(1, network.DefaultMaxFramePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- stream.HandleFrame(context.Background(), frames[0])
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("blocked transport write returned nil")
+		}
+	case <-time.After(time.Second):
+		remote.Close()
+		t.Fatal("blocked transport write exceeded its bound")
+	}
+}
+
+type observedWriteConn struct {
+	net.Conn
+	started chan struct{}
+}
+
+func (connection *observedWriteConn) Write(payload []byte) (int, error) {
+	select {
+	case connection.started <- struct{}{}:
+	default:
+	}
+	return connection.Conn.Write(payload)
+}
+
+func TestTcpStreamHandleFrameHonorsContextCancellation(t *testing.T) {
+	local, remote := net.Pipe()
+	connection := &observedWriteConn{Conn: local, started: make(chan struct{}, 1)}
+	stream := newTcpStream("node", uuid.New().String(), connection)
+	stream.writeTimeout = time.Second
+	t.Cleanup(func() {
+		stream.Close()
+		remote.Close()
+	})
+
+	frames, err := makeTestMessage(32).SplitToFrames(1, network.DefaultMaxFramePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- stream.HandleFrame(ctx, frames[0])
+	}()
+	select {
+	case <-connection.started:
+	case <-time.After(time.Second):
+		t.Fatal("transport write did not start")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled transport write returned nil")
+		}
+	case <-time.After(time.Second):
+		remote.Close()
+		t.Fatal("canceled transport write remained blocked")
+	}
+}
+
+func TestTcpStreamAcknowledgesCompleteMessageAfterInboxAdmission(t *testing.T) {
+	local, remote := net.Pipe()
+	receiver := newTcpStream("receiver", uuid.New().String(), local)
+	receiver.inboxCh = make(chan *pendingInboxMessage)
+	t.Cleanup(func() {
+		receiver.Close()
+		remote.Close()
+	})
+
+	message := makeTestMessage(32)
+	frames, err := message.SplitToFrames(1, network.DefaultMaxFramePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("frames=%d, want 1", len(frames))
+	}
+	handleDone := make(chan error, 1)
+	go func() {
+		handleDone <- receiver.handleData(frames[0])
+	}()
+
+	if err := remote.SetReadDeadline(time.Now().Add(40 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := network.ReadFrame(remote); err == nil {
+		t.Fatal("receiver acknowledged a message before admitting it to the inbox")
+	}
+	if err := remote.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case pending := <-receiver.inboxCh:
+		if pending == nil || pending.msg == nil || !bytes.Equal(pending.msg.Payload, message.Payload) {
+			t.Fatal("admitted inbox message mismatch")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message was not admitted to the inbox")
+	}
+	ack, err := network.ReadFrame(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.FrameType != network.FrameTypeAck {
+		t.Fatalf("frame type=%d, want ACK", ack.FrameType)
+	}
+	if err := <-handleDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTcpStreamDrainsAcknowledgedInboxAfterTransportClose(t *testing.T) {
+	local, remote := net.Pipe()
+	stream := newTcpStream("receiver", uuid.New().String(), local)
+	t.Cleanup(func() {
+		stream.Close()
+		remote.Close()
+	})
+	message := makeTestMessage(16)
+	stream.inboxCh <- &pendingInboxMessage{msg: message}
+	stream.failAndClose(errors.New("transport failed after acknowledgement"))
+
+	got, err := stream.NextMessage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Payload, message.Payload) {
+		t.Fatal("buffered message was not drained after transport close")
+	}
+}
+
 func TestTcpStreamInitialWriteCallbackPrecedesFinalAck(t *testing.T) {
 	local, remote := net.Pipe()
 	sender := startTcpStream("nodeB", uuid.New().String(), local)
@@ -239,8 +390,8 @@ func TestTcpStreamSendMaxRetransmits(t *testing.T) {
 	})
 
 	err := sender.SendMessage(context.Background(), makeTestMessage(50))
-	if err == nil {
-		t.Fatal("expected error after exhausting retransmits")
+	if !errors.Is(err, ErrMessageMaxRetransmits) {
+		t.Fatalf("error after exhausting retransmits = %v, want %v", err, ErrMessageMaxRetransmits)
 	}
 }
 
@@ -364,6 +515,33 @@ func TestTcpStreamStartKeepAliveClosesSilentLogicalPeer(t *testing.T) {
 	}
 }
 
+func TestLinkLocalKeepAliveClassificationForwardsSealedLogicalPing(t *testing.T) {
+	message := &network.Message{
+		Header: &network.Header{
+			RouteName:     KeepAliveRoute,
+			NodeId:        "node",
+			NodeIdVersion: 1,
+			ConnectionId:  "connection",
+		},
+	}
+	plainFrames, err := message.SplitToFrames(1, network.DefaultMaxFramePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plainFrames) != 1 || !isLinkLocalKeepAliveFrame(plainFrames[0]) {
+		t.Fatal("empty transport heartbeat was not classified as link-local")
+	}
+
+	message.Payload = []byte("sealed-e2e-record")
+	sealedFrames, err := message.SplitToFrames(2, network.DefaultMaxFramePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sealedFrames) != 1 || isLinkLocalKeepAliveFrame(sealedFrames[0]) {
+		t.Fatal("sealed logical heartbeat was consumed by the Relay carrier")
+	}
+}
+
 func TestTcpStreamKeepAliveAcceptsAckProgressDuringOneWayTransfer(t *testing.T) {
 	sender, receiver := newPipeStreams(t)
 	sender.keepAlivePolicy = streamKeepAlivePolicy{
@@ -455,5 +633,36 @@ func TestTcpStreamKeepAliveDefersToPendingBusinessSend(t *testing.T) {
 	case <-sendDone:
 	case <-time.After(time.Second):
 		t.Fatal("pending business send did not stop after peer close")
+	}
+}
+
+func TestTcpStreamConnectionCloseFrameIsForwardedOrClosesEndpoint(t *testing.T) {
+	frame := &network.Frame{
+		FrameType:    network.FrameTypeConnectionClose,
+		ConnectionId: "connection-close-test",
+	}
+
+	forwarder := newTcpStream("peer", "carrier", nil)
+	defer forwarder.streamCancel()
+	tap := make(chan *network.Frame, 1)
+	forwarder.SetFrameTap(tap)
+	forwarder.SetPureForwarder(true)
+	if err := forwarder.handleFrame(frame); err != nil {
+		t.Fatalf("forward close frame: %v", err)
+	}
+	select {
+	case forwarded := <-tap:
+		if forwarded != frame {
+			t.Fatal("forwarder changed the close frame")
+		}
+	default:
+		t.Fatal("forwarder dropped the close frame")
+	}
+
+	endpoint := newTcpStream("peer", frame.ConnectionId, nil)
+	defer endpoint.streamCancel()
+	err := endpoint.handleFrame(frame)
+	if !errors.Is(err, ErrConnectionClosedByPeer) || !errors.Is(err, io.EOF) {
+		t.Fatalf("endpoint close frame error = %v, want peer-close EOF", err)
 	}
 }

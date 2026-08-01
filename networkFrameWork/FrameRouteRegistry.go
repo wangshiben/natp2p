@@ -384,12 +384,19 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 	}
 	rejectConnection := func(frame *network.Frame, err error) {
 		flush()
-		logx.Warnf("[billing-holdback] 拒绝并关闭业务连接: nodeId=%.16q direction=relay_to_clients err=%q", nodeID, err)
-		hookState.rejectRecord(ctx, frame, "relay_to_clients", err)
 		connectionID := ""
+		messageID := uint64(0)
+		sequenceID := uint32(0)
 		if frame != nil {
 			connectionID = frame.ConnectionId
+			messageID = frame.MessageId
+			sequenceID = frame.SeqId
 		}
+		logx.Warnf(
+			"[billing-holdback] 拒绝并关闭业务连接: nodeId=%.16q connectionId=%s messageId=%d frameSeq=%d direction=relay_to_clients errorType=%T err=%q",
+			nodeID, connectionID, messageID, sequenceID, err, err,
+		)
+		hookState.rejectRecord(ctx, frame, "relay_to_clients", err)
 		if connectionID == "" {
 			return
 		}
@@ -417,6 +424,21 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 		}
 		for _, incoming := range frames {
 			if incoming == nil {
+				continue
+			}
+			if incoming.FrameType == network.FrameTypeConnectionClose {
+				flush()
+				connectionID := incoming.ConnectionId
+				destination := lookup(connectionID)
+				routes.purgeConnection(connectionID)
+				if destination == nil {
+					continue
+				}
+				out := cloneFrame(incoming)
+				out.MessageId = destination.AllocMessageId()
+				if err := destination.HandleFrame(ctx, out); err != nil && onClientFailure != nil {
+					onClientFailure(connectionID, destination)
+				}
 				continue
 			}
 			if hookState.billableRecordRequired("relay_to_clients") && isRelayBatchDataFrame(incoming) && lookup(incoming.ConnectionId) == nil {
@@ -544,6 +566,18 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 		}
 		for _, f := range frames {
 			if f == nil {
+				continue
+			}
+			if f.FrameType == network.FrameTypeConnectionClose {
+				if !flush() {
+					return
+				}
+				out := cloneFrame(f)
+				out.MessageId = relay.AllocMessageId()
+				if err := relay.HandleFrame(ctx, out); err != nil {
+					return
+				}
+				routes.purgeConnection(client.ConnectionId())
 				continue
 			}
 			if bridgeDebug {

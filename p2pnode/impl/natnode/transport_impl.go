@@ -13,17 +13,52 @@ type NATTransport struct {
 	pubKeyHex string
 	// signJSON 是本节点持有的 CA 签发准入证书(indexSign, admission.SignedCert JSON)，可空。
 	// 注册时随注册消息携带, relay 离线验签并据证书 Role 区分 client/server。空则走裸公钥(无准入)。
-	signJSON   []byte
-	relayState *relayFailoverState
+	signJSON      []byte
+	relayState    *relayFailoverState
+	reconnectGate networkFrameWork.ReconnectGate
+}
+
+type fixedRelayDialPolicy struct {
+	address string
+	gate    networkFrameWork.ReconnectGate
+	role    string
+}
+
+func (policy fixedRelayDialPolicy) CurrentRelay() (networkFrameWork.RelayDialTarget, error) {
+	return networkFrameWork.RelayDialTarget{Address: policy.address}, nil
+}
+
+func (fixedRelayDialPolicy) ReportRelayDialResult(networkFrameWork.RelayDialTarget, error) {}
+
+func (policy fixedRelayDialPolicy) ReconnectGate() networkFrameWork.ReconnectGate {
+	return policy.gate
+}
+
+func (policy fixedRelayDialPolicy) ReconnectRole() string {
+	return policy.role
 }
 
 // NewNATTransport 创建使用指定公钥 hex 进行 relay 通信的 Transport。
 func NewNATTransport(pubKeyHex string, relayState ...*relayFailoverState) *NATTransport {
-	transport := &NATTransport{pubKeyHex: pubKeyHex}
+	transport := &NATTransport{
+		pubKeyHex:     pubKeyHex,
+		reconnectGate: networkFrameWork.NewReconnectGateFromEnvironment(),
+	}
 	if len(relayState) > 0 {
 		transport.relayState = relayState[0]
 	}
 	return transport
+}
+
+func (t *NATTransport) ReconnectGate() networkFrameWork.ReconnectGate {
+	return t.reconnectGate
+}
+
+func (t *NATTransport) WaitForReconnect(ctx context.Context, request networkFrameWork.ReconnectGateRequest) error {
+	if t.reconnectGate == nil {
+		return nil
+	}
+	return t.reconnectGate.Wait(ctx, request)
 }
 
 func (t *NATTransport) CurrentRelay() (networkFrameWork.RelayDialTarget, error) {
@@ -65,6 +100,13 @@ func (t *NATTransport) Register(ctx context.Context, relayAddr string, publicKey
 	if t.relayState != nil {
 		return networkFrameWork.TryRegisterRelayStreamWithSignAndRelayPolicy(publicKeyHex, t.signJSON, t)
 	}
+	if t.reconnectGate != nil {
+		return networkFrameWork.TryRegisterRelayStreamWithSignAndRelayPolicy(
+			publicKeyHex,
+			t.signJSON,
+			fixedRelayDialPolicy{address: relayAddr, gate: t.reconnectGate, role: "natserver"},
+		)
+	}
 	return networkFrameWork.TryRegisterRelayStreamWithSign(publicKeyHex, relayAddr, t.signJSON)
 }
 
@@ -77,6 +119,13 @@ func (t *NATTransport) RegisterAtRelay(ctx context.Context, relayAddr string, pu
 		return nil, ctx.Err()
 	default:
 	}
+	if t.reconnectGate != nil {
+		return networkFrameWork.TryRegisterRelayStreamWithSignAndRelayPolicy(
+			publicKeyHex,
+			t.signJSON,
+			fixedRelayDialPolicy{address: relayAddr, gate: t.reconnectGate, role: "natserver"},
+		)
+	}
 	return networkFrameWork.TryRegisterRelayStreamWithSign(publicKeyHex, relayAddr, t.signJSON)
 }
 
@@ -85,6 +134,13 @@ func (t *NATTransport) RegisterAtRelay(ctx context.Context, relayAddr string, pu
 func (t *NATTransport) Dial(ctx context.Context, relayAddr string, targetID p2pnode.NodeID) (network.Stream, string, error) {
 	if t.relayState != nil {
 		return networkFrameWork.TryConnectTCPStreamWithRelayPolicy(t, string(targetID), t.pubKeyHex)
+	}
+	if t.reconnectGate != nil {
+		return networkFrameWork.TryConnectTCPStreamWithRelayPolicy(
+			fixedRelayDialPolicy{address: relayAddr, gate: t.reconnectGate, role: "natclient"},
+			string(targetID),
+			t.pubKeyHex,
+		)
 	}
 	return networkFrameWork.TryConnectTCPStream(relayAddr, string(targetID), t.pubKeyHex)
 }

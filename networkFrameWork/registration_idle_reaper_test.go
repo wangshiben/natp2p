@@ -1,8 +1,10 @@
 package networkFrameWork
 
 import (
+	"bnfs_p2p/network"
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 type idleLifecycleCarrier struct {
 	*lifecycleCarrier
 	lastReceiveMicros atomic.Int64
+	unhealthy         atomic.Bool
 }
 
 func newIdleLifecycleCarrier(nodeID string) *idleLifecycleCarrier {
@@ -25,6 +28,10 @@ func (c *idleLifecycleCarrier) touch() {
 
 func (c *idleLifecycleCarrier) LatestReceiveTime() time.Time {
 	return time.UnixMicro(c.lastReceiveMicros.Load())
+}
+
+func (c *idleLifecycleCarrier) IsClosed() bool {
+	return c.unhealthy.Load()
 }
 
 func newIdleLifecycleGroup(relay *idleLifecycleCarrier) *StreamGroup {
@@ -45,6 +52,7 @@ func TestTransportCoverReapsSilentRegistrationGroup(t *testing.T) {
 	cover := NewTransportCover()
 	cover.SetRegistrationIdlePolicy(40*time.Millisecond, 5*time.Millisecond)
 	relay := newIdleLifecycleCarrier("silent-registration")
+	relay.unhealthy.Store(true)
 	group := newIdleLifecycleGroup(relay)
 	cover.StreamGroup[group.nodeId] = group
 	unregistered := make(chan string, 1)
@@ -60,6 +68,32 @@ func TestTransportCoverReapsSilentRegistrationGroup(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("silent registration cleanup did not invoke unregister hook")
 	}
+}
+
+func TestTransportCoverKeepsLiveSilentRegistrationAndAcceptsBusiness(t *testing.T) {
+	cover := NewTransportCover()
+	cover.SetRegistrationIdlePolicy(40*time.Millisecond, 5*time.Millisecond)
+	relay := newRelaySlotTestTCPStream(t, "live-silent-registration")
+	group := newStreamGroupWithRelaySlot(relay, defaultHookfunc, false)
+	cover.StreamGroup[group.nodeId] = group
+	go cover.listenGroup(group.nodeId, group)
+
+	time.Sleep(120 * time.Millisecond)
+	if !cover.HasGroup(group.nodeId) {
+		t.Fatal("live registration was reaped solely because it remained silent")
+	}
+
+	client := newRelaySlotTestTCPStream(t, "business-client")
+	SetStreamIdentity(client, "business-client", "business-after-idle")
+	first := &network.Message{Header: &network.Header{
+		NodeId:       group.nodeId,
+		ConnectionId: client.ConnectionId(),
+	}}
+	if _, err := group.StreamOn(client, first); err != nil {
+		t.Fatalf("business connection after registration idle timeout failed: %v", err)
+	}
+	group.Close()
+	waitLifecycleCondition(t, time.Second, func() bool { return !cover.HasGroup(group.nodeId) })
 }
 
 func TestTransportCoverDoesNotReapActiveRegistrationGroup(t *testing.T) {
@@ -123,6 +157,44 @@ func TestTransportCoverUnregisterHookCannotRemoveReplacement(t *testing.T) {
 	}
 }
 
+func TestTransportCoverBlockingUnregisterHookDoesNotBlockBusinessRegistry(t *testing.T) {
+	cover := NewTransportCover()
+	cover.SetRegistrationIdlePolicy(0, 0)
+	hookStarted := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var started sync.Once
+	cover.SetUnregisterHook(func(string) {
+		started.Do(func() { close(hookStarted) })
+		<-releaseHook
+	})
+
+	relay := newIdleLifecycleCarrier("blocking-unregister")
+	group := newIdleLifecycleGroup(relay)
+	cover.lock.Lock()
+	cover.StreamGroup[group.nodeId] = group
+	cover.lock.Unlock()
+	go cover.listenGroup(group.nodeId, group)
+	<-relay.nextStarted
+	group.Close()
+	select {
+	case <-hookStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocking unregister hook did not start")
+	}
+
+	// HasGroup uses the same registry lock as the business StreamOn lookup. A blocking
+	// control-plane hook must not retain that lock and globally stall new sessions.
+	lookupDone := make(chan bool, 1)
+	go func() { lookupDone <- cover.HasGroup("unrelated-business-target") }()
+	select {
+	case <-lookupDone:
+	case <-time.After(100 * time.Millisecond):
+		close(releaseHook)
+		t.Fatal("blocking unregister hook retained the TransportCover registry lock")
+	}
+	close(releaseHook)
+}
+
 func TestDualStreamLatestReceiveTimeUsesNewestPhysicalLeg(t *testing.T) {
 	older := newIdleLifecycleCarrier("dual-activity")
 	newer := newIdleLifecycleCarrier("dual-activity")
@@ -151,6 +223,7 @@ func TestTransportCoverBurstRegistrationsAreFullyReaped(t *testing.T) {
 
 	for index := 0; index < groupCount; index++ {
 		relay := newIdleLifecycleCarrier(fmt.Sprintf("burst-registration-%03d", index))
+		relay.unhealthy.Store(true)
 		group := newIdleLifecycleGroup(relay)
 		cover.lock.Lock()
 		cover.StreamGroup[group.nodeId] = group

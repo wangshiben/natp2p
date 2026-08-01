@@ -1,6 +1,7 @@
 package relaynode
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -12,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"sort"
+	"sync"
 	"time"
 
 	"bnfs_p2p/admission"
@@ -20,13 +22,16 @@ import (
 )
 
 const (
-	hostRouteLease             = 45 * time.Second
-	hostRouteRenewPeriod       = 15 * time.Second
-	hostRouteClockSkew         = 30 * time.Second
-	maximumHostRouteBatch      = 128
-	maximumHostRoutePath       = 8
-	maximumHostRouteTargets    = 65536
-	maximumHostRoutesPerTarget = 32
+	hostRouteLease                  = 45 * time.Second
+	hostRouteRenewPeriod            = 15 * time.Second
+	hostRouteClockSkew              = 30 * time.Second
+	maximumHostRouteBatch           = 128
+	maximumHostRoutePath            = 8
+	maximumHostRouteTargets         = 65536
+	maximumHostRoutesPerTarget      = 32
+	hostRouteBroadcastTimeout       = 3 * time.Second
+	hostRouteBroadcastWorkers       = 8
+	hostRouteBroadcastQueueCapacity = 256
 )
 
 type hostRouteRecord struct {
@@ -210,6 +215,116 @@ func (n *RelayNode) broadcastHostRoutes(routes []hostRouteWire, exceptPeerID str
 }
 
 func (n *RelayNode) broadcastControl(message *controlMessage, exceptPeerID string) {
+	if message == nil || n.ctx.Err() != nil {
+		return
+	}
+	event := hostRouteBroadcastEvent{
+		message:      cloneBroadcastControlMessage(message),
+		exceptPeerID: exceptPeerID,
+	}
+	select {
+	case n.hostRouteBroadcastQueue <- event:
+	default:
+		dropped := n.hostRouteBroadcastDropped.Add(1)
+		// 只按 2 的幂次告警，既保留持续过载证据，也避免告警本身放大控制面压力。
+		if dropped == 1 || dropped&(dropped-1) == 0 {
+			logx.Warnf("[relay-route] 广播队列已满，丢弃可续期软状态: type=%s dropped=%d capacity=%d",
+				message.Type, dropped, cap(n.hostRouteBroadcastQueue))
+		}
+	}
+}
+
+func (n *RelayNode) runHostRouteBroadcasts() {
+	defer close(n.hostRouteBroadcastDone)
+	var pending *hostRouteBroadcastEvent
+	for {
+		if n.ctx.Err() != nil {
+			return
+		}
+		var event hostRouteBroadcastEvent
+		if pending != nil {
+			event = *pending
+			pending = nil
+		} else {
+			select {
+			case <-n.ctx.Done():
+				return
+			case event = <-n.hostRouteBroadcastQueue:
+			}
+		}
+		event, pending = n.mergeQueuedHostRouteBroadcasts(event)
+		n.deliverBroadcastControl(event.message, event.exceptPeerID)
+	}
+}
+
+// mergeQueuedHostRouteBroadcasts 将相邻且同方向的托管路由事件合成一个最多 128 条的批次。
+// 队列仍由单 worker 严格按序消费，因此同一目标的 offline -> online 代次不会被重排；
+// 周期续期也不会因一个异常邻居而变成每目标一次 3 秒超时。
+func (n *RelayNode) mergeQueuedHostRouteBroadcasts(first hostRouteBroadcastEvent) (hostRouteBroadcastEvent, *hostRouteBroadcastEvent) {
+	for broadcastControlItemCount(first.message) < maximumHostRouteBatch {
+		select {
+		case next := <-n.hostRouteBroadcastQueue:
+			if !mergeBroadcastControlMessage(first.message, next.message, first.exceptPeerID, next.exceptPeerID) {
+				return first, &next
+			}
+		default:
+			return first, nil
+		}
+	}
+	return first, nil
+}
+
+func broadcastControlItemCount(message *controlMessage) int {
+	if message == nil {
+		return 0
+	}
+	switch message.Type {
+	case ctrlHostRoutes:
+		return len(message.Routes)
+	case ctrlHostWithdraw:
+		return len(message.Withdrawals)
+	default:
+		return maximumHostRouteBatch
+	}
+}
+
+func mergeBroadcastControlMessage(destination, source *controlMessage, destinationExcept, sourceExcept string) bool {
+	if destination == nil || source == nil || destination.Type != source.Type || destinationExcept != sourceExcept {
+		return false
+	}
+	switch destination.Type {
+	case ctrlHostRoutes:
+		if len(destination.Routes)+len(source.Routes) > maximumHostRouteBatch {
+			return false
+		}
+		destination.Routes = append(destination.Routes, source.Routes...)
+		return true
+	case ctrlHostWithdraw:
+		if len(destination.Withdrawals)+len(source.Withdrawals) > maximumHostRouteBatch {
+			return false
+		}
+		destination.Withdrawals = append(destination.Withdrawals, source.Withdrawals...)
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneBroadcastControlMessage(message *controlMessage) *controlMessage {
+	if message == nil {
+		return nil
+	}
+	cloned := *message
+	cloned.IndexSign = append([]byte(nil), message.IndexSign...)
+	cloned.Routes = make([]hostRouteWire, len(message.Routes))
+	for index, route := range message.Routes {
+		cloned.Routes[index] = cloneHostRoute(route)
+	}
+	cloned.Withdrawals = append([]hostRouteKey(nil), message.Withdrawals...)
+	return &cloned
+}
+
+func (n *RelayNode) deliverBroadcastControl(message *controlMessage, exceptPeerID string) {
 	n.mu.RLock()
 	links := make([]*peerLink, 0, len(n.peerLinks)+len(n.inboundLinks))
 	for _, link := range n.peerLinks {
@@ -217,6 +332,7 @@ func (n *RelayNode) broadcastControl(message *controlMessage, exceptPeerID strin
 	}
 	links = append(links, n.inboundLinks...)
 	n.mu.RUnlock()
+	eligible := make([]*peerLink, 0, len(links))
 	for _, link := range links {
 		if link == nil {
 			continue
@@ -227,7 +343,47 @@ func (n *RelayNode) broadcastControl(message *controlMessage, exceptPeerID strin
 		if peerID == "" || peerID == exceptPeerID {
 			continue
 		}
-		_ = link.send(message)
+		eligible = append(eligible, link)
+	}
+	if len(eligible) == 0 {
+		return
+	}
+
+	// 使用共享截止时间和小型 worker pool 并行投递：单条坏控制链路最多拖慢本轮 3 秒，
+	// 健康链路仍可同时收到事件；本函数仅由长期广播 worker 串行调用，事件内 worker
+	// 数也有硬上限，因此邻居异常时不会制造 goroutine 风暴或反向阻塞 NAT 注册。
+	ctx, cancel := context.WithTimeout(n.ctx, hostRouteBroadcastTimeout)
+	defer cancel()
+	jobs := make(chan *peerLink, len(eligible))
+	for _, link := range eligible {
+		jobs <- link
+	}
+	close(jobs)
+	workers := min(hostRouteBroadcastWorkers, len(eligible))
+	n.mu.RLock()
+	send := n.hostRouteBroadcastSend
+	n.mu.RUnlock()
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wait.Done()
+			for link := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				_ = send(ctx, link, message)
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wait.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 

@@ -465,6 +465,74 @@ func TestRotateBillingSessionAllowsFullyVoucherCoveredState(t *testing.T) {
 	}
 }
 
+func TestRotationSettlementCoversUnsafeSessionBeforeRotation(t *testing.T) {
+	pipeline := newSubmitTestPipeline(t, "http://127.0.0.1:1")
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payerID, _ := billingvoucher.NodeIDFromPublicKey(payerKey.PublicKey())
+	payerCertificate := submitTestCertificate(payerKey.PublicKey(), admission.RoleServer)
+	pipeline.node.mu.Lock()
+	pipeline.node.admission = &AdmissionConfig{Mode: AdmissionEnforce, Verifier: billingControlTestVerifier{}}
+	pipeline.node.mu.Unlock()
+	pipeline.node.accounts.putCert(payerID.String(), payerCertificate)
+	sessionID := billingvoucher.Identifier{83, 84, 85}
+	session := newRelayBillingSession(payerID, sessionID)
+	snapshot := relayBillingSnapshot{
+		cumulative: 512, lastRecord: billingvoucher.Identifier{86},
+		lastRecordSequence: 7, recordSet: billingvoucher.Digest{87},
+	}
+	session.cumulative = snapshot.cumulative
+	session.lastRecord = snapshot.lastRecord
+	session.lastRecordSequence = snapshot.lastRecordSequence
+	session.recordSet = snapshot.recordSet
+	session.nextRecordSequence = snapshot.lastRecordSequence + 1
+	pipeline.sessions[sessionID] = session
+	pipeline.currentByPayer[payerID] = session
+
+	voucher, err := pipeline.issueVoucherWithClaim(
+		context.Background(), session, snapshot,
+		func(_ context.Context, claim billingcontrol.Message) (billingcontrol.Message, error) {
+			body, err := billingvoucher.ParseCanonicalBody(claim.Body)
+			if err != nil {
+				return billingcontrol.Message{}, err
+			}
+			payerSignature, err := billingvoucher.SignPayer(body, payerKey)
+			if err != nil {
+				return billingcontrol.Message{}, err
+			}
+			cosigned, err := billingvoucher.NewMutualVoucher(body, payerSignature, claim.RelaySignature)
+			if err != nil {
+				return billingcontrol.Message{}, err
+			}
+			encoded, err := cosigned.CanonicalBytes()
+			if err != nil {
+				return billingcontrol.Message{}, err
+			}
+			return billingcontrol.Message{
+				Type: billingcontrol.TypeCosigned, Voucher: encoded,
+				PayerPublicKey: crypoto.GetPubKeyStr(payerKey.PublicKey()), PayerCert: payerCertificate,
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("final rotation settlement: %v", err)
+	}
+	session.lastVoucher = voucher
+	session.hasVoucher = true
+	if !billingSessionSafeToRotate(session) {
+		t.Fatal("final settlement did not make the old session safe to rotate")
+	}
+	rotated, err := pipeline.rotateSessionForPayer(payerID, session)
+	if err != nil || rotated == nil || rotated == session {
+		t.Fatalf("rotate settled session = (%v, %v)", rotated, err)
+	}
+	if pipeline.queue.Len() != 1 {
+		t.Fatalf("durable settlement queue length = %d, want 1", pipeline.queue.Len())
+	}
+}
+
 func TestResetRequiredRotatesBillingSessionBeforeControlInstall(t *testing.T) {
 	relayKey, err := crypoto.MakeKeyPair()
 	if err != nil {

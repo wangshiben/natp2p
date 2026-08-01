@@ -37,6 +37,7 @@ const (
 	FrameTypeAck             uint8 = 1
 	FrameTypeRetransmit      uint8 = 2
 	FrameTypeFrameSizeChange uint8 = 3 // 帧大小变更控制帧
+	FrameTypeConnectionClose uint8 = 4
 )
 
 // FrameMagic 区分 Frame 与裸 Message Header，避免误解析。

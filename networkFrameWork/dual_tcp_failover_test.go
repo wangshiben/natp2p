@@ -132,6 +132,82 @@ func TestDualDial_KCPBlocked_FallbackToSecondTCP(t *testing.T) {
 	t.Logf("✅ KCP 不通时降级为双 TCP leg 成功 (建连耗时 %v, leg=%v, 含 KCP 握手超时)", dur, legIDs)
 }
 
+func TestDualDial_SingleTCPModeSkipsBackupLeg(t *testing.T) {
+	t.Setenv("BNFS_SINGLE_TCP", "1")
+	t.Setenv("BNFS_DISABLE_KCP", "")
+	relayAddr, cover, stop := startTCPOnlyRelayWithCover(t)
+	defer stop()
+
+	serverID, err := newRelayTestIdentity("single-tcp-server")
+	if err != nil {
+		t.Fatalf("创建 server 身份失败: %v", err)
+	}
+	serverStream, err := TryRegisterRelayStream(serverID.publicKey, relayAddr)
+	if err != nil {
+		t.Fatalf("server 单 TCP 注册失败: %v", err)
+	}
+	defer serverStream.Close()
+	if err := waitForRelayGroup(cover, serverID.nodeID, 3*time.Second); err != nil {
+		t.Fatalf("等待 server StreamGroup 就绪超时: %v", err)
+	}
+
+	connID := "single-tcp-capacity-test"
+	body := &network.Message{
+		Header:  &network.Header{NodeId: serverID.nodeID, NodeIdVersion: 1, ConnectionId: connID},
+		Payload: []byte("single-tcp-client"),
+	}
+	stream, err := clientStream(body, relayAddr, serverID.nodeID, connID, true)
+	if err != nil {
+		t.Fatalf("单 TCP 拨号失败: %v", err)
+	}
+	defer stream.Close()
+
+	dual, ok := stream.(*DualStream)
+	if !ok {
+		t.Fatalf("期望返回 *DualStream, 实际 %T", stream)
+	}
+	dual.mu.RLock()
+	legCount := len(dual.legs)
+	for id, entry := range dual.legs {
+		if id != streamTransportTCP || entry.family != streamTransportTCP {
+			dual.mu.RUnlock()
+			t.Fatalf("单 TCP 模式出现非主 TCP leg: id=%s family=%s", id, entry.family)
+		}
+	}
+	dual.mu.RUnlock()
+	if legCount != 1 {
+		t.Fatalf("单 TCP 模式必须只有 1 条 leg, 实际 %d", legCount)
+	}
+
+	dual.reconnectMu.Lock()
+	_, hasPrimary := dual.reconnectDialers[streamTransportTCP]
+	_, hasKCP := dual.reconnectDialers[streamTransportKCP]
+	_, hasBackup := dual.reconnectDialers[relayBackupLegID(streamTransportTCP)]
+	dual.reconnectMu.Unlock()
+	if !hasPrimary || hasKCP || hasBackup {
+		t.Fatalf("单 TCP 重连拨号器错误: primary=%v kcp=%v backup=%v", hasPrimary, hasKCP, hasBackup)
+	}
+
+	cover.lock.RLock()
+	serverGroup := cover.StreamGroup[serverID.nodeID]
+	cover.lock.RUnlock()
+	if serverGroup == nil {
+		t.Fatal("server StreamGroup 丢失")
+	}
+	serverGroup.lock.Lock()
+	serverDual, serverOK := serverGroup.relayStream.(*DualStream)
+	serverGroup.lock.Unlock()
+	if !serverOK {
+		t.Fatalf("server 注册流应为 *DualStream, 实际 %T", serverGroup.relayStream)
+	}
+	serverDual.mu.RLock()
+	serverLegCount := len(serverDual.legs)
+	serverDual.mu.RUnlock()
+	if serverLegCount != 1 {
+		t.Fatalf("单 TCP 模式 server 侧必须只有 1 条 leg, 实际 %d", serverLegCount)
+	}
+}
+
 func TestDualDial_KCPLateWithinHandshake_CoexistsWithTCP(t *testing.T) {
 	t.Setenv("BNFS_DISABLE_KCP", "")
 	t.Setenv("BNFS_TEST_ACK_DELAY", "350ms")

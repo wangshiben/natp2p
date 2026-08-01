@@ -47,6 +47,11 @@ func (s *Session) readLoop() {
 			}
 		case frameSessionClose:
 			return
+		case frameReset:
+			st := s.stream(id)
+			if st != nil {
+				st.finishClose()
+			}
 		}
 	}
 }
@@ -78,11 +83,13 @@ func (s *Session) inboundStream(id uint32) *Stream {
 }
 
 // sendOpen sends an OPEN frame (no seq, no window — control frame, must precede DATA).
-func (s *Session) sendOpen(id uint32) error {
+func (s *Session) sendOpen(ctx context.Context, id uint32) error {
 	buf := make([]byte, headerBase)
 	buf[0] = frameOpen
 	binary.BigEndian.PutUint32(buf[1:5], id)
-	return s.conn.Send(s.ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
+	return s.conn.Send(ctx, &p2pnode.Message{
+		Type: p2pnode.MsgAppData, Path: p2pnode.TransportControlPath, Payload: buf,
+	})
 }
 
 // sendData sends one DATA frame carrying a per-stream sequence number.
@@ -117,13 +124,32 @@ func (s *Session) sendClose(ctx context.Context, id uint32, finalSeq uint64) err
 	buf[0] = frameClose
 	binary.BigEndian.PutUint32(buf[1:5], id)
 	binary.BigEndian.PutUint64(buf[5:13], finalSeq)
-	return s.conn.Send(ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
+	return s.conn.Send(ctx, &p2pnode.Message{
+		Type: p2pnode.MsgAppData, Path: p2pnode.TransportControlPath, Payload: buf,
+	})
+}
+
+func (s *Session) sendReset(ctx context.Context, id uint32) error {
+	buf := make([]byte, headerBase)
+	buf[0] = frameReset
+	binary.BigEndian.PutUint32(buf[1:5], id)
+	return s.conn.Send(ctx, &p2pnode.Message{
+		Type: p2pnode.MsgAppData, Path: p2pnode.TransportControlPath, Payload: buf,
+	})
 }
 
 func (s *Session) sendSessionClose(ctx context.Context) error {
 	buf := make([]byte, headerBase)
 	buf[0] = frameSessionClose
-	return s.conn.Send(ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
+	return s.conn.Send(ctx, &p2pnode.Message{
+		Type: p2pnode.MsgAppData, Path: p2pnode.TransportControlPath, Payload: buf,
+	})
+}
+
+func (s *Session) stream(id uint32) *Stream {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streams[id]
 }
 
 // removeStream drops a stream from the table.

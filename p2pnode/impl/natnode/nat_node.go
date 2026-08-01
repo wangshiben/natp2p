@@ -300,7 +300,7 @@ func (n *NATNode) registerAndServe(addr string) error {
 	n.startBillingControl(addr)
 	if n.billingMeter.certificate() != nil {
 		billingCtx, cancel := context.WithTimeout(n.ctx, 8*time.Second)
-		err = n.billingMeter.waitRelaySession(billingCtx, addr)
+		err = n.billingMeter.waitRelaySession(billingCtx, addr, "")
 		cancel()
 		if err != nil {
 			n.removeRegistrationEntry(entry)

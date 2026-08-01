@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -43,6 +44,127 @@ const productionGateEvidenceDetails = [
   "billing_production_gate_recovery_server_restart_failed",
   "billing_production_gate_recovery_queue_timeout",
 ];
+
+test("Dashboard publishes only aggregate reconnect gate metrics", async () => {
+  const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-reconnect-gate-"));
+  const secretRelay = "private-relay.internal:9000";
+  const secretToken = "private-reconnect-gate-token";
+  let authenticated = false;
+  const gateServer = http.createServer((request, response) => {
+    authenticated = request.headers.authorization === `Bearer ${secretToken}`;
+    const body = JSON.stringify({
+      status: "ok",
+      startedAt: "2026-07-29T00:00:00Z",
+      observedAt: "2026-07-29T00:01:00Z",
+      safeRate: 10,
+      windowSeconds: 10,
+      scopes: [
+        {
+          scope: `${secretRelay}|tcp`,
+          granted: 12,
+          denied: 2,
+          futureSlots: 7,
+          scheduledPerSecondPeak: 4,
+          windowRequests: 9,
+          pressure: 0.09,
+        },
+        {
+          scope: `${secretRelay}|carrier`,
+          granted: 3,
+          denied: 0,
+          futureSlots: 2,
+          scheduledPerSecondPeak: 2,
+          windowRequests: 3,
+          pressure: 0.03,
+        },
+      ],
+    });
+    response.writeHead(authenticated && request.url === "/metrics" ? 200 : 401, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+      Connection: "close",
+    });
+    response.end(body);
+  });
+  await new Promise((resolve) => gateServer.listen(0, "127.0.0.1", resolve));
+  const gateAddress = gateServer.address();
+  try {
+    await withDashboard(runDir, async (port) => {
+      const response = await dashboardFetch(`http://127.0.0.1:${port}/api/status`);
+      assert.equal(response.status, 200);
+      const encoded = await response.text();
+      const reconnectGate = JSON.parse(encoded).reconnectGate;
+      assert.equal(authenticated, true);
+      assert.equal(reconnectGate.status, "RUNNING");
+      assert.equal(reconnectGate.healthy, true);
+      assert.equal(reconnectGate.scopeCount, 2);
+      assert.equal(reconnectGate.granted, 15);
+      assert.equal(reconnectGate.denied, 2);
+      assert.equal(reconnectGate.queued, 9);
+      assert.equal(reconnectGate.scheduledPerSecondPeak, 4);
+      assert.equal(reconnectGate.pressurePct, 9);
+      assert.deepEqual(reconnectGate.transports, [
+        { transport: "carrier", granted: 3, denied: 0, queued: 2, windowRequests: 3 },
+        { transport: "tcp", granted: 12, denied: 2, queued: 7, windowRequests: 9 },
+      ]);
+      assert.equal(encoded.includes(secretRelay), false);
+      assert.equal(encoded.includes(secretToken), false);
+
+      const page = await dashboardFetch(`http://127.0.0.1:${port}/`);
+      const html = await page.text();
+      assert.equal(html.includes('id="reconnectGateStatus"'), true);
+      assert.equal(html.includes("NAT 重连随机退避 Gate"), true);
+    }, {
+      env: {
+        BNFS_RECONNECT_GATE_MONITOR_URL: `http://127.0.0.1:${gateAddress.port}`,
+        BNFS_RECONNECT_GATE_TOKEN: secretToken,
+      },
+    });
+  } finally {
+    await new Promise((resolve) => gateServer.close(resolve));
+    await fs.rm(runDir, { recursive: true, force: true });
+  }
+});
+
+test("Dashboard reads the completed capacity reconnect gate snapshot", async () => {
+  const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-capacity-gate-"));
+  const capacityDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-capacity-gate-"));
+  const capacityPointer = path.join(runDir, "capacity-pointer");
+  try {
+    await fs.writeFile(capacityPointer, `${capacityDir}\n`);
+    await fs.writeFile(path.join(capacityDir, "client.log"), "CAPACITY_PLAN clients=1 transfer_mib=1 targets=1\n");
+    await fs.writeFile(path.join(capacityDir, "reconnect-gate-final.json"), JSON.stringify({
+      status: "ok",
+      startedAt: "2026-07-29T00:00:00Z",
+      observedAt: "2026-07-29T00:01:00Z",
+      safeRate: 10,
+      windowSeconds: 10,
+      scopes: [{
+        scope: "private-relay.internal:9000|tcp",
+        granted: 3,
+        denied: 0,
+        futureSlots: 1,
+        scheduledPerSecondPeak: 1,
+        windowRequests: 2,
+        pressure: 0.02,
+      }],
+    }));
+    await withDashboard(runDir, async (port) => {
+      const response = await dashboardFetch(`http://127.0.0.1:${port}/api/status`);
+      const encoded = await response.text();
+      const reconnectGate = JSON.parse(encoded).reconnectGate;
+      assert.equal(reconnectGate.status, "STOPPED");
+      assert.equal(reconnectGate.live, false);
+      assert.equal(reconnectGate.granted, 3);
+      assert.equal(encoded.includes("private-relay.internal"), false);
+    }, {
+      env: { CAPACITY_RUN_POINTER: capacityPointer },
+    });
+  } finally {
+    await fs.rm(runDir, { recursive: true, force: true });
+    await fs.rm(capacityDir, { recursive: true, force: true });
+  }
+});
 
 test("Dashboard internal errors never expose filesystem details", async () => {
   const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-redaction-"));
@@ -1590,8 +1712,18 @@ test("Dashboard exposes only whitelisted concurrent service sessions", async () 
       maxSessions: 8,
       acceptQueueDepth: 0,
       acceptQueue: 8,
-      acceptedTotal: 11,
-      rejectedTotal: 2,
+	      acceptedTotal: 11,
+	      rejectedTotal: 2,
+	      carriers: [{
+	        relayAddress: "10.253.41.250:9000",
+	        connected: true,
+	        carrierGeneration: 3,
+	        activeSessions: 1,
+	        dataQueueDepth: 17,
+	        dataQueueCapacity: 1024,
+	        controlQueueDepth: 3,
+	        controlQueueCapacity: 1024,
+	      }],
       sessions: [{ connectionId: "1234abcd", peerId: clientNodeID.slice(0, 16), privateKey: secret }],
       privateKey: secret,
       fullNodeID: serverNodeID,
@@ -1612,14 +1744,18 @@ test("Dashboard exposes only whitelisted concurrent service sessions", async () 
         acceptedTotal: 11,
         rejectedTotal: 2,
       });
-      assert.deepEqual(status.sessions, [{
+	      assert.deepEqual(status.sessions, [{
         connectionID: "1234abcd",
         client: "natclient02",
         clientRelay: "relay01",
         server: "natserver03",
         relay: "relay03",
         serverRelay: "relay03",
-      }]);
+	      }]);
+	      assert.equal(status.listeners[0].muxDataQueueDepth, 17);
+	      assert.equal(status.listeners[0].muxDataQueueCapacity, 1024);
+	      assert.equal(status.listeners[0].muxControlQueueDepth, 3);
+	      assert.equal(status.listeners[0].muxControlQueueCapacity, 1024);
       assert.equal(encoded.includes(secret), false);
       assert.equal(encoded.includes(clientNodeID), false);
       assert.equal(encoded.includes(serverNodeID), false);
@@ -1641,6 +1777,7 @@ test("Dashboard publishes the public Relay capacity result", async () => {
     await fs.writeFile(path.join(capacityDir, "client.rc"), "0\n");
     await fs.writeFile(path.join(capacityDir, "client.pid"), "999999999\n");
     await fs.writeFile(path.join(capacityDir, "client.log"), [
+      "CAPACITY_PLAN clients=100 transfer_mib=100 targets=3",
       "CONNECTED count=100 target=1ecbe57204ac5464 elapsed=1s at=2026-07-29T12:00:01+08:00",
       "CHECKSUM_WARMUP_COMPLETE clients=100 unique_checksums=100 elapsed=30s at=2026-07-29T12:00:31+08:00",
       "TARGET_DISTRIBUTION target=1ecbe57204ac5464 clients=34",
@@ -1681,6 +1818,8 @@ test("Dashboard publishes the public Relay capacity result", async () => {
       const status = await response.json();
       assert.equal(status.capacityTest.available, true);
       assert.equal(status.capacityTest.phase, "COMPLETED");
+      assert.equal(status.capacityTest.plannedClients, 100);
+      assert.equal(status.capacityTest.transferMiB, 100);
       assert.equal(status.capacityTest.connected, 100);
       assert.equal(status.capacityTest.checksumWarmup.uniqueChecksums, 100);
       assert.equal(status.capacityTest.transfer.successes, 100);
@@ -1693,6 +1832,8 @@ test("Dashboard publishes the public Relay capacity result", async () => {
       assert.equal(status.capacityTest.resources.relay.threads, 16);
       assert.equal(status.capacityTest.resources.relay.fds, 230);
       assert.equal(status.capacityTest.resources.relay.restarts, 0);
+      assert.equal(status.capacityTest.resources.trends.tenMinutes.windowSeconds, 0);
+      assert.equal(status.capacityTest.resources.trends.tenMinutes.localRSSDeltaMiB, 0);
     }, { env: { CAPACITY_RUN_POINTER: capacityPointer } });
   } finally {
     await fs.rm(runDir, { recursive: true, force: true });

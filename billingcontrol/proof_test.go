@@ -208,7 +208,13 @@ func TestReadyStateProofBindsRelayWatermarkAndDecision(t *testing.T) {
 	inconsistent := binding
 	inconsistent.SessionResetRequired = true
 	if _, err := SignReadyStateProof(payerKey, inconsistent); err == nil {
-		t.Fatal("inconsistent reset and recovery decision was signed")
+		t.Fatal("inconsistent preexisting reset decision was signed")
+	}
+	rotation := binding
+	rotation.SessionPreexisting = false
+	rotation.SessionResetRequired = true
+	if _, err := SignReadyStateProof(payerKey, rotation); err != nil {
+		t.Fatalf("reset decision with a final recovery voucher was rejected: %v", err)
 	}
 }
 

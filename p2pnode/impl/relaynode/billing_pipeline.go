@@ -377,6 +377,15 @@ func billingSessionSafeToRotateLocked(session *relayBillingSession) bool {
 		session.recordSet == session.lastVoucher.Body.RecordSetDigest
 }
 
+func billingSessionSafeToRotate(session *relayBillingSession) bool {
+	if session == nil {
+		return false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return billingSessionSafeToRotateLocked(session)
+}
+
 func billingSessionReadyMatches(session *relayBillingSession, ready billingcontrol.Message) bool {
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -512,6 +521,41 @@ func (pipeline *relayBillingPipeline) acceptControl(stream network.Stream, first
 				peer.close()
 				return err
 			}
+		}
+		if ready.SessionResetRequired && !billingSessionSafeToRotate(session) {
+			settlementState, err := relayBillingControlSnapshot(session)
+			if err != nil {
+				peer.close()
+				return err
+			}
+			voucher, err := pipeline.issueVoucherWithClaim(
+				pipeline.node.ctx, session, settlementState,
+				func(ctx context.Context, claim billingcontrol.Message) (billingcontrol.Message, error) {
+					return claimBillingControlDirect(ctx, peer, stream, claim)
+				},
+			)
+			if err != nil {
+				peer.close()
+				return fmt.Errorf("relaynode: settle billing session before rotation: %w", err)
+			}
+			session.mu.Lock()
+			current := relayBillingSnapshot{
+				cumulative: session.cumulative, lastRecord: session.lastRecord,
+				lastRecordSequence: session.lastRecordSequence, recordSet: session.recordSet,
+			}
+			if current != settlementState || session.blocked != nil ||
+				len(session.pending) != 0 || session.pendingBytes != 0 {
+				session.mu.Unlock()
+				peer.close()
+				return errors.New("relaynode: billing session changed during rotation settlement")
+			}
+			session.lastVoucher = voucher
+			session.hasVoucher = true
+			session.mu.Unlock()
+			logx.Warnf(
+				"[relaynode] 计费 Session 换代前已完成最终双签 payer=%.16s sequence=%d cumulative=%d",
+				payerID.String(), settlementState.lastRecordSequence, settlementState.cumulative,
+			)
 		}
 		if billingSessionReadyMatches(session, ready) {
 			break
@@ -768,6 +812,32 @@ func (peer *relayBillingControlPeer) claim(ctx context.Context, message billingc
 	}
 }
 
+func claimBillingControlDirect(
+	ctx context.Context,
+	peer *relayBillingControlPeer,
+	stream network.Stream,
+	message billingcontrol.Message,
+) (billingcontrol.Message, error) {
+	if peer == nil || stream == nil {
+		return billingcontrol.Message{}, errors.New("relaynode: direct billing control is unavailable")
+	}
+	if err := peer.sendControl(ctx, message); err != nil {
+		return billingcontrol.Message{}, err
+	}
+	waitContext, cancel := context.WithTimeout(ctx, billingControlTimeout)
+	defer cancel()
+	responseMessage, err := nextBillingControlMessage(waitContext, stream)
+	if err != nil {
+		return billingcontrol.Message{}, err
+	}
+	var response billingcontrol.Message
+	if responseMessage == nil || json.Unmarshal(responseMessage.Payload, &response) != nil ||
+		(response.Type != billingcontrol.TypeCosigned && response.Type != billingcontrol.TypeReject) {
+		return billingcontrol.Message{}, errors.New("relaynode: invalid direct billing control response")
+	}
+	return response, nil
+}
+
 func (peer *relayBillingControlPeer) close() {
 	peer.closeOnce.Do(func() {
 		close(peer.done)
@@ -892,10 +962,30 @@ func (pipeline *relayBillingPipeline) advanceRecordLocked(
 	return nil
 }
 
-func (pipeline *relayBillingPipeline) issueVoucher(ctx context.Context, session *relayBillingSession, snapshot relayBillingSnapshot) (billingvoucher.MutualVoucher, error) {
+func (pipeline *relayBillingPipeline) issueVoucher(
+	ctx context.Context,
+	session *relayBillingSession,
+	snapshot relayBillingSnapshot,
+) (billingvoucher.MutualVoucher, error) {
+	peer := pipeline.controlFor(session.payerID, session.sessionID)
+	if peer == nil {
+		return billingvoucher.MutualVoucher{}, errors.New("relaynode: payer billing control is unavailable")
+	}
+	return pipeline.issueVoucherWithClaim(ctx, session, snapshot, peer.claim)
+}
+
+func (pipeline *relayBillingPipeline) issueVoucherWithClaim(
+	ctx context.Context,
+	session *relayBillingSession,
+	snapshot relayBillingSnapshot,
+	claim func(context.Context, billingcontrol.Message) (billingcontrol.Message, error),
+) (billingvoucher.MutualVoucher, error) {
 	if snapshot.cumulative == 0 || snapshot.lastRecord == (billingvoucher.Identifier{}) ||
 		snapshot.lastRecordSequence == 0 || snapshot.recordSet == (billingvoucher.Digest{}) {
 		return billingvoucher.MutualVoucher{}, errors.New("relaynode: cannot issue an empty billing voucher")
+	}
+	if claim == nil {
+		return billingvoucher.MutualVoucher{}, errors.New("relaynode: billing claim transport is unavailable")
 	}
 	sequence := uint64(1)
 	previousID := billingvoucher.Identifier{}
@@ -933,11 +1023,7 @@ func (pipeline *relayBillingPipeline) issueVoucher(ctx context.Context, session 
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, err
 	}
-	peer := pipeline.controlFor(session.payerID, session.sessionID)
-	if peer == nil {
-		return billingvoucher.MutualVoucher{}, errors.New("relaynode: payer billing control is unavailable")
-	}
-	response, err := peer.claim(ctx, billingcontrol.Message{
+	response, err := claim(ctx, billingcontrol.Message{
 		Type: billingcontrol.TypeClaim, Body: bodyBytes,
 		RelaySignature: relaySignature, RelayPublicKey: pipeline.node.pubKeyHex(),
 	})

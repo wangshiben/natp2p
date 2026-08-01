@@ -9,7 +9,10 @@ import (
 	"sync"
 )
 
-const relayHandshakeConcurrency = 128
+const (
+	relayHandshakeConcurrency = 128
+	relayKCPSocketBufferSize  = 16 * 1024 * 1024
+)
 
 var ErrRelayStarterClosed = errors.New("relay starter closed before startup completed")
 
@@ -87,6 +90,14 @@ func (r *RelayStarter) startListen() {
 		return
 	}
 	defer kcplistener.Close()
+	if err := kcplistener.SetReadBuffer(relayKCPSocketBufferSize); err != nil {
+		logx.Warnf("[relay] KCP listener 接收缓冲设置失败: addr=%s bytes=%d err=%v",
+			r.addr, relayKCPSocketBufferSize, err)
+	}
+	if err := kcplistener.SetWriteBuffer(relayKCPSocketBufferSize); err != nil {
+		logx.Warnf("[relay] KCP listener 发送缓冲设置失败: addr=%s bytes=%d err=%v",
+			r.addr, relayKCPSocketBufferSize, err)
+	}
 	if r.isClosing() {
 		r.setStartError(ErrRelayStarterClosed)
 		return

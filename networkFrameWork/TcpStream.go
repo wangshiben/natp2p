@@ -37,9 +37,10 @@ const (
 	// 单条消息也可能在共享发送队列中等待数秒；沿用物理流 800ms 的初始阈值会在
 	// 100 路场景下把排队误判成丢包并触发重传放大。mux 流使用更宽的无进展窗口，
 	// 真正的断链仍由 keepalive 和调用方 context 有界回收。
-	muxInitialAckTimeout = 8 * time.Second
-	muxMinAckTimeout     = 8 * time.Second
-	muxMaxAckTimeout     = 30 * time.Second
+	muxInitialAckTimeout  = 8 * time.Second
+	muxMinAckTimeout      = 8 * time.Second
+	muxMaxAckTimeout      = 30 * time.Second
+	transportWriteTimeout = 30 * time.Second
 	// maxRetransmitAttempts 是单条消息的最大重传次数。配合指数退避, 给跨公网高延迟链路足够的送达窗口。
 	maxRetransmitAttempts = 6
 	ackBatchThreshold     = 100
@@ -59,6 +60,11 @@ const (
 )
 
 const KeepAliveRoute = "/ping"
+
+var (
+	ErrConnectionClosedByPeer = fmt.Errorf("logical connection closed by peer: %w", io.EOF)
+	ErrMessageMaxRetransmits  = errors.New("send message: max retransmits exceeded")
+)
 
 type streamKeepAlivePolicy struct {
 	idleBaseline time.Duration
@@ -189,6 +195,7 @@ type TcpStream struct {
 	testDataFrameDelay time.Duration
 	testLogRetransmit  bool
 	keepAlivePolicy    streamKeepAlivePolicy
+	writeTimeout       time.Duration
 }
 
 // startTcpStream 在已经建好的连接上开 readLoop 与 recvAckTimer，
@@ -218,6 +225,12 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		adaptor.SetMaxFrameSize(maxFrameSize)
 	}
 
+	keepAlivePolicy := defaultStreamKeepAlivePolicy()
+	writeTimeout := transportWriteTimeout
+	if virtualMux {
+		keepAlivePolicy.idleBaseline = dualKeepAliveDelay(nodeId, connectionId)
+		writeTimeout = 0
+	}
 	t := &TcpStream{
 		connection:          conn,
 		assembler:           network.NewFrameAssembler(),
@@ -231,7 +244,8 @@ func newTcpStream(nodeId, connectionId string, conn net.Conn) *TcpStream {
 		frameSizeChangeAcks: make(map[int]chan bool),
 		testDataFrameDelay:  testDurationFromEnv("BNFS_TEST_DATA_FRAME_DELAY"),
 		testLogRetransmit:   testBoolFromEnv("BNFS_TEST_LOG_RETRANSMIT"),
-		keepAlivePolicy:     defaultStreamKeepAlivePolicy(),
+		keepAlivePolicy:     keepAlivePolicy,
+		writeTimeout:        writeTimeout,
 	}
 	t.testAckDelayNanos.Store(int64(testDurationFromEnv("BNFS_TEST_ACK_DELAY")))
 	// 身份字段经原子指针存储（见字段注释），构造期串行设置，之后任何并发读写都走原子。
@@ -544,6 +558,7 @@ func (t *TcpStream) keepLive() {
 		probeCount := 0
 		backoff := policy.probeBase
 		alive := false
+		localQueueFailureLogged := false
 		for probeCount < policy.maxProbes {
 			// 探测期间若应用启动了业务发送，立即把判活权交回业务 ACK
 			// 状态机，避免保活与真实流量形成重传/写锁争用。
@@ -555,18 +570,27 @@ func (t *TcpStream) keepLive() {
 
 			heartbeatCtx, cancel := context.WithTimeout(t.streamCtx, policy.probeTimeout)
 			start := time.Now()
-			err := t.SendMessage(heartbeatCtx, &network.Message{
+			probeQueued := false
+			err := t.SendMessageWithInitialWrite(heartbeatCtx, &network.Message{
 				Header: &network.Header{
 					RouteName:     KeepAliveRoute,
 					NodeId:        t.getNodeId(),
 					NodeIdVersion: 1,
 					ConnectionId:  t.getConnectionId(),
 				},
-			})
+			}, func() { probeQueued = true })
 			cancel()
 			if err == nil {
 				// 探测成功往返：有效 RTT 样本 + 对端活着。
 				t.observeRTT(time.Since(start))
+			} else if (!probeQueued && !localQueueFailureLogged) ||
+				(probeQueued && (probeCount == 0 || probeCount+1 == policy.maxProbes)) {
+				logx.Warnf(
+					"[%s] keepLive 探测发送未完成: probe=%d/%d queued=%t elapsed=%s nodeId=%.16s connId=%s err=%v",
+					connType, probeCount+1, policy.maxProbes, probeQueued, time.Since(start).Round(time.Millisecond),
+					t.getNodeId(), t.getConnectionId(), err,
+				)
+				localQueueFailureLogged = !probeQueued
 			}
 			if t.streamCtx.Err() != nil {
 				return
@@ -579,6 +603,14 @@ func (t *TcpStream) keepLive() {
 			if t.lastRecvMicros.Load() != before {
 				alive = true // 收到任意入站帧 → 判活
 				break
+			}
+			if !probeQueued {
+				// The probe never left this logical stream (usually local mux
+				// backpressure). It is not evidence that the peer is dead.
+				if backoff < 32*time.Second {
+					backoff *= 2
+				}
+				continue
 			}
 			probeCount++
 			if backoff < 32*time.Second {
@@ -614,39 +646,57 @@ func (t *TcpStream) StartKeepAlive() {
 
 func (t *TcpStream) NextMessage(ctx context.Context) (*network.Message, error) {
 	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-t.streamCtx.Done():
-			return nil, t.streamErr()
-		case pending := <-t.inboxCh:
-			if pending == nil || pending.msg == nil {
-				continue
+		pending, err := t.nextPendingMessage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if pending == nil || pending.msg == nil {
+			continue
+		}
+		msg := pending.msg
+		// 若重组时尚未装 crypto，本消息保留密文，现在按当下 crypto 解密。
+		// 解决 Noise 握手与对端加密首条消息抵达的竞态。
+		crypto := t.getCrypto()
+		if pending.needDecrypt && crypto != nil {
+			messageID, authenticated, err := network.OpenMessagePayload(crypto, msg)
+			if err != nil {
+				failure := fmt.Errorf("TcpStream E2E record rejected: %w", err)
+				t.failAndClose(failure)
+				return nil, failure
 			}
-			msg := pending.msg
-			// 若重组时尚未装 crypto，本消息保留密文，现在按当下 crypto 解密。
-			// 解决 Noise 握手与对端加密首条消息抵达的竞态。
-			crypto := t.getCrypto()
-			if pending.needDecrypt && crypto != nil {
-				messageID, authenticated, err := network.OpenMessagePayload(crypto, msg)
-				if err != nil {
-					failure := fmt.Errorf("TcpStream E2E record rejected: %w", err)
+			if authenticated {
+				duplicate, replayErr := t.seenOrRecordE2EMessage(messageID)
+				if replayErr != nil {
+					failure := fmt.Errorf("TcpStream E2E replay state rejected: %w", replayErr)
 					t.failAndClose(failure)
 					return nil, failure
 				}
-				if authenticated {
-					duplicate, replayErr := t.seenOrRecordE2EMessage(messageID)
-					if replayErr != nil {
-						failure := fmt.Errorf("TcpStream E2E replay state rejected: %w", replayErr)
-						t.failAndClose(failure)
-						return nil, failure
-					}
-					if duplicate {
-						continue
-					}
+				if duplicate {
+					continue
 				}
 			}
-			return msg, nil
+		}
+		return msg, nil
+	}
+}
+
+func (t *TcpStream) nextPendingMessage(ctx context.Context) (*pendingInboxMessage, error) {
+	select {
+	case pending := <-t.inboxCh:
+		return pending, nil
+	default:
+	}
+	select {
+	case pending := <-t.inboxCh:
+		return pending, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-t.streamCtx.Done():
+		select {
+		case pending := <-t.inboxCh:
+			return pending, nil
+		default:
+			return nil, t.streamErr()
 		}
 	}
 }
@@ -796,7 +846,7 @@ func (t *TcpStream) sendMessageWithAckMode(
 	}()
 
 	ackStartedAt := time.Now()
-	if err := t.writeFrames(frames); err != nil {
+	if err := t.writeFramesContext(ctx, frames); err != nil {
 		return err
 	}
 	if onInitialWrite != nil {
@@ -818,7 +868,7 @@ func (t *TcpStream) sendMessageWithAckMode(
 			return nil
 		}
 		if attempt >= maxRetransmitAttempts {
-			return errors.New("send message: max retransmits exceeded")
+			return ErrMessageMaxRetransmits
 		}
 		missing := tracker.missing()
 		retrans := make([]*network.Frame, 0, len(missing))
@@ -835,7 +885,7 @@ func (t *TcpStream) sendMessageWithAckMode(
 			logx.Infof("[retransmit-test] node=%.16s conn=%s frames=%d bytes=%d attempt=%d",
 				t.getNodeId(), t.getConnectionId(), len(retrans), retransmitBytes, attempt+1)
 		}
-		if err := t.writeFrames(retrans); err != nil {
+		if err := t.writeFramesContext(ctx, retrans); err != nil {
 			return err
 		}
 		// 退避但钳在 maxAckTimeout，使重传耗尽总时长有界（不与底层 RTO 抢跑、也不会退避到分钟级）。
@@ -1012,6 +1062,10 @@ func (t *TcpStream) writeFramesContext(ctx context.Context, frames []*network.Fr
 }
 
 func (t *TcpStream) writeFrame(f *network.Frame) error {
+	return t.writeFrameContext(context.Background(), f)
+}
+
+func (t *TcpStream) writeFrameContext(ctx context.Context, f *network.Frame) error {
 	bs, err := f.AppendTo(nil)
 	if err != nil {
 		return err
@@ -1021,7 +1075,7 @@ func (t *TcpStream) writeFrame(f *network.Frame) error {
 	if delay := time.Duration(t.testAckDelayNanos.Load()); f.FrameType == network.FrameTypeAck && delay > 0 {
 		time.Sleep(delay)
 	}
-	return t.writeBytesLocked(bs)
+	return t.writeBytesLockedContext(ctx, bs)
 }
 
 func (t *TcpStream) setTestAckDelay(delay time.Duration) {
@@ -1039,18 +1093,47 @@ func (t *TcpStream) writeBytesLockedContext(ctx context.Context, buf []byte) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
+	deadline, hasDeadline := ctx.Deadline()
+	if t.writeTimeout > 0 {
+		writeDeadline := time.Now().Add(t.writeTimeout)
+		if !hasDeadline || writeDeadline.Before(deadline) {
+			deadline = writeDeadline
+			hasDeadline = true
+		}
+	}
+	if hasDeadline {
 		if err := t.connection.SetWriteDeadline(deadline); err != nil {
 			t.failAndClose(err)
 			return err
 		}
-		defer func() { _ = t.connection.SetWriteDeadline(time.Time{}) }()
 	}
+	cancellationDone := make(chan struct{})
+	stopCancellation := context.AfterFunc(ctx, func() {
+		_ = t.connection.SetWriteDeadline(time.Now())
+		close(cancellationDone)
+	})
+	defer func() {
+		if !stopCancellation() {
+			<-cancellationDone
+		}
+		_ = t.connection.SetWriteDeadline(time.Time{})
+	}()
 	written, err := t.connection.Write(buf)
 	if err == nil && written != len(buf) {
 		err = io.ErrShortWrite
 	}
 	if err != nil {
+		// SetWriteDeadline(time.Now) is how caller cancellation interrupts a
+		// blocked net.Conn.Write. That timeout belongs to this operation, not to
+		// the transport lifetime, so it must not poison the shared logical leg.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			if callerDeadline, hasCallerDeadline := ctx.Deadline(); hasCallerDeadline && !time.Now().Before(callerDeadline) {
+				return context.DeadlineExceeded
+			}
+		}
 		t.failAndClose(err)
 		return err
 	}
@@ -1139,7 +1222,7 @@ func (t *TcpStream) HandleFrame(ctx context.Context, frame *network.Frame) error
 	if err := t.fatal(); err != nil {
 		return err
 	}
-	return t.writeFrame(frame)
+	return t.writeFrameContext(ctx, frame)
 }
 
 // HandleFrameBatch 按输入顺序把一批帧编码到同一缓冲区，并在一次持锁 Write 中写完。
@@ -1211,6 +1294,19 @@ func (t *TcpStream) handleFrame(f *network.Frame) error {
 			t.handleFrameSizeChangeAck(f)
 		}
 		return nil
+	case network.FrameTypeConnectionClose:
+		if t.pureForwarder.Load() {
+			if tap := t.getFrameTap(); tap != nil {
+				select {
+				case tap <- f:
+					return nil
+				case <-t.streamCtx.Done():
+					return t.streamErr()
+				}
+			}
+			return nil
+		}
+		return ErrConnectionClosedByPeer
 	default:
 		return errors.New("unknown frame type")
 	}
@@ -1243,7 +1339,7 @@ func (t *TcpStream) handleAck(f *network.Frame) error {
 	return nil
 }
 
-func isKeepAliveFrame(f *network.Frame) bool {
+func isLinkLocalKeepAliveFrame(f *network.Frame) bool {
 	if f == nil || f.SeqId != 0 || len(f.Payload) < network.HeaderLength {
 		return false
 	}
@@ -1251,7 +1347,7 @@ func isKeepAliveFrame(f *network.Frame) bool {
 	if err != nil {
 		return false
 	}
-	return h.RouteName == KeepAliveRoute
+	return h.RouteName == KeepAliveRoute && len(f.Payload) == network.HeaderLength
 }
 
 func (t *TcpStream) handleData(f *network.Frame) error {
@@ -1259,7 +1355,7 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 		f.ConnectionId == t.getConnectionId() {
 		return t.sendAck(f.MessageId, f.TotalFrames, network.FullAckRange(f.TotalFrames))
 	}
-	localKeepAlive := t.pureForwarder.Load() && isKeepAliveFrame(f)
+	localKeepAlive := t.pureForwarder.Load() && isLinkLocalKeepAliveFrame(f)
 	// frameTap 投递：
 	//   - relay 模式 / pure forwarder 模式：必须可靠投递（阻塞等容量），不能丢帧，否则 relay 会断流；
 	//   - 但 pure forwarder 上的 KeepAliveRoute 仍是链路本地保活，不进 frameTap、由本 leg 自己 ACK；
@@ -1315,16 +1411,13 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 		t.deliveredMu.Lock()
 		t.delivered[f.MessageId] = true
 		t.deliveredMu.Unlock()
-		if err := t.sendAck(f.MessageId, f.TotalFrames, network.FullAckRange(f.TotalFrames)); err != nil {
-			return err
-		}
 		// 关键修改：解密延迟到 NextMessage 读取时再做。
 		// 这是为了消除 Noise 握手期间的竞态——对端可能在我方 SetCryptoSuite 之前
 		// 就发来加密消息，按"重组时立刻解密"会因 t.crypto==nil 而原样推入 inbox，
 		// 等读取时是密文。改在 NextMessage 时按当下 t.crypto 解密，可彻底消除竞态。
 		// 但 frameRelayMode 走纯转发不入 inbox，与解密无关，照旧返回。
 		if t.frameRelayMode.Load() {
-			return nil
+			return t.sendAck(f.MessageId, f.TotalFrames, network.FullAckRange(f.TotalFrames))
 		}
 		// 仅在我方还没装 crypto 时延迟解密；已装则立刻解密 + E2E 去重，行为不变。
 		needDecrypt := false
@@ -1340,7 +1433,7 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 					return replayErr
 				}
 				if duplicate {
-					return nil
+					return t.sendAck(f.MessageId, f.TotalFrames, network.FullAckRange(f.TotalFrames))
 				}
 			}
 		} else {
@@ -1361,7 +1454,7 @@ func (t *TcpStream) handleData(f *network.Frame) error {
 		case <-t.streamCtx.Done():
 			return t.streamErr()
 		}
-		return nil
+		return t.sendAck(f.MessageId, f.TotalFrames, network.FullAckRange(f.TotalFrames))
 	}
 	if framesSinceAck >= ackBatchThreshold {
 		ranges, total, ok := t.assembler.Snapshot(f.MessageId)

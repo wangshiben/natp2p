@@ -13,6 +13,10 @@ const privateRuntimeDir = path.resolve(process.env.PRIVATE_RUNTIME_DIR ?? path.j
 const composeProject = process.env.COMPOSE_PROJECT ?? "";
 const composeFile = path.resolve(process.env.COMPOSE_FILE ?? path.join(runDir, "runtime", "compose.json"));
 const caPort = integer(process.env.CA_PORT, 19100);
+const reconnectGateURL = String(
+  process.env.BNFS_RECONNECT_GATE_MONITOR_URL ?? process.env.BNFS_RECONNECT_GATE_URL ?? "",
+).trim();
+const reconnectGateToken = String(process.env.BNFS_RECONNECT_GATE_TOKEN ?? "");
 const capacityRunPointer = path.resolve(
   process.env.CAPACITY_RUN_POINTER ?? "/tmp/natp2p-capacity.EVFZr6/latest-formal-run",
 );
@@ -449,7 +453,7 @@ async function statusSnapshot(forceRefresh = false) {
 }
 
 async function buildStatus() {
-  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, rawClientTransfers, randomBatches, workers, workload, compose, containers, finalContainers, ca, serverPool, clientPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence, natIdentities, capacityTest] = await Promise.all([
+  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, rawClientTransfers, randomBatches, workers, workload, compose, containers, finalContainers, ca, serverPool, clientPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence, natIdentities, capacityTest, reconnectGate] = await Promise.all([
     readEnv(path.join(runDir, "metadata.env")),
     readEnv(path.join(runDir, "status.env")),
     readText(path.join(runDir, "phase")),
@@ -475,6 +479,10 @@ async function buildStatus() {
     readTsv(path.join(runDir, "ip-family-coverage.tsv"), 12),
     readTsv(path.join(runDir, "nat-identities.tsv"), 64),
     readCapacityTest(capacityRunPointer),
+    readReconnectGate(
+      path.join(runDir, "reconnect-gate-final.json"),
+      capacityRunPointer,
+    ),
   ]);
   const serviceSessions = await readServiceSessions(privateRuntimeDir, natIdentities);
   const nodeProfiles = buildNodeProfiles(serverPool, clientPool, ipFamilyPlan);
@@ -576,6 +584,7 @@ async function buildStatus() {
     failureWatcher,
     billingAdversary,
     billingProductionGate,
+    reconnectGate,
     mixedPath,
     serviceSessions,
     capacityTest,
@@ -601,16 +610,20 @@ async function readCapacityTest(pointerFile) {
   if (!path.isAbsolute(runDirectory)) return emptyCapacityTest();
   const clientLog = await readTail(path.join(runDirectory, "client.log"), 1024 * 1024);
   if (!clientLog) return emptyCapacityTest();
-  // Five-second sampling makes 2048 rows cover roughly 2h50m, including the
-  // full 100 x 100 MiB capacity run without publishing the raw rows.
-  const resourceRows = await readTsv(path.join(runDirectory, "resource-samples.tsv"), 2048, 2 * 1024 * 1024);
+  // Five-second sampling makes 8192 rows cover more than eleven hours,
+  // including the full 500 x 100 MiB capacity run without publishing raw rows.
+  const resourceRows = await readTsv(path.join(runDirectory, "resource-samples.tsv"), 8192, 8 * 1024 * 1024);
   const startTime = publicTimestamp(String(await readText(path.join(runDirectory, "start-time.txt"))).trim());
   const endTime = publicTimestamp(String(await readText(path.join(runDirectory, "end-time.txt"))).trim());
   const clientRCText = String(await readText(path.join(runDirectory, "client.rc"))).trim();
   const clientRC = /^-?\d+$/.test(clientRCText) ? integer(clientRCText, -1) : null;
   const clientPID = integer(String(await readText(path.join(runDirectory, "client.pid"))).trim(), 0);
   const clientRunning = clientPID > 0 && await processExists(clientPID);
-  const connected = lastIntegerMatch(clientLog, /CONNECTED count=(\d+)/g);
+  const plan = lastMatch(clientLog, /CAPACITY_PLAN clients=(\d+) transfer_mib=(\d+) targets=(\d+)/g);
+  const connected = Math.max(
+    lastIntegerMatch(clientLog, /CONNECTED count=(\d+)/g),
+    lastIntegerMatch(clientLog, /MILESTONE_REACHED count=(\d+)/g),
+  );
   const connectionFailures = lastIntegerMatch(clientLog, /CONNECT_FAILED failures=(\d+)/g);
   const warmup = lastMatch(clientLog, /CHECKSUM_WARMUP_COMPLETE clients=(\d+) unique_checksums=(\d+) elapsed=([^\s]+)/g);
   const barrier = lastMatch(clientLog, /TRANSFER_BARRIER clients=(\d+) bytes_per_client=(\d+) total_bytes=(\d+) timeout=([^\s]+) at=([^\s]+)/g);
@@ -648,6 +661,14 @@ async function readCapacityTest(pointerFile) {
           elapsed: "",
           observedAt: publicTimestamp(barrier?.[5]),
         };
+  const inferredPlanClients = plan
+    ? capacityNonNegativeInteger(plan[1])
+    : capacityNonNegativeInteger(barrier?.[1]);
+  const inferredTransferMiB = plan
+    ? capacityNonNegativeInteger(plan[2])
+    : barrier
+      ? Math.floor(capacityNonNegativeInteger(barrier[2]) / (1024 * 1024))
+      : 0;
   const completed = Boolean(summary)
     && transfer.clients > 0
     && transfer.successes === transfer.clients
@@ -672,6 +693,8 @@ async function readCapacityTest(pointerFile) {
     endedAt: endTime,
     clientRunning,
     clientRC,
+    plannedClients: inferredPlanClients,
+    transferMiB: inferredTransferMiB,
     connected,
     connectionFailures,
     checksumWarmup: {
@@ -694,6 +717,8 @@ function emptyCapacityTest() {
     endedAt: "",
     clientRunning: false,
     clientRC: null,
+    plannedClients: 0,
+    transferMiB: 0,
     connected: 0,
     connectionFailures: 0,
     checksumWarmup: { clients: 0, uniqueChecksums: 0, elapsed: "" },
@@ -709,7 +734,16 @@ function emptyCapacityTest() {
       elapsed: "",
       observedAt: "",
     },
-    resources: { samples: 0, latestAt: "", client: {}, natServers: [], relay: {}, network: {}, peaks: {} },
+    resources: {
+      samples: 0,
+      latestAt: "",
+      client: {},
+      natServers: [],
+      relay: {},
+      network: {},
+      peaks: {},
+      trends: {},
+    },
   };
 }
 
@@ -739,7 +773,16 @@ function capacityProgress(bytes, expectedBytes) {
 
 function capacityResources(rows) {
   if (rows.length === 0) {
-    return { samples: 0, latestAt: "", client: {}, natServers: [], relay: {}, network: {}, peaks: {} };
+    return {
+      samples: 0,
+      latestAt: "",
+      client: {},
+      natServers: [],
+      relay: {},
+      network: {},
+      peaks: {},
+      trends: {},
+    };
   }
   const latest = rows.at(-1);
   const previous = rows.length > 1 ? rows.at(-2) : latest;
@@ -786,6 +829,54 @@ function capacityResources(rows) {
       relayFDs: capacityNonNegativeInteger(maximum("relay_fds")),
       relayTCPEstablished: capacityNonNegativeInteger(maximum("relay_tcp_established")),
     },
+    trends: {
+      tenMinutes: capacityResourceTrend(rows, 10 * 60),
+      thirtyMinutes: capacityResourceTrend(rows, 30 * 60),
+    },
+  };
+}
+
+function capacityResourceTrend(rows, requestedSeconds) {
+  const latest = rows.at(-1);
+  const latestEpoch = number(latest?.epoch, 0);
+  const targetEpoch = latestEpoch - requestedSeconds;
+  let baseline = rows[0];
+  for (const row of rows) {
+    if (Math.abs(number(row.epoch, 0) - targetEpoch)
+      < Math.abs(number(baseline.epoch, 0) - targetEpoch)) {
+      baseline = row;
+    }
+  }
+  const windowSeconds = Math.max(0, latestEpoch - number(baseline?.epoch, latestEpoch));
+  const rssDeltaMiB = (key) => round(
+    (number(latest?.[key], 0) - number(baseline?.[key], 0)) / 1024,
+    2,
+  );
+  const metricDelta = (key) => integer(latest?.[key], 0) - integer(baseline?.[key], 0);
+  const natRSSDeltaMiB = [1, 2, 3].map((numberValue) => rssDeltaMiB(`nat${numberValue}_rss_kib`));
+  const httpRSSDeltaMiB = [1, 2, 3].map((numberValue) => rssDeltaMiB(`http${numberValue}_rss_kib`));
+  const localRSSDeltaMiB = round(
+    rssDeltaMiB("client_rss_kib")
+      + natRSSDeltaMiB.reduce((total, value) => total + value, 0)
+      + httpRSSDeltaMiB.reduce((total, value) => total + value, 0),
+    2,
+  );
+  const localFDDelta = metricDelta("client_fds")
+    + [1, 2, 3].reduce((total, numberValue) => total + metricDelta(`nat${numberValue}_fds`), 0);
+  return {
+    windowSeconds,
+    clientRSSDeltaMiB: rssDeltaMiB("client_rss_kib"),
+    natRSSDeltaMiB,
+    httpRSSDeltaMiB,
+    relayRSSDeltaMiB: rssDeltaMiB("relay_rss_kib"),
+    localRSSDeltaMiB,
+    localRSSMiBPerMinute: windowSeconds > 0
+      ? round(localRSSDeltaMiB * 60 / windowSeconds, 3)
+      : 0,
+    clientFDDelta: metricDelta("client_fds"),
+    natFDDelta: [1, 2, 3].map((numberValue) => metricDelta(`nat${numberValue}_fds`)),
+    relayFDDelta: metricDelta("relay_fds"),
+    localFDDelta,
   };
 }
 
@@ -839,12 +930,18 @@ async function readServiceSessions(privateRoot, identities) {
     const relay = knownService(normalizeRelayReference(raw.relayAddress), "relay")
       || serverRelayByService.get(service) || "";
 	const carriers = Array.isArray(raw.carriers) ? raw.carriers.slice(0, 3).map((carrier) => {
-	  const carrierRelay = knownService(normalizeRelayReference(carrier?.relayAddress), "relay");
+	  const normalizedCarrierRelay = normalizeRelayReference(carrier?.relayAddress);
+	  const carrierRelay = knownService(normalizedCarrierRelay, "relay")
+	    || (normalizedCarrierRelay === normalizeRelayReference(raw.relayAddress) ? relay : "");
 	  return carrierRelay ? {
 	    relay: carrierRelay,
 	    connected: carrier?.connected === true,
 	    carrierGeneration: publicNonNegativeInteger(carrier?.carrierGeneration),
 	    activeSessions: publicNonNegativeInteger(carrier?.activeSessions),
+	    dataQueueDepth: publicNonNegativeInteger(carrier?.dataQueueDepth),
+	    dataQueueCapacity: publicNonNegativeInteger(carrier?.dataQueueCapacity),
+	    controlQueueDepth: publicNonNegativeInteger(carrier?.controlQueueDepth),
+	    controlQueueCapacity: publicNonNegativeInteger(carrier?.controlQueueCapacity),
 	  } : null;
 	}).filter(Boolean) : [];
 	if (carriers.length === 0 && relay) {
@@ -853,6 +950,10 @@ async function readServiceSessions(privateRoot, identities) {
 	    connected: raw.carrierConnected === true,
 	    carrierGeneration: publicNonNegativeInteger(raw.carrierGeneration),
 	    activeSessions: publicNonNegativeInteger(raw.activeSessions),
+	    dataQueueDepth: 0,
+	    dataQueueCapacity: 0,
+	    controlQueueDepth: 0,
+	    controlQueueCapacity: 0,
 	  });
 	}
     const observedAt = publicTimestamp(raw.observedAt);
@@ -873,6 +974,10 @@ async function readServiceSessions(privateRoot, identities) {
       service,
       relay,
 	  carriers,
+	  muxDataQueueDepth: carriers.reduce((sum, carrier) => sum + carrier.dataQueueDepth, 0),
+	  muxDataQueueCapacity: carriers.reduce((sum, carrier) => sum + carrier.dataQueueCapacity, 0),
+	  muxControlQueueDepth: carriers.reduce((sum, carrier) => sum + carrier.controlQueueDepth, 0),
+	  muxControlQueueCapacity: carriers.reduce((sum, carrier) => sum + carrier.controlQueueCapacity, 0),
       observedAt,
       fresh: observedAt !== "" && Date.now() - Date.parse(observedAt) <= 5000,
       carrierConnected: raw.carrierConnected === true,
@@ -1645,6 +1750,176 @@ async function probeCA() {
       error: "probe_failed",
     }));
   });
+}
+
+async function readReconnectGate(finalSnapshotFile, capacityPointerFile = "") {
+  if (reconnectGateURL !== "") {
+    const liveMetrics = await requestReconnectGateMetrics();
+    if (liveMetrics) {
+      return publicReconnectGate(liveMetrics, true);
+    }
+  }
+  const finalMetrics = await readJson(finalSnapshotFile);
+  if (validReconnectGateMetrics(finalMetrics)) {
+    return publicReconnectGate(finalMetrics, false);
+  }
+  const capacityRunDirectory = String(await readText(capacityPointerFile)).trim();
+  if (path.isAbsolute(capacityRunDirectory)) {
+    const capacityFinalMetrics = await readJson(
+      path.join(capacityRunDirectory, "reconnect-gate-final.json"),
+    );
+    if (validReconnectGateMetrics(capacityFinalMetrics)) {
+      return publicReconnectGate(capacityFinalMetrics, false);
+    }
+  }
+  return emptyReconnectGate(reconnectGateURL !== "");
+}
+
+async function requestReconnectGateMetrics() {
+  let endpoint;
+  try {
+    endpoint = new URL(reconnectGateURL);
+    if (endpoint.protocol !== "http:" || endpoint.username !== "" || endpoint.password !== "") {
+      return null;
+    }
+    endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, "")}/metrics`;
+    endpoint.search = "";
+    endpoint.hash = "";
+  } catch {
+    return null;
+  }
+  return new Promise((resolve) => {
+    const request = http.get(endpoint, {
+      timeout: 1500,
+      headers: reconnectGateToken === ""
+        ? { Connection: "close" }
+        : { Authorization: `Bearer ${reconnectGateToken}`, Connection: "close" },
+    }, (response) => {
+      const chunks = [];
+      let bytes = 0;
+      response.on("data", (chunk) => {
+        bytes += chunk.length;
+        if (bytes > 256 * 1024) {
+          request.destroy(new Error("response_too_large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        if (response.statusCode !== 200) {
+          resolve(null);
+          return;
+        }
+        try {
+          const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          resolve(validReconnectGateMetrics(value) ? value : null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    request.on("timeout", () => request.destroy(new Error("timeout")));
+    request.on("error", () => resolve(null));
+  });
+}
+
+function validReconnectGateMetrics(value) {
+  return value?.status === "ok"
+    && Number.isSafeInteger(value.safeRate) && value.safeRate > 0 && value.safeRate <= 1000
+    && Number.isSafeInteger(value.windowSeconds) && value.windowSeconds > 0 && value.windowSeconds <= 60
+    && Array.isArray(value.scopes) && value.scopes.length <= 1024;
+}
+
+function publicReconnectGate(value, live) {
+  const transports = new Map();
+  let granted = 0;
+  let denied = 0;
+  let queued = 0;
+  let windowRequests = 0;
+  let scheduledPerSecondPeak = 0;
+  let pressure = 0;
+  for (const source of value.scopes) {
+    const scope = String(source?.scope ?? "");
+    const separator = scope.lastIndexOf("|");
+    const candidate = separator >= 0 ? scope.slice(separator + 1) : "";
+    const transport = ["tcp", "kcp", "carrier"].includes(candidate) ? candidate : "unknown";
+    const metrics = transports.get(transport) ?? {
+      transport,
+      granted: 0,
+      denied: 0,
+      queued: 0,
+      windowRequests: 0,
+    };
+    const scopeGranted = reconnectGateMetric(source?.granted);
+    const scopeDenied = reconnectGateMetric(source?.denied);
+    const scopeQueued = reconnectGateMetric(source?.futureSlots);
+    const scopeWindowRequests = reconnectGateMetric(source?.windowRequests);
+    metrics.granted = safeMetricSum(metrics.granted, scopeGranted);
+    metrics.denied = safeMetricSum(metrics.denied, scopeDenied);
+    metrics.queued = safeMetricSum(metrics.queued, scopeQueued);
+    metrics.windowRequests = safeMetricSum(metrics.windowRequests, scopeWindowRequests);
+    transports.set(transport, metrics);
+    granted = safeMetricSum(granted, scopeGranted);
+    denied = safeMetricSum(denied, scopeDenied);
+    queued = safeMetricSum(queued, scopeQueued);
+    windowRequests = safeMetricSum(windowRequests, scopeWindowRequests);
+    scheduledPerSecondPeak = Math.max(
+      scheduledPerSecondPeak,
+      reconnectGateMetric(source?.scheduledPerSecondPeak),
+    );
+    pressure = Math.max(pressure, reconnectGatePressure(source?.pressure));
+  }
+  return {
+    available: true,
+    live,
+    healthy: live,
+    status: live ? "RUNNING" : "STOPPED",
+    startedAt: publicTimestamp(value.startedAt),
+    observedAt: publicTimestamp(value.observedAt),
+    safeRate: value.safeRate,
+    windowSeconds: value.windowSeconds,
+    scopeCount: value.scopes.length,
+    granted,
+    denied,
+    queued,
+    windowRequests,
+    scheduledPerSecondPeak,
+    pressurePct: round(pressure * 100, 2),
+    transports: [...transports.values()].sort((left, right) => left.transport.localeCompare(right.transport)),
+  };
+}
+
+function emptyReconnectGate(configured) {
+  return {
+    available: false,
+    live: false,
+    healthy: false,
+    status: configured ? "UNAVAILABLE" : "NOT_CONFIGURED",
+    startedAt: "",
+    observedAt: "",
+    safeRate: 0,
+    windowSeconds: 0,
+    scopeCount: 0,
+    granted: 0,
+    denied: 0,
+    queued: 0,
+    windowRequests: 0,
+    scheduledPerSecondPeak: 0,
+    pressurePct: 0,
+    transports: [],
+  };
+}
+
+function reconnectGateMetric(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function reconnectGatePressure(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0;
+}
+
+function safeMetricSum(left, right) {
+  return Math.min(Number.MAX_SAFE_INTEGER, left + right);
 }
 
 async function readEnv(file) {
