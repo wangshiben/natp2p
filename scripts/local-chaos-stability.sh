@@ -3,7 +3,13 @@
 set -uo pipefail
 umask 077
 
-ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ -n ${BNFS_STABILITY_ROOT_DIR:-} ]]; then
+  ROOT_DIR=$BNFS_STABILITY_ROOT_DIR
+else
+  ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+fi
+STABILITY_SUPPORT_ROOT=${BNFS_STABILITY_SUPPORT_ROOT:-$ROOT_DIR}
+STABILITY_WORKER_SCRIPT=${BNFS_STABILITY_WORKER_SCRIPT:-}
 SOAK_HOME=${BNFS_SOAK_HOME:-$ROOT_DIR/test/local-chaos/.soak}
 STATE_DIR=$SOAK_HOME/state
 CURRENT_FILE=$STATE_DIR/current
@@ -67,9 +73,9 @@ FAILURE_WATCHER_SOURCE_OFFSET=
 FAILURE_WATCHER_NEW_FAILURES=
 RESOURCE_GUARD_DETAIL=
 
-source "$ROOT_DIR/test/local-chaos/billing-adversary-gate.sh"
-source "$ROOT_DIR/test/local-chaos/billing-production-gate.sh"
-source "$ROOT_DIR/test/local-chaos/mixed-path-gate.sh"
+source "$STABILITY_SUPPORT_ROOT/test/local-chaos/billing-adversary-gate.sh"
+source "$STABILITY_SUPPORT_ROOT/test/local-chaos/billing-production-gate.sh"
+source "$STABILITY_SUPPORT_ROOT/test/local-chaos/mixed-path-gate.sh"
 REAL_BILLING_GATE_SERVER=natserver06
 
 usage() {
@@ -121,6 +127,77 @@ numbered_service_names() {
 core_service_names() {
   printf '%s\n' ca index
   numbered_service_names relay "$TOPOLOGY_RELAY_COUNT"
+}
+
+worker_runtime_snapshot_files() {
+  printf '%s\n' \
+    scripts/local-chaos-stability.sh \
+    test/local-chaos/billing-adversary-gate.sh \
+    test/local-chaos/billing-production-gate.sh \
+    test/local-chaos/mixed-path-gate.sh \
+    test/local-chaos/lib.sh
+}
+
+prepare_worker_runtime_snapshot() {
+  local run_dir=$1 source_root=${2:-$ROOT_DIR}
+  local snapshot_root="$run_dir/runtime/worker-root"
+  local staging_root relative_file source_file destination temp manifest
+  [[ -d $run_dir && ! -e $snapshot_root ]] || return 1
+  mkdir -p "$run_dir/runtime" || return 1
+  staging_root=$(mktemp -d "$run_dir/runtime/.worker-root.XXXXXX") || return 1
+  while IFS= read -r relative_file; do
+    source_file="$source_root/$relative_file"
+    destination="$staging_root/$relative_file"
+    if [[ ! -f $source_file ]]; then
+      rm -rf "$staging_root"
+      return 1
+    fi
+    mkdir -p "$(dirname "$destination")" || {
+      rm -rf "$staging_root"
+      return 1
+    }
+    temp=$(mktemp "$staging_root/.snapshot.XXXXXX") || {
+      rm -rf "$staging_root"
+      return 1
+    }
+    if ! cp -- "$source_file" "$temp" || ! bash -n "$temp"; then
+      rm -f "$temp"
+      rm -rf "$staging_root"
+      return 1
+    fi
+    chmod 500 "$temp" || {
+      rm -f "$temp"
+      rm -rf "$staging_root"
+      return 1
+    }
+    mv -- "$temp" "$destination" || {
+      rm -f "$temp"
+      rm -rf "$staging_root"
+      return 1
+    }
+  done < <(worker_runtime_snapshot_files)
+  manifest="$staging_root/worker-runtime.sha256"
+  if ! (
+    cd "$staging_root" || exit 1
+    sha256sum $(worker_runtime_snapshot_files) > "$manifest"
+  ); then
+    rm -rf "$staging_root"
+    return 1
+  fi
+  chmod 400 "$manifest" || {
+    rm -rf "$staging_root"
+    return 1
+  }
+  chmod 500 "$staging_root/scripts" "$staging_root/test" \
+    "$staging_root/test/local-chaos" || {
+    rm -rf "$staging_root"
+    return 1
+  }
+  mv -- "$staging_root" "$snapshot_root" || {
+    rm -rf "$staging_root"
+    return 1
+  }
+  printf '%s\n' "$snapshot_root/scripts/local-chaos-stability.sh"
 }
 
 is_positive_integer() {
@@ -325,9 +402,11 @@ registered_random_worker() {
   flock -u 8
   exec 8>&-
   if [[ $client == batch-scheduler ]]; then
-    exec bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _batch_worker "$run_dir" "$@"
+    exec bash "${STABILITY_WORKER_SCRIPT:-$ROOT_DIR/scripts/local-chaos-stability.sh}" \
+      _batch_worker "$run_dir" "$@"
   fi
-  exec bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _worker "$run_dir" "$client" "$@"
+  exec bash "${STABILITY_WORKER_SCRIPT:-$ROOT_DIR/scripts/local-chaos-stability.sh}" \
+    _worker "$run_dir" "$client" "$@"
 }
 
 random_worker_identity_alive() {
@@ -2894,7 +2973,8 @@ random_batch_worker() {
       BNFS_RANDOM_BATCH_ID="$batch_id" BNFS_RANDOM_BATCH_MEMBER=1 \
         BNFS_RANDOM_SERVER_LINE="$server_line" \
         BNFS_RANDOM_TRANSFER_LIMIT_KIBPS="$per_client_limit_kibps" \
-        bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _worker "$run_dir" "$client" \
+        bash "${STABILITY_WORKER_SCRIPT:-$ROOT_DIR/scripts/local-chaos-stability.sh}" \
+          _worker "$run_dir" "$client" \
           "$relay" "$relay_endpoint" "$family" "$listen_port" "$deadline_epoch" 1 \
           "$client_count" "$attempt_timeout_seconds" 1 \
           > "$run_dir/workers/$batch_id-$client.log" 2>&1 < /dev/null &
@@ -3383,6 +3463,7 @@ run_internal() {
   project=${compose_project:?}
 
   local runner_pid=$$ runner_start compose_file=$run_dir/runtime/compose.json
+  local worker_script worker_support_root
   runner_start=$(awk '{print $22}' "/proc/$runner_pid/stat")
   printf '%s\n' "$runner_pid" > "$run_dir/runner.pid"
   printf '%s\n' "$runner_start" > "$run_dir/runner.starttime"
@@ -3409,6 +3490,16 @@ run_internal() {
   fi
 
   mkdir -p "$run_dir/runtime"
+  worker_script=$(prepare_worker_runtime_snapshot "$run_dir") || {
+    printf 'outcome=FAILED\ndetail=worker_runtime_snapshot_failed\n' > "$run_dir/status.env"
+    set_phase "$run_dir" FAILED
+    return 1
+  }
+  worker_support_root=$(dirname "$(dirname "$worker_script")")
+  STABILITY_WORKER_SCRIPT=$worker_script
+  export BNFS_STABILITY_ROOT_DIR="$ROOT_DIR"
+  export BNFS_STABILITY_SUPPORT_ROOT="$worker_support_root"
+  export BNFS_STABILITY_WORKER_SCRIPT="$worker_script"
   export ROOT_DIR
   export RUNTIME_DIR=$run_dir/runtime
   export PRIVATE_RUNTIME_DIR=$RUNTIME_DIR/.private
@@ -3618,7 +3709,10 @@ run_internal() {
                   worker_failed=1
                 else
                   env BNFS_RANDOM_WORKER_TOKEN="$worker_token" \
-                    setsid bash "$ROOT_DIR/scripts/local-chaos-stability.sh" _registered_worker \
+                    BNFS_STABILITY_ROOT_DIR="$ROOT_DIR" \
+                    BNFS_STABILITY_SUPPORT_ROOT="$worker_support_root" \
+                    BNFS_STABILITY_WORKER_SCRIPT="$worker_script" \
+                    setsid bash "$worker_script" _registered_worker \
                     "$run_dir" "$worker_client" "$runner_pid" "$runner_start" \
                     "$deadline_epoch" "$probe_seconds" "$max_inflight" \
                     "$random_attempt_timeout" "$workload_limit_mibps" \
@@ -4042,7 +4136,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     _run) shift; run_internal "${1:?run directory required}" ;;
     _worker)
       shift
-      source "$ROOT_DIR/test/local-chaos/lib.sh"
+      source "$STABILITY_SUPPORT_ROOT/test/local-chaos/lib.sh"
       run_dir=${1:?run directory required}
       random_client_worker "$run_dir" "${2:?client required}" \
         "${3:?relay required}" "${4:?relay endpoint required}" "${5:?IP family required}" \
@@ -4052,7 +4146,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
       ;;
     _batch_worker)
       shift
-      source "$ROOT_DIR/test/local-chaos/lib.sh"
+      source "$STABILITY_SUPPORT_ROOT/test/local-chaos/lib.sh"
       random_batch_worker "${1:?run directory required}" "${2:?deadline required}" \
         "${3:?pause required}" "${4:?max inflight batches required}" \
         "${5:?attempt timeout required}" "${6:?workload limit required}"
