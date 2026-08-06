@@ -8,6 +8,47 @@ trap 'rm -rf "$test_root"' EXIT
 
 source "$ROOT_DIR/scripts/local-chaos-stability.sh"
 
+dc() {
+  [[ $1 == ps && $2 == -q ]] || return 1
+  case $3 in
+    relay03) printf 'aaaaaaaaaaaa\n' ;;
+    relay04) printf 'bbbbbbbbbbbb\n' ;;
+    relay05) printf 'cccccccccccc\n' ;;
+    ca) printf 'dddddddddddd\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+docker() {
+  [[ $1 == inspect && $2 == --format ]] || return 1
+  case ${4:-} in
+    aaaaaaaaaaaa) printf '10.253.41.250\t\n' ;;
+    bbbbbbbbbbbb) printf '\tfd92:7b5e:4c31:42::250\n' ;;
+    cccccccccccc) printf '10.253.43.250\tfd92:7b5e:4c31:43::250\n' ;;
+    dddddddddddd)
+      printf '10.253.41.251\t\n'
+      printf '\tfd92:7b5e:4c31:42::251\n'
+      printf '10.253.43.251\tfd92:7b5e:4c31:43::251\n'
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+ip_family_address_gate relay03 ipv4 10.253.41.250
+ip_family_address_gate relay04 ipv6 fd92:7b5e:4c31:42::250
+ip_family_address_gate relay05 dual 10.253.43.250
+ip_family_address_gate ca ipv4 10.253.41.251
+ip_family_address_gate ca ipv6 fd92:7b5e:4c31:42::251
+ip_family_address_gate ca dual 10.253.43.251
+if ip_family_address_gate relay03 ipv4 10.253.41.251; then
+  printf 'IP family address gate accepted an incorrect exact address\n' >&2
+  exit 1
+fi
+if ip_family_address_gate relay04 dual; then
+  printf 'IP family address gate accepted a missing dual-stack address\n' >&2
+  exit 1
+fi
+
 run_dir=$test_root/run
 mkdir -p "$run_dir/transfer-records"
 cat > "$run_dir/ip-family-plan.tsv" <<'EOF'

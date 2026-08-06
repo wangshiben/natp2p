@@ -49,6 +49,36 @@ export function generateEphemeralServerIdentity() {
   return { privateKey, publicKey, nodeID };
 }
 
+export function buildSignedNodeAuthorization(identity, bundle, timestamp = Math.floor(Date.now() / 1000)) {
+  if (!identity || !/^[0-9a-f]{64}$/.test(String(identity.privateKey ?? ""))
+    || !/^04[0-9a-f]{128}$/.test(String(identity.publicKey ?? ""))
+    || !/^[0-9a-f]{64}$/.test(String(identity.nodeID ?? ""))
+    || !Number.isSafeInteger(timestamp) || timestamp <= 0) {
+    throw codedError("mixed_path_identity_invalid");
+  }
+  const identityPrivateKey = privateKeyFromScalar(Buffer.from(identity.privateKey, "hex"));
+  const derivedPublicKey = publicKeyHex(identityPrivateKey);
+  const derivedNodeID = crypto.createHash("sha256").update(derivedPublicKey).digest("hex");
+  if (derivedPublicKey !== identity.publicKey || derivedNodeID !== identity.nodeID) {
+    throw codedError("mixed_path_identity_key_binding_invalid");
+  }
+  const billingPrivateKey = validateBillingBundle(bundle);
+  const request = {
+    subject_pubkey: identity.publicKey,
+    role: "server",
+    billing_key_id: bundle.key_id,
+    timestamp,
+    nonce: crypto.randomBytes(24).toString("base64url"),
+    ttl_seconds: 86400,
+    node_signature: "",
+    billing_signature: "",
+  };
+  const canonical = nodeAuthorizationCanonical(request);
+  request.node_signature = signCanonical(canonical, identityPrivateKey);
+  request.billing_signature = signCanonical(canonical, billingPrivateKey);
+  return request;
+}
+
 export function mixedPathNodes(clientRelay, serverRelay) {
   const controlPath = clientRelay === "malicious-relay"
     ? [clientRelay, serverRelay]
@@ -425,36 +455,31 @@ async function startMaliciousServer(config, relay) {
 
 async function provisionMixedServerIdentity(config) {
   const identity = generateEphemeralServerIdentity();
-  const token = await readCredentialToken(config.serverEnrollmentTokenFile);
-  const response = await fetch(new URL("/issue", config.caBaseURL), {
+  const stateDirectory = path.join(config.privateRoot, "malicious-natserver");
+  const bundle = await readPrivateJSON(path.join(stateDirectory, "billing-key.json"));
+  const authorization = buildSignedNodeAuthorization(identity, bundle);
+  const expectedAuthorizationID = nodeAuthorizationID(identity.nodeID, bundle.key_id);
+  const response = await fetch(new URL("/v1/node/authorize", config.caBaseURL), {
     method: "POST",
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      subject_pubkey: identity.publicKey,
-      role: "server",
-      ttl_seconds: 86400,
-    }),
+    body: JSON.stringify(authorization),
     signal: AbortSignal.timeout(5000),
   });
-  if (!response.ok) throw codedError("mixed_path_identity_issue_rejected");
+  if (!response.ok) throw codedError("mixed_path_identity_authorization_rejected");
   const body = await response.json();
   const certificate = body?.signed_cert;
-  if (certificate?.cert?.subject_node_id !== identity.nodeID
-    || certificate?.cert?.subject_pubkey !== identity.publicKey
-    || certificate?.cert?.role !== "server"
-    || typeof certificate?.sig !== "string") {
+  if (body?.node_id !== identity.nodeID || body?.authorization_id !== expectedAuthorizationID
+    || !validBillingCertificate(certificate, identity, bundle, expectedAuthorizationID)) {
     throw codedError("mixed_path_identity_certificate_invalid");
   }
-  const stateDirectory = path.join(config.privateRoot, "malicious-natserver");
   await Promise.all([
     writeTextAtomic(path.join(stateDirectory, "mixed-network-identity.key"), `${identity.privateKey}\n`),
     writeJSONAtomic(path.join(stateDirectory, "mixed-network-certificate.json"), certificate),
   ]);
-  await ensureCredit(config, identity.nodeID);
+  await ensureCredit(config, identity.nodeID, expectedAuthorizationID);
   return identity.nodeID;
 }
 
@@ -473,7 +498,9 @@ async function startNormalProbe(config, targetNodeID, relay) {
     "> /artifacts/.private/mixed-tunclient.log 2>&1",
   ].join(" ")]);
   const probeNodeID = await waitForNodeID(logPath, 20_000, config);
-  await ensureCredit(config, probeNodeID);
+  const probeBundle = await readPrivateJSON(path.join(config.privateRoot, "mixed-path-probe", "billing-key.json"));
+  validateBillingBundle(probeBundle);
+  await ensureCredit(config, probeNodeID, nodeAuthorizationID(probeNodeID, probeBundle.key_id));
   await waitForFilePattern(
     logPath,
     /已建立隧道连接/,
@@ -546,34 +573,33 @@ async function waitForProvisionedIdentity(config, service, role) {
   throw codedError("mixed_path_identity_unavailable");
 }
 
-async function ensureCredit(config, nodeID) {
-  const token = await readCredentialToken(config.adminTokenFile);
-  const currentResponse = await fetch(new URL(`/balance?node=${encodeURIComponent(nodeID)}`, config.caBaseURL), {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!currentResponse.ok) throw codedError("mixed_path_balance_unavailable");
-  const current = await currentResponse.json();
-  if (!Number.isSafeInteger(current.balance) || current.balance < 0) throw codedError("mixed_path_balance_invalid");
-  const desiredBalance = 64 * 1024 * 1024 * 1024;
-  if (current.balance >= desiredBalance) return;
-  const response = await fetch(new URL("/credit", config.caBaseURL), {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ node_id: nodeID, add_bytes: desiredBalance - current.balance }),
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!response.ok) throw codedError("mixed_path_credit_rejected");
-  const body = await response.json();
-  if (body.balance !== desiredBalance) throw codedError("mixed_path_credit_invalid");
-}
-
-async function readCredentialToken(filename) {
-  const token = (await fs.readFile(filename, "utf8")).trim();
-  if (!/^[A-Za-z0-9._~+/-]{32,}={0,2}$/.test(token)) {
-    throw codedError("mixed_path_credential_invalid");
+async function ensureCredit(config, nodeID, authorizationID) {
+  if (!/^[0-9a-f]{64}$/.test(nodeID) || !/^[0-9a-f]{64}$/.test(authorizationID)) {
+    throw codedError("mixed_path_balance_identity_invalid");
   }
-  return token;
+  const desiredBalance = 64 * 1024 * 1024 * 1024;
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    throwIfStopping(config);
+    const target = new URL("/balance", config.caBaseURL);
+    target.searchParams.set("node", nodeID);
+    target.searchParams.set("authorization_id", authorizationID);
+    const response = await fetch(target, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) {
+      const body = await response.json();
+      if (!Number.isSafeInteger(body.balance) || body.balance < 0) {
+        throw codedError("mixed_path_balance_invalid");
+      }
+      if (body.balance < desiredBalance) throw codedError("mixed_path_authorized_balance_insufficient");
+      return;
+    }
+    if (![401, 404].includes(response.status)) throw codedError("mixed_path_balance_unavailable");
+    await delay(250);
+  }
+  throw codedError("mixed_path_authorized_balance_unavailable");
 }
 
 async function stopProcess(config, service, processName) {
@@ -679,8 +705,6 @@ function configuration() {
     caBaseURL,
     watchPid,
     probeIntervalMs,
-    adminTokenFile: path.join(privateRoot, "ca", "admin.token"),
-    serverEnrollmentTokenFile: path.join(privateRoot, "ca", "enroll-server.token"),
   };
 }
 
@@ -890,6 +914,112 @@ async function readJSON(filename) {
   } catch {
     return {};
   }
+}
+
+async function readPrivateJSON(filename) {
+  const handle = await fs.open(filename, "r");
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0 || stat.size <= 0 || stat.size > 65536) {
+      throw codedError("mixed_path_private_json_invalid");
+    }
+    return JSON.parse(await handle.readFile("utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw codedError("mixed_path_private_json_invalid");
+    throw error;
+  } finally {
+    await handle.close();
+  }
+}
+
+function validateBillingBundle(bundle) {
+  if (!bundle || bundle.version !== 1 || bundle.algorithm !== "ECDSA_P256_SHA256"
+    || bundle.registration_status !== "active" || !/^[0-9a-f]{64}$/.test(String(bundle.key_id ?? ""))
+    || !/^04[0-9a-f]{128}$/.test(String(bundle.public_key_hex ?? ""))
+    || !bundle.private_key_jwk?.d) {
+    throw codedError("mixed_path_billing_bundle_invalid");
+  }
+  let privateKey;
+  try {
+    privateKey = crypto.createPrivateKey({ key: bundle.private_key_jwk, format: "jwk" });
+  } catch {
+    throw codedError("mixed_path_billing_private_key_invalid");
+  }
+  const publicKey = publicKeyHex(privateKey);
+  const keyID = crypto.createHash("sha256").update(Buffer.from(publicKey, "hex")).digest("hex");
+  if (publicKey !== bundle.public_key_hex || keyID !== bundle.key_id) {
+    throw codedError("mixed_path_billing_key_binding_invalid");
+  }
+  return privateKey;
+}
+
+function privateKeyFromScalar(privateScalar) {
+  const keyPair = crypto.createECDH("prime256v1");
+  try {
+    keyPair.setPrivateKey(privateScalar);
+  } catch {
+    throw codedError("mixed_path_identity_private_key_invalid");
+  }
+  const publicKey = keyPair.getPublicKey(undefined, "uncompressed");
+  return crypto.createPrivateKey({
+    key: {
+      kty: "EC",
+      crv: "P-256",
+      x: publicKey.subarray(1, 33).toString("base64url"),
+      y: publicKey.subarray(33, 65).toString("base64url"),
+      d: privateScalar.toString("base64url"),
+    },
+    format: "jwk",
+  });
+}
+
+function publicKeyHex(privateKey) {
+  const publicJWK = crypto.createPublicKey(privateKey).export({ format: "jwk" });
+  return Buffer.concat([
+    Buffer.from([4]),
+    Buffer.from(publicJWK.x, "base64url"),
+    Buffer.from(publicJWK.y, "base64url"),
+  ]).toString("hex");
+}
+
+function nodeAuthorizationCanonical(request) {
+  return [
+    "CA-NODE-AUTHORIZATION-V1",
+    request.subject_pubkey,
+    request.role,
+    request.billing_key_id,
+    String(request.timestamp),
+    request.nonce,
+    String(request.ttl_seconds),
+  ].join("\n");
+}
+
+function signCanonical(canonical, privateKey) {
+  return crypto.sign("sha256", Buffer.from(canonical), {
+    key: privateKey,
+    dsaEncoding: "der",
+  }).toString("base64url");
+}
+
+function nodeAuthorizationID(nodeID, billingKeyID) {
+  return crypto.createHash("sha256")
+    .update(`CA-NODE-AUTHORIZATION-ID-V1\0${nodeID}\0${billingKeyID}`)
+    .digest("hex");
+}
+
+function validBillingCertificate(certificate, identity, bundle, expectedAuthorizationID) {
+  return certificate && typeof certificate === "object"
+    && certificate.cert?.subject_node_id === identity.nodeID
+    && certificate.cert?.subject_pubkey === identity.publicKey
+    && certificate.cert?.role === "server"
+    && certificate.cert?.billing_key_id === bundle.key_id
+    && certificate.cert?.billing_public_key === bundle.public_key_hex
+    && certificate.cert?.authorization_id === expectedAuthorizationID
+    && Number.isSafeInteger(certificate.cert?.not_before)
+    && Number.isSafeInteger(certificate.cert?.not_after)
+    && certificate.cert.not_after > certificate.cert.not_before
+    && typeof certificate.sig === "string"
+    && /^[0-9a-f]{16,256}$/.test(certificate.sig);
 }
 
 async function readText(filename) {

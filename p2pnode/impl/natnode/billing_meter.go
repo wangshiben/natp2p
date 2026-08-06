@@ -113,6 +113,7 @@ func (lease *natBillingSendLease) Release() {
 type natBillingMeter struct {
 	mu                    sync.Mutex
 	privateKey            *ecdh.PrivateKey
+	billingPrivateKey     *ecdh.PrivateKey
 	payerID               billingvoucher.Identifier
 	sessions              map[billingvoucher.Identifier]*natBillingSession
 	relaySessions         map[string]billingvoucher.Identifier
@@ -126,6 +127,7 @@ type natBillingMeter struct {
 	rotationTargets       map[billingvoucher.Identifier]natBillingSnapshot
 	rotationSettled       map[billingvoucher.Identifier]natBillingSnapshot
 	cert                  *admission.SignedCert
+	verifier              admission.CertVerifier
 	enabled               bool
 	privateSnapshotWriter *natBillingPrivateSnapshotWriter
 }
@@ -159,7 +161,7 @@ func newNatBillingMeter(privateKey *ecdh.PrivateKey) (*natBillingMeter, error) {
 		return nil, err
 	}
 	meter := &natBillingMeter{
-		privateKey: privateKey, payerID: payerID,
+		privateKey: privateKey, billingPrivateKey: privateKey, payerID: payerID,
 		sessions:            make(map[billingvoucher.Identifier]*natBillingSession),
 		relaySessions:       make(map[string]billingvoucher.Identifier),
 		relayReady:          make(map[string]chan struct{}),
@@ -173,6 +175,47 @@ func newNatBillingMeter(privateKey *ecdh.PrivateKey) (*natBillingMeter, error) {
 		rotationSettled:     make(map[billingvoucher.Identifier]natBillingSnapshot),
 	}
 	return meter, nil
+}
+
+func (meter *natBillingMeter) setBillingPrivateKey(privateKey *ecdh.PrivateKey) error {
+	if privateKey == nil {
+		return errors.New("natnode: billing private key is nil")
+	}
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	if meter.enabled || len(meter.sessions) != 0 {
+		return errors.New("natnode: billing private key must be set before admission and billing sessions")
+	}
+	meter.billingPrivateKey = privateKey
+	return nil
+}
+
+func (meter *natBillingMeter) setCertificateVerifier(verifier admission.CertVerifier) error {
+	if verifier == nil {
+		return errors.New("natnode: admission certificate verifier is nil")
+	}
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	if meter.enabled || len(meter.sessions) != 0 {
+		return errors.New("natnode: admission verifier must be set before admission and billing sessions")
+	}
+	meter.verifier = verifier
+	return nil
+}
+
+func (meter *natBillingMeter) billingPublicKeyHex() string {
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	return hex.EncodeToString(meter.billingPrivateKey.PublicKey().Bytes())
+}
+
+func (meter *natBillingMeter) billingPublicKeyForWire() string {
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
+	if meter.cert == nil || meter.cert.Cert.AuthorizationID == "" {
+		return ""
+	}
+	return hex.EncodeToString(meter.billingPrivateKey.PublicKey().Bytes())
 }
 
 func (meter *natBillingMeter) ensureDiagnosticMapsLocked() {
@@ -391,6 +434,8 @@ func newNatBillingSession() *natBillingSession {
 }
 
 func (meter *natBillingMeter) enable(cert *admission.SignedCert) error {
+	meter.mu.Lock()
+	defer meter.mu.Unlock()
 	if cert == nil || cert.Cert.Role != admission.RoleServer {
 		return errors.New("natnode: secure billing requires a server certificate")
 	}
@@ -398,11 +443,25 @@ func (meter *natBillingMeter) enable(cert *admission.SignedCert) error {
 		cert.Cert.SubjectPubKey != hex.EncodeToString(meter.privateKey.PublicKey().Bytes()) {
 		return errors.New("natnode: billing certificate does not match node identity")
 	}
-	meter.mu.Lock()
+	if err := admission.ValidateBillingBinding(cert.Cert); err != nil {
+		return fmt.Errorf("natnode: invalid billing certificate binding: %w", err)
+	}
+	billingPublicKey := hex.EncodeToString(meter.billingPrivateKey.PublicKey().Bytes())
+	if cert.Cert.AuthorizationID == "" {
+		if billingPublicKey != cert.Cert.SubjectPubKey {
+			return errors.New("natnode: legacy certificate requires the identity key for billing")
+		}
+	} else {
+		if meter.verifier == nil {
+			return errors.New("natnode: independently billed certificate requires a CA verifier")
+		}
+		if cert.Cert.BillingPubKey != billingPublicKey {
+			return errors.New("natnode: billing certificate does not match the configured billing private key")
+		}
+	}
 	meter.cert = cert
 	meter.enabled = true
 	meter.notifyPrivateSnapshotLocked()
-	meter.mu.Unlock()
 	return nil
 }
 
@@ -1259,7 +1318,11 @@ func trimNatBillingSnapshots(session *natBillingSession) {
 	session.snapshotOrder = compacted
 }
 
-func (meter *natBillingMeter) cosign(bodyBytes, relaySignature []byte, relayPublicKeyHex string) (billingvoucher.MutualVoucher, error) {
+func (meter *natBillingMeter) cosign(
+	bodyBytes, relaySignature []byte,
+	relayPublicKeyHex, relayBillingPublicKeyHex string,
+	relayCertificate *admission.SignedCert,
+) (billingvoucher.MutualVoucher, error) {
 	body, err := billingvoucher.ParseCanonicalBody(bodyBytes)
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, err
@@ -1268,7 +1331,51 @@ func (meter *natBillingMeter) cosign(bodyBytes, relaySignature []byte, relayPubl
 		body.AuthorizedThroughBytes != billingvoucher.MaxBillableBytes || body.PolicyDigest != billingvoucher.CurrentPolicyDigest() {
 		return billingvoucher.MutualVoucher{}, errors.New("natnode: voucher channel binding or policy mismatch")
 	}
-	relayPublicBytes, err := hex.DecodeString(relayPublicKeyHex)
+	if admission.NodeIDFromPubKeyHex(relayPublicKeyHex) != body.PayeeRelayID.String() {
+		return billingvoucher.MutualVoucher{}, errors.New("natnode: Relay identity does not match voucher payee")
+	}
+	meter.mu.Lock()
+	verifier := meter.verifier
+	payerCertificate := meter.cert
+	meter.mu.Unlock()
+	relaySigningPublicKeyHex := relayPublicKeyHex
+	if relayCertificate == nil {
+		if payerCertificate != nil && payerCertificate.Cert.AuthorizationID != "" {
+			return billingvoucher.MutualVoucher{}, errors.New("natnode: Relay billing claim lacks a matching certificate")
+		}
+		if relayBillingPublicKeyHex != "" {
+			return billingvoucher.MutualVoucher{}, errors.New("natnode: uncertified Relay supplied an independent billing key")
+		}
+	} else {
+		if relayCertificate.Cert.SubjectNodeID != body.PayeeRelayID.String() ||
+			relayCertificate.Cert.SubjectPubKey != relayPublicKeyHex ||
+			relayCertificate.Cert.Role != admission.RoleRelay {
+			return billingvoucher.MutualVoucher{}, errors.New("natnode: Relay billing claim lacks a matching certificate")
+		}
+		if verifier != nil {
+			if err := verifier.Verify(relayCertificate, admission.VerifyOptions{
+				ExpectNodeID: body.PayeeRelayID.String(), ExpectRole: admission.RoleRelay,
+			}); err != nil {
+				return billingvoucher.MutualVoucher{}, fmt.Errorf("natnode: verify Relay billing certificate: %w", err)
+			}
+		} else if relayCertificate.Cert.AuthorizationID != "" {
+			return billingvoucher.MutualVoucher{}, errors.New("natnode: cannot trust an independently billed Relay without a CA verifier")
+		}
+		if err := admission.ValidateBillingBinding(relayCertificate.Cert); err != nil {
+			return billingvoucher.MutualVoucher{}, fmt.Errorf("natnode: invalid Relay billing certificate: %w", err)
+		}
+		if relayCertificate.Cert.AuthorizationID == "" {
+			if relayBillingPublicKeyHex != "" {
+				return billingvoucher.MutualVoucher{}, errors.New("natnode: legacy Relay certificate supplied an independent billing key")
+			}
+		} else {
+			if relayBillingPublicKeyHex == "" || relayBillingPublicKeyHex != relayCertificate.Cert.BillingPubKey {
+				return billingvoucher.MutualVoucher{}, errors.New("natnode: Relay billing key does not match its certificate")
+			}
+			relaySigningPublicKeyHex = relayBillingPublicKeyHex
+		}
+	}
+	relayPublicBytes, err := hex.DecodeString(relaySigningPublicKeyHex)
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, errors.New("natnode: invalid Relay public key")
 	}
@@ -1276,7 +1383,7 @@ func (meter *natBillingMeter) cosign(bodyBytes, relaySignature []byte, relayPubl
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, errors.New("natnode: invalid Relay public key")
 	}
-	if err := billingvoucher.VerifyRelaySignature(body, relaySignature, relayPublicKey); err != nil {
+	if err := billingvoucher.VerifyRelayBillingSignature(body, relaySignature, relayPublicKey); err != nil {
 		return billingvoucher.MutualVoucher{}, err
 	}
 
@@ -1322,7 +1429,7 @@ func (meter *natBillingMeter) cosign(bodyBytes, relaySignature []byte, relayPubl
 	if !rotationClaim && (len(session.claimable) == 0 || session.claimable[0] != snapshot) {
 		return billingvoucher.MutualVoucher{}, errors.New("natnode: Relay requested a voucher before the deterministic billing threshold")
 	}
-	payerSignature, err := billingvoucher.SignPayer(body, meter.privateKey)
+	payerSignature, err := billingvoucher.SignPayerBilling(body, meter.billingPrivateKey)
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, err
 	}

@@ -131,7 +131,8 @@ func (c *NATConnection) Send(ctx context.Context, msg *p2pnode.Message) error {
 			if reconciliationReady && c.billingFailure != nil {
 				c.billingFailure(relayAddr)
 			}
-			if !errors.Is(err, networkFrameWork.ErrMessageMaxRetransmits) ||
+			relayChanged := errors.Is(err, networkFrameWork.ErrRelayChangedDuringSend)
+			if !errors.Is(err, networkFrameWork.ErrMessageMaxRetransmits) && !relayChanged ||
 				!c.billing.sendsEnabled() || c.billingFailure == nil {
 				return err
 			}
@@ -139,12 +140,26 @@ func (c *NATConnection) Send(ctx context.Context, msg *p2pnode.Message) error {
 				return markRecoverableServiceSendError(err)
 			}
 			recoveryAttempt++
+			if relayChanged {
+				logx.Warnf(
+					"[billing-trace] stage=relay_migration_rebill relay=%s connId=%s peer=%.16s oldSession=%x oldSequence=%d recoveryAttempt=%d",
+					relayAddr, connectionID, c.peer.ID, netMsg.Header.BillingSessionID,
+					netMsg.Header.BillingSequence, recoveryAttempt,
+				)
+				continue
+			}
 			logx.Warnf(
 				"[billing-trace] stage=transport_send_retry_after_session_rotation relay=%s connId=%s peer=%.16s oldSession=%x oldSequence=%d recoveryAttempt=%d",
 				relayAddr, connectionID, c.peer.ID, netMsg.Header.BillingSessionID,
 				netMsg.Header.BillingSequence, recoveryAttempt,
 			)
-			if waitErr := c.billing.waitRelaySession(ctx, relayAddr, connectionID); waitErr != nil {
+			retryRelayAddr := relayAddr
+			if c.billingRelay != nil {
+				if currentRelayAddr := c.billingRelay(); currentRelayAddr != "" {
+					retryRelayAddr = currentRelayAddr
+				}
+			}
+			if waitErr := c.billing.waitRelaySession(ctx, retryRelayAddr, connectionID); waitErr != nil {
 				return markRecoverableServiceSendError(waitErr)
 			}
 			continue

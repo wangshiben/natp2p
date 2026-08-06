@@ -95,6 +95,60 @@ func TestActorRemainsStartingUntilRoleCoverageIsComplete(t *testing.T) {
 	}
 }
 
+func TestBalanceUsesMeasuredIdentityAuthorization(t *testing.T) {
+	const payerNodeID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const payerAuthorizationID = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != admission.PathBalance {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.URL.Query().Get("node") != payerNodeID ||
+			request.URL.Query().Get("authorization_id") != payerAuthorizationID {
+			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "identity_mismatch"})
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]int64{
+			"balance": 12345, "authorization_consumed_bytes": 678, "authorization_earned_bytes": 90,
+		})
+	}))
+	defer server.Close()
+
+	node := &attackerNode{
+		config: configuration{caURL: server.URL},
+		identity: identityWire{Cert: admission.SignedCert{Cert: admission.Cert{
+			AuthorizationID: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		}}},
+		http: &http.Client{Timeout: time.Second},
+	}
+	payer := identityWire{NodeID: payerNodeID, Cert: admission.SignedCert{Cert: admission.Cert{
+		AuthorizationID: payerAuthorizationID,
+	}}}
+	balance, status, err := node.balance(context.Background(), payer)
+	if err != nil || status != http.StatusOK || balance.Balance != 12345 ||
+		balance.AuthorizationConsumedBytes != 678 || balance.AuthorizationEarnedBytes != 90 || !balance.AuthorizationScoped {
+		t.Fatalf("balance=%+v status=%d err=%v", balance, status, err)
+	}
+}
+
+func TestAuthorizationBalanceIgnoresConcurrentAccountMutation(t *testing.T) {
+	before := balanceSnapshot{
+		Balance: 1000, AuthorizationConsumedBytes: 200, AuthorizationEarnedBytes: 40, AuthorizationScoped: true,
+	}
+	after := before
+	after.Balance = 500
+	delta, changed := balanceDifference(before, after)
+	if delta != 0 || changed {
+		t.Fatalf("unrelated account mutation delta=%d changed=%v", delta, changed)
+	}
+
+	after.AuthorizationConsumedBytes += 64 << 10
+	delta, changed = balanceDifference(before, after)
+	if delta != 64<<10 || !changed {
+		t.Fatalf("authorization mutation delta=%d changed=%v", delta, changed)
+	}
+}
+
 func TestRelayFeeOverrideStillDetectsCausalBalanceMutation(t *testing.T) {
 	const maliciousDelta = int64(64 << 10)
 	var balance atomic.Int64

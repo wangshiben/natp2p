@@ -14,17 +14,24 @@ test("every Compose service overlays an isolated private artifact directory", as
   const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-isolation-runtime-"));
   context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
   const privateRoot = path.join(runtimeDir, ".private");
+  const fixedAdminToken = `caadm_${"a".repeat(64)}`;
+  const fixedAdminTokenFile = path.join(runtimeDir, "fixed-admin.token");
+  await fs.writeFile(fixedAdminTokenFile, `${fixedAdminToken}\n`, { mode: 0o600 });
   const { stdout } = await execFileAsync(process.execPath, [generator, runtimeDir], {
     env: {
       ...process.env,
       BNFS_CHAOS_ENABLE_CA: "1",
       BNFS_CHAOS_CA_HOST_PORT: "19100",
+      BNFS_CHAOS_CA_CLIENT_ROLE_SERVICES: "natserver01,natserver04,natserver06",
+      BNFS_CHAOS_CA_ADMIN_TOKEN_FILE: fixedAdminTokenFile,
     },
     maxBuffer: 1024 * 1024,
   });
   const compose = JSON.parse(stdout);
   const serviceNames = [
+    "ca-postgres",
     "ca",
+    "ca-web",
     "index",
     ...numbered("relay", 7),
     ...numbered("natserver", 13),
@@ -34,8 +41,16 @@ test("every Compose service overlays an isolated private artifact directory", as
   ];
 
   assert.deepEqual(Object.keys(compose.services).sort(), [...serviceNames].sort());
+  const commonArtifactServices = [
+    "index",
+    ...numbered("relay", 7),
+    ...numbered("natserver", 13),
+    ...numbered("natclient", 6),
+    "malicious-random-natserver",
+    "malicious-natclient",
+  ];
   const privateSources = new Set();
-  for (const serviceName of serviceNames) {
+  for (const serviceName of commonArtifactServices) {
     const volumes = compose.services[serviceName].volumes;
     assert.deepEqual(volumes, [
       `${runtimeDir}:/artifacts`,
@@ -43,12 +58,23 @@ test("every Compose service overlays an isolated private artifact directory", as
     ]);
     privateSources.add(path.join(privateRoot, serviceName));
   }
-  assert.equal(privateSources.size, serviceNames.length);
+  assert.equal(privateSources.size, commonArtifactServices.length);
 
-  assert.deepEqual(sensitivePaths(compose.services.ca.command), [
-    "/artifacts/.private/ca-key.pem",
-    "/artifacts/.private/ledger.json",
+  assert.deepEqual(compose.services.ca.volumes, [`${path.join(privateRoot, "ca")}:/data`]);
+  assert.deepEqual(compose.services["ca-postgres"].volumes, [
+    `${path.join(privateRoot, "ca-postgres", "data")}:/var/lib/postgresql/data`,
   ]);
+  assert.deepEqual(compose.services["ca-web"].volumes, [
+    `${path.join(privateRoot, "ca-web", "tls")}:/etc/nginx/tls`,
+  ]);
+  assert.equal(compose.services.ca.image, "bnfs-ca-web-backend:latest");
+  assert.equal(compose.services["ca-web"].image, "bnfs-ca-web-frontend:latest");
+  assert.deepEqual(compose.services["ca-web"].ports, ["8088:8088"]);
+  assert.equal(compose.services["ca-web"].environment.BACKEND_URL, "http://ca:9100");
+  assert.deepEqual(compose.services["ca-postgres"].networks, ["ca_database"]);
+  assert.ok(compose.services.ca.networks.includes("ca_database"));
+
+  assert.deepEqual(sensitivePaths(compose.services.ca.command), []);
   for (const serviceName of ["index", ...numbered("relay", 7)]) {
     assert.deepEqual(sensitivePaths(compose.services[serviceName].command), [
       "/artifacts/.private/identity.key",
@@ -69,34 +95,48 @@ test("every Compose service overlays an isolated private artifact directory", as
     assert.match(token, /^[A-Za-z0-9._~+/-]{32,}={0,2}$/);
     return [role, token];
   })));
+  assert.equal(tokens.admin, fixedAdminToken);
   assert.equal(new Set(Object.values(tokens)).size, 4);
 
-  for (const serviceName of ["index", ...numbered("relay", 7)]) {
-    await assertEnrollmentCredential(compose, privateRoot, serviceName, tokens.relay);
+  const billingServices = commonArtifactServices;
+  const manifestFile = path.join(privateRoot, "ca", "billing-key-bootstrap.json");
+  const manifestStat = await fs.stat(manifestFile);
+  assert.equal(manifestStat.mode & 0o777, 0o600);
+  const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
+  assert.equal(manifest.version, 1);
+  assert.deepEqual(manifest.users.map(user => user.username).sort(), ["demo_user", "developer", "observer"]);
+  assert.equal(new Set(manifest.users.map(user => user.key_id)).size, 3);
+  assert.equal(manifest.users.flatMap(user => user.services).length, billingServices.length);
+  assert.deepEqual(manifest.users.flatMap(user => user.services).sort(), [...billingServices].sort());
+  assert.equal(JSON.stringify(manifest).includes("private_key"), false);
+  assert.equal(JSON.stringify(manifest).includes('"d"'), false);
+  for (const user of manifest.users) {
+    assert.match(user.key_id, /^[0-9a-f]{64}$/);
+    assert.match(user.public_key_hex, /^04[0-9a-f]{128}$/);
+    assert.ok(user.services.length > 1, `${user.username} must share one key across multiple nodes`);
+    for (const serviceName of user.services) {
+      await assertBillingCredential(compose, privateRoot, serviceName, user);
+    }
   }
-  for (const serviceName of numbered("natserver", 13)) {
-    await assertEnrollmentCredential(compose, privateRoot, serviceName, tokens.server);
-  }
-  await assertEnrollmentCredential(compose, privateRoot, "malicious-random-natserver", tokens.server);
-  for (const serviceName of numbered("natclient", 6)) {
-    await assertEnrollmentCredential(compose, privateRoot, serviceName, tokens.client);
-  }
-  await assertEnrollmentCredential(compose, privateRoot, "malicious-natclient", tokens.client);
   assert.deepEqual(compose.services["malicious-natclient"].networks, ["access_r01"]);
   assert.equal(compose.services["malicious-natclient"].labels["bnfs.test.actor"], "malicious-natclient");
   assert.deepEqual(compose.services["malicious-random-natserver"].networks, ["access_r03"]);
   assert.equal(compose.services["malicious-random-natserver"].labels["bnfs.test.actor"],
     "malicious-random-natserver");
-  assert.equal(Object.hasOwn(compose.services.ca, "environment"), false);
+  assert.equal(compose.services.ca.environment.CA_DATABASE_DRIVER, "postgres");
   assert.deepEqual(compose.services.ca.command.slice(-8), [
-    "-relay-enrollment-token-file", "/artifacts/.private/enroll-relay.token",
-    "-server-enrollment-token-file", "/artifacts/.private/enroll-server.token",
-    "-client-enrollment-token-file", "/artifacts/.private/enroll-client.token",
-    "-admin-token-file", "/artifacts/.private/admin.token",
+    "--relay-enrollment-token-file", "/data/enroll-relay.token",
+    "--server-enrollment-token-file", "/data/enroll-server.token",
+    "--client-enrollment-token-file", "/data/enroll-client.token",
+    "--admin-token-file", "/data/admin.token",
   ]);
 
   const serialized = JSON.stringify(compose);
   for (const token of Object.values(tokens)) assert.equal(serialized.includes(token), false);
+  for (const user of manifest.users) {
+    assert.equal(serialized.includes(user.public_key_hex), false);
+    assert.equal(serialized.includes(user.key_id), false);
+  }
   for (const legacyPath of [
     "/artifacts/identities/",
     "/artifacts/billing/",
@@ -122,10 +162,18 @@ test("malicious Compose actors receive neither management credentials nor shared
   for (const serviceName of ["malicious-natserver", "malicious-relay"]) {
     const service = compose.services[serviceName];
     assert.deepEqual(service.volumes, [`${path.join(runtimeDir, ".private", serviceName)}:/state`]);
-    assert.equal(Object.hasOwn(service, "environment"), false);
+    assert.deepEqual(service.environment, [
+      ...frameworkLogEnvironment("/state/logs"),
+      "BNFS_BILLING_KEY_FILE=/state/billing-key.json",
+    ]);
     assert.equal(JSON.stringify(service).includes("token"), false);
     assert.equal(JSON.stringify(service).includes("/artifacts"), false);
     assert.equal((await fs.stat(path.join(runtimeDir, ".private", serviceName))).mode & 0o777, 0o700);
+    const bundleFile = path.join(runtimeDir, ".private", serviceName, "billing-key.json");
+    assert.equal((await fs.stat(bundleFile)).mode & 0o777, 0o600);
+    const bundle = JSON.parse(await fs.readFile(bundleFile, "utf8"));
+    assert.match(bundle.key_id, /^[0-9a-f]{64}$/);
+    assert.ok(bundle.private_key_jwk?.d);
     assert.equal(commandOption(service.command, "-interval"), "60s");
   }
   assert.equal(commandOption(compose.services["malicious-natserver"].command, "-attack-offset"), "0s");
@@ -153,22 +201,19 @@ test("malicious Compose actors receive neither management credentials nor shared
   const probe = compose.services["mixed-path-probe"];
   assert.deepEqual(probe.networks, ["adversary_mixed_access", ...numbered("access_r", 7)]);
   assert.deepEqual(probe.environment, [
-    "BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue.token",
+    ...frameworkLogEnvironment("/artifacts/.private/logs"),
+    "BNFS_BILLING_KEY_FILE=/artifacts/.private/billing-key.json",
   ]);
   assert.deepEqual(probe.volumes, [
     `${runtimeDir}:/artifacts`,
     `${path.join(runtimeDir, ".private", "mixed-path-probe")}:/artifacts/.private`,
   ]);
   assert.equal((await fs.stat(path.join(runtimeDir, ".private", "mixed-path-probe"))).mode & 0o777, 0o700);
-  const probeToken = (await fs.readFile(
-    path.join(runtimeDir, ".private", "mixed-path-probe", "ca-issue.token"),
-    "utf8",
-  )).trim();
-  const clientToken = (await fs.readFile(
-    path.join(runtimeDir, ".private", "ca", "enroll-client.token"),
-    "utf8",
-  )).trim();
-  assert.equal(probeToken, clientToken);
+  const probeBundle = JSON.parse(await fs.readFile(
+    path.join(runtimeDir, ".private", "mixed-path-probe", "billing-key.json"), "utf8",
+  ));
+  assert.match(probeBundle.key_id, /^[0-9a-f]{64}$/);
+  assert.ok(probeBundle.private_key_jwk?.d);
   assert.equal(JSON.stringify(compose.services["malicious-natserver"]).includes("ca-issue.token"), false);
   assert.equal(JSON.stringify(compose.services["malicious-relay"]).includes("ca-issue.token"), false);
 });
@@ -205,7 +250,7 @@ test("reconnect gate credentials are injected only into NAT test containers", as
       "host.docker.internal:host-gateway",
     ]);
   }
-  for (const serviceName of ["ca", "index", ...numbered("relay", 7)]) {
+  for (const serviceName of ["ca-postgres", "ca", "ca-web", "index", ...numbered("relay", 7)]) {
     assert.equal(JSON.stringify(compose.services[serviceName]).includes("RECONNECT_GATE"), false);
     assert.equal(JSON.stringify(compose.services[serviceName]).includes(token), false);
   }
@@ -280,6 +325,39 @@ test("access networks can move away from a stale Docker address pool", async (co
   }
 });
 
+test("control networks can move away from a running topology", async (context) => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-control-network-runtime-"));
+  context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
+  const { stdout } = await execFileAsync(process.execPath, [generator, runtimeDir], {
+    env: {
+      ...process.env,
+      BNFS_CHAOS_CONTROL_NETWORK_SECOND_OCTET: "213",
+      BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET: "214",
+    },
+    maxBuffer: 1024 * 1024,
+  });
+  const compose = JSON.parse(stdout);
+
+  assert.deepEqual(compose.networks.control_index.ipam.config, [{ subnet: "10.213.0.0/24" }]);
+  assert.deepEqual(compose.networks.control_partition_a.ipam.config, [{ subnet: "10.213.1.0/24" }]);
+  assert.deepEqual(compose.networks.control_partition_b.ipam.config, [{ subnet: "10.213.2.0/24" }]);
+  assert.deepEqual(compose.networks.access_r01.ipam.config, [{ subnet: "10.214.1.0/24" }]);
+});
+
+test("control network override rejects the access address pool", async (context) => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-control-network-invalid-"));
+  context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
+
+  await assert.rejects(execFileAsync(process.execPath, [generator, runtimeDir], {
+    env: {
+      ...process.env,
+      BNFS_CHAOS_CONTROL_NETWORK_SECOND_OCTET: "212",
+      BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET: "212",
+    },
+    maxBuffer: 1024 * 1024,
+  }), /must not overlap/);
+});
+
 test("access network override rejects overlapping reserved topology ranges", async (context) => {
   const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-access-network-invalid-"));
   context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
@@ -310,12 +388,36 @@ function commandOption(command, option) {
   return index < 0 ? "" : command[index + 1];
 }
 
-async function assertEnrollmentCredential(compose, privateRoot, serviceName, expectedToken) {
+async function assertBillingCredential(compose, privateRoot, serviceName, expectedUser) {
   assert.deepEqual(compose.services[serviceName].environment, [
-    "BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue.token",
+    ...frameworkLogEnvironment("/artifacts/.private/logs"),
+    "BNFS_BILLING_KEY_FILE=/artifacts/.private/billing-key.json",
   ]);
-  const filename = path.join(privateRoot, serviceName, "ca-issue.token");
+  const filename = path.join(privateRoot, serviceName, "billing-key.json");
   const stat = await fs.stat(filename);
   assert.equal(stat.mode & 0o777, 0o600);
-  assert.equal((await fs.readFile(filename, "utf8")).trim(), expectedToken);
+  const bundle = JSON.parse(await fs.readFile(filename, "utf8"));
+  assert.equal(bundle.key_id, expectedUser.key_id);
+  assert.equal(bundle.public_key_hex, expectedUser.public_key_hex);
+  assert.equal(bundle.registration_status, "pending");
+  assert.ok(bundle.private_key_jwk?.d);
+  const privateKeyFilename = path.join(privateRoot, serviceName, "billing-private.key");
+  const privateKeyStat = await fs.stat(privateKeyFilename);
+  assert.equal(privateKeyStat.mode & 0o777, 0o600);
+  assert.equal(
+    (await fs.readFile(privateKeyFilename, "utf8")).trim(),
+    Buffer.from(bundle.private_key_jwk.d, "base64url").toString("hex"),
+  );
+}
+
+function frameworkLogEnvironment(directory) {
+  return [
+    `BNFS_LOG_DIRECTORY=${directory}`,
+    "BNFS_LOG_LEVEL=info",
+    "BNFS_LOG_MAX_SIZE_MIB=64",
+    "BNFS_LOG_ROTATE_INTERVAL=24h",
+    "BNFS_LOG_RETENTION=720h",
+    "BNFS_LOG_CONSOLE=true",
+    "BNFS_LOG_ERROR_STACK=true",
+  ];
 }

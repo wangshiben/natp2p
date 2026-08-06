@@ -214,10 +214,10 @@
   <div class="alert" id="alert"></div>
 
   <section class="grid">
-    <article class="panel summary"><div class="muted">剩余时间</div><div class="value" id="remaining">--:--:--</div><div class="small muted" id="deadline">等待进入 RUNNING</div></article>
+    <article class="panel summary"><div class="muted" id="remainingLabel">剩余时间</div><div class="value" id="remaining">--:--:--</div><div class="small muted" id="deadline">等待进入 RUNNING</div></article>
     <article class="panel summary"><div class="muted" id="coreLabel">核心节点健康</div><div class="value" id="core">0 / 9</div><div class="small muted" id="coreSummary">CA + Index + 7 Relay</div></article>
     <article class="panel summary"><div class="muted" id="natLabel">NAT / 恶意节点运行</div><div class="value" id="nat">0 / 21</div><div class="small muted" id="maliciousSummary">13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client</div></article>
-    <article class="panel summary"><div class="muted" id="restartsLabel">容器重启总数</div><div class="value" id="restarts">0</div><div class="small muted" id="caStatus">CA Web 探测中</div></article>
+    <article class="panel summary"><div class="muted" id="restartsLabel">容器重启总数</div><div class="value" id="restarts">0</div><a class="small muted" id="caStatus">CA Web 探测中</a></article>
 
     <article class="panel resource"><div class="split-title"><h2 id="cpuTitle">项目 CPU</h2><strong id="cpuText">0%</strong></div><div class="meter"><i id="cpuMeter"></i></div><div class="small muted" id="cpuHost">阈值 55%</div></article>
     <article class="panel resource"><div class="split-title"><h2 id="memTitle">项目内存</h2><strong id="memText">0%</strong></div><div class="meter"><i id="memMeter"></i></div><div class="small muted" id="memHost">阈值 40%</div></article>
@@ -225,6 +225,12 @@
 
     <article class="panel chart-panel" id="chaosHistoryPanel"><div class="split-title"><h2>资源历史</h2><div class="legend"><span><i style="background:#65b9ff"></i>CPU</span><span><i style="background:#49d49d"></i>内存</span><span><i style="background:#f5c45e"></i>磁盘</span></div></div><canvas id="chart"></canvas></article>
     <article class="panel probe-panel" id="chaosProbePanel"><h2>最新端到端探测</h2><div id="probe" class="muted">尚无探测记录</div></article>
+  </section>
+
+  <section class="panel" id="deploymentPanel" style="margin-bottom:14px">
+    <div class="split-title"><h2>当前部署服务</h2><span class="status warn" id="deploymentMode">UNKNOWN</span></div>
+    <div class="worker-summary" id="deploymentSummary"><strong>等待部署状态</strong><span class="muted small">正在检查 CA 服务容器</span></div>
+    <div class="node-grid" id="deploymentNodes"></div>
   </section>
 
   <section class="panel" id="capacityPanel" style="margin-bottom:14px">
@@ -352,8 +358,8 @@
     <div class="scroll" id="reachabilityMatrix"><div class="empty-state">等待可达性数据</div></div>
   </section>
 
-  <section class="panel" style="margin-bottom:14px"><div class="split-title"><h2>持续运行的核心节点</h2><span class="muted small">restart 次数可识别重建</span></div><div class="node-grid" id="coreNodes"></div></section>
-  <section class="panel"><div class="split-title"><h2>NAT 节点</h2><span class="muted small">场景可调整 NAT 进程；容器状态仍持续可见</span></div><div class="node-grid" id="natNodes"></div></section>
+  <section class="panel" style="margin-bottom:14px"><div class="split-title"><h2 id="coreNodesTitle">持续运行的核心节点</h2><span class="muted small" id="coreNodesHint">restart 次数可识别重建</span></div><div class="node-grid" id="coreNodes"></div></section>
+  <section class="panel"><div class="split-title"><h2 id="natNodesTitle">NAT 节点</h2><span class="muted small" id="natNodesHint">场景可调整 NAT 进程；容器状态仍持续可见</span></div><div class="node-grid" id="natNodes"></div></section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -372,17 +378,27 @@ async function refresh() {
 }
 function render(data) {
   const phase = data.phase || 'UNKNOWN';
+  const runState = data.runState || {phase, outcome:data.status?.outcome || phase, detail:data.status?.detail || '', manuallyStopped:false};
+  const deployment = data.deployment || {mode:'UNKNOWN', status:'UNKNOWN', healthy:false, expected:0, running:0, healthyCount:0, workloadRunning:0, totalRestarts:0, services:[]};
+  const runInactive = ['COMPLETED','FAILED','RESOURCE_LIMIT','STOPPED'].includes(phase);
+  const caOnly = deployment.mode === 'CA_ONLY';
   const capacity = data.capacityTest || {};
   const capacityActive = capacity.available && ['CONNECTING','READY','TRANSFERRING'].includes(capacity.phase);
   const capacityCompleted = capacity.available && capacity.phase === 'COMPLETED';
-  $('phase').textContent = capacityActive || capacityCompleted ? `CAPACITY · ${capacity.phase}` : phase;
-  $('phaseBadge').className = `badge ${capacityActive || capacityCompleted ? (capacity.healthy ? 'ok' : 'bad') : phaseClass(phase)}`;
+  const capacitySummaryMode = (capacityActive || capacityCompleted) && !(caOnly && runInactive);
+  $('capacityPanel').style.display = capacity.available || runInactive ? '' : 'none';
+  const runPhaseLabel = runState.manuallyStopped ? `${phase} · 人工终止` : phase;
+  $('phase').textContent = capacitySummaryMode ? `CAPACITY · ${capacity.phase}` : `压测 ${runPhaseLabel}`;
+  $('phaseBadge').className = `badge ${capacitySummaryMode ? (capacity.healthy ? 'ok' : 'bad') : phaseClass(runState.outcome || phase)}`;
   const capacityTransferMiB = Math.max(0, num(capacity.transferMiB)) || 100;
-  $('identity').textContent = capacity.available
+  $('identity').textContent = caOnly && runInactive
+    ? `当前部署 · CA_ONLY · ${num(deployment.healthyCount)} / ${num(deployment.expected)} 健康`
+    : capacity.available
     ? `公网 Relay 容量验证 · ${num(capacity.transfer?.clients) || num(capacity.connected)} Client × ${capacityTransferMiB} MiB`
     : `稳定性轮次 · 场景 ${data.metadata.scenario || '?'} ${data.metadata.scenario_name || ''}`;
   $('updated').textContent = `刷新于 ${new Date(data.generatedAt).toLocaleString()} · 每 2 秒`;
-  if (capacityActive || capacityCompleted) {
+  if (capacitySummaryMode) {
+    $('remainingLabel').textContent = '剩余时间';
     const capacityResources = capacity.resources || {};
     const capacityRelay = capacityResources.relay || {};
     const capacityNatServers = Array.isArray(capacityResources.natServers) ? capacityResources.natServers : [];
@@ -407,7 +423,35 @@ function render(data) {
     $('restartsLabel').textContent = '公网 Relay 重启';
     $('restarts').textContent = num(capacityRelay.restarts);
     $('caStatus').textContent = capacity.clientRunning ? '容量 Client 正在运行' : capacityCompleted ? '容量 Client 已完成' : '容量 Client 已停止';
+    $('caStatus').removeAttribute('href');
+  } else if (caOnly && runInactive) {
+    const recorded = runState.recordedStatus || {};
+    $('remainingLabel').textContent = '压测状态';
+    $('remaining').textContent = runState.manuallyStopped ? '人工停止' : phase;
+    $('deadline').textContent = runState.manuallyStopped
+      ? `清理完成 · 原始记录 ${recorded.outcome || 'UNKNOWN'} / ${recorded.detail || '无详情'}`
+      : `历史终态 ${runState.outcome || phase} / ${runState.detail || '无详情'}`;
+    $('coreLabel').textContent = 'CA 冷切换服务';
+    $('core').textContent = `${num(deployment.healthyCount)} / ${num(deployment.expected)}`;
+    $('coreSummary').textContent = 'PostgreSQL + CA API + CA Web · ' + (deployment.healthy ? '全部健康' : deployment.status);
+    $('natLabel').textContent = '压测 NAT / Relay';
+    $('nat').textContent = num(deployment.workloadRunning) === 0 ? '已停止' : `${num(deployment.workloadRunning)} 运行`;
+    $('maliciousSummary').textContent = num(deployment.workloadRunning) === 0
+      ? '冷切换后无压测业务节点残留'
+      : `检测到 ${num(deployment.workloadRunning)} 个压测业务服务仍在运行`;
+    $('maliciousSummary').style.color = num(deployment.workloadRunning) === 0 ? '' : 'var(--red)';
+    $('restartsLabel').textContent = 'CA 服务重启';
+    $('restarts').textContent = num(deployment.totalRestarts);
+    $('caStatus').textContent = data.ca.reachable
+      ? `CA API ${round(data.ca.latencyMs,1)} ms · 打开 CA Web`
+      : `CA API 不可达${data.ca.error ? ' · '+data.ca.error : ''}`;
+    if (num(data.ca.webPort) > 0) {
+      $('caStatus').href = `https://${location.hostname}:${num(data.ca.webPort)}/`;
+      $('caStatus').target = '_blank';
+      $('caStatus').rel = 'noreferrer';
+    } else $('caStatus').removeAttribute('href');
   } else {
+    $('remainingLabel').textContent = '剩余时间';
     $('remaining').textContent = duration(data.timing.remainingSeconds);
     $('deadline').textContent = data.timing.durationSeconds ? `计划时长 ${duration(data.timing.durationSeconds)}` : '集群初始化中';
     $('coreLabel').textContent = '核心节点健康';
@@ -417,28 +461,36 @@ function render(data) {
     $('nat').textContent = `${data.summary.natRunning} / ${data.summary.natExpected}`;
     $('restartsLabel').textContent = '容器重启总数';
     $('restarts').textContent = data.summary.totalRestarts;
-    $('caStatus').textContent = data.ca.reachable ? `CA Web ${round(data.ca.latencyMs,1)} ms` : `CA Web 不可达${data.ca.error ? ' · '+data.ca.error : ''}`;
+    $('caStatus').textContent = data.ca.reachable ? `CA API ${round(data.ca.latencyMs,1)} ms · 打开 CA Web` : `CA API 不可达${data.ca.error ? ' · '+data.ca.error : ''}`;
+    if (num(data.ca.webPort) > 0) {
+      $('caStatus').href = `https://${location.hostname}:${num(data.ca.webPort)}/`;
+      $('caStatus').target = '_blank';
+      $('caStatus').rel = 'noreferrer';
+    } else $('caStatus').removeAttribute('href');
   }
   const maliciousRuntime = Array.isArray(data.maliciousNodes) ? data.maliciousNodes : [];
   const maliciousHealthy = maliciousRuntime.filter(node => node?.running === true && ['healthy','running'].includes(String(node?.health || ''))).length;
   const mixedPathHealthy = data.mixedPath?.healthy === true;
-  if (!capacityActive && !capacityCompleted) {
+  if (!capacitySummaryMode && !(caOnly && runInactive)) {
     $('maliciousSummary').textContent = '13 正常 Server + 1 恶意 Server + 6 正常 Client + 1 恶意 Client + 1 混合探针 · 计费恶意节点 ' + maliciousHealthy + ' / 2 · P2P ' + (mixedPathHealthy ? 'PASS' : 'WAIT');
     $('maliciousSummary').style.color = maliciousHealthy === 2 && (mixedPathHealthy || data.phase !== 'RUNNING') ? '' : 'var(--red)';
   }
   const latest = data.resources.latest || {};
-  $('chaosHistoryPanel').style.display = capacityActive || capacityCompleted ? 'none' : '';
-  $('chaosProbePanel').style.display = capacityActive || capacityCompleted ? 'none' : '';
-  if (capacityActive || capacityCompleted) {
+  $('chaosHistoryPanel').style.display = capacitySummaryMode ? 'none' : '';
+  $('chaosProbePanel').style.display = capacitySummaryMode ? 'none' : '';
+  if (capacitySummaryMode) {
     renderCapacityTopResources(capacity.resources);
   } else {
-    $('cpuTitle').textContent = '项目 CPU';
-    $('memTitle').textContent = '项目内存';
-    $('diskTitle').textContent = '磁盘占用';
-    resource('cpu', num(latest.project_cpu_host_pct), data.thresholds.cpu, `宿主机 CPU ${round(num(latest.host_cpu_pct),1)}%`);
-    resource('mem', num(latest.project_memory_host_pct), data.thresholds.memory, `宿主机内存 ${round(num(latest.host_memory_pct),1)}%`);
-    resource('disk', num(latest.guard_disk_pct), data.thresholds.disk, `Docker ${latest.docker_disk_pct || 0}% · 证据盘 ${latest.artifact_disk_pct || 0}%`);
+    const historical = data.resources?.mode === 'HISTORICAL' || runInactive;
+    const sampleAt = latest.timestamp ? ` · 末次采样 ${new Date(latest.timestamp).toLocaleString()}` : '';
+    $('cpuTitle').textContent = historical ? '压测历史末次 CPU' : '项目 CPU';
+    $('memTitle').textContent = historical ? '压测历史末次内存' : '项目内存';
+    $('diskTitle').textContent = historical ? '压测历史末次磁盘' : '磁盘占用';
+    resource('cpu', num(latest.project_cpu_host_pct), data.thresholds.cpu, `宿主机 CPU ${round(num(latest.host_cpu_pct),1)}%${sampleAt}`);
+    resource('mem', num(latest.project_memory_host_pct), data.thresholds.memory, `宿主机内存 ${round(num(latest.host_memory_pct),1)}%${historical ? ' · 非当前 CA 占用' : ''}`);
+    resource('disk', num(latest.guard_disk_pct), data.thresholds.disk, `Docker ${latest.docker_disk_pct || 0}% · 证据盘 ${latest.artifact_disk_pct || 0}%${historical ? ' · 历史值' : ''}`);
   }
+  renderDeployment(deployment, data.ca);
   renderProbe(data.largeProbes?.latest || data.probes.latest);
   renderCapacityTest(capacity);
   renderServiceSessions(data.serviceSessions);
@@ -454,11 +506,23 @@ function render(data) {
   renderMaliciousNodes(data.maliciousNodes, data.mixedPath);
   renderBillingProductionGate(data.billingProductionGate);
   renderTopology(data);
-  renderNodes('coreNodes', data.nodes.filter(n => ['ca','index','relay'].includes(n.role)));
-  renderNodes('natNodes', data.nodes.filter(n => ['natserver','natclient'].includes(n.role)));
+  if (runInactive) {
+    $('topologyFreshness').textContent = '压测已停止 · 以下为配置与历史拓扑，不代表当前活跃连接';
+    $('coreNodesTitle').textContent = '已停止的压测核心拓扑';
+    $('coreNodesHint').textContent = '停止态的 missing / stopped 为预期；当前 CA 服务请看“当前部署服务”';
+    $('natNodesTitle').textContent = '已停止的压测 NAT 节点';
+    $('natNodesHint').textContent = '仅保留本轮节点清单与历史信息，不计作当前在线节点';
+  } else {
+    $('coreNodesTitle').textContent = '持续运行的核心节点';
+    $('coreNodesHint').textContent = 'restart 次数可识别重建';
+    $('natNodesTitle').textContent = 'NAT 节点';
+    $('natNodesHint').textContent = '场景可调整 NAT 进程；容器状态仍持续可见';
+  }
+  renderNodes('coreNodes', data.nodes.filter(n => ['ca','index','relay'].includes(n.role)), runInactive);
+  renderNodes('natNodes', data.nodes.filter(n => ['natserver','natclient'].includes(n.role)), runInactive);
   drawChart(data.resources.history || [], data.thresholds);
   const badCore = data.summary.coreHealthy !== data.summary.coreExpected;
-  const terminalBad = ['FAILED','RESOURCE_LIMIT'].includes(phase);
+  const terminalBad = ['FAILED','RESOURCE_LIMIT'].includes(runState.outcome || phase);
   const watcherNewFailures = num(data.failureWatcher?.observed?.newFailureRecords);
   const watcherUnhealthy = phase === 'RUNNING' && (!data.failureWatcher?.available || !data.failureWatcher?.healthy);
   const reconnectGateUnhealthy = phase === 'RUNNING'
@@ -471,7 +535,9 @@ function render(data) {
   const productionGateFailed = data.billingProductionGate?.status === 'FAILED'
     || (phase === 'RUNNING' && data.billingProductionGate?.status !== 'PASSED');
   const workersUnhealthy = phase === 'RUNNING' && num(data.workers?.running) !== num(data.workers?.expected);
-  if (productionGateFailed) showAlert('生产 Relay waitSubmit 恢复门禁失败：' + billingProductionGateDetail(data.billingProductionGate?.detail).label);
+  if (caOnly && !deployment.healthy) showAlert(`CA 冷切换服务异常：${num(deployment.healthyCount)} / ${num(deployment.expected)} 健康`);
+  else if (runState.manuallyStopped && deployment.healthy) hideAlert();
+  else if (productionGateFailed) showAlert('生产 Relay waitSubmit 恢复门禁失败：' + billingProductionGateDetail(data.billingProductionGate?.detail).label);
   else if (adversaryMisses > 0) showAlert('计费恶意行为出现 ' + adversaryMisses + ' 次漏防，已标记 FAIL，请查看恶意节点计费防护');
   else if (adversaryUnhealthy) showAlert('计费安全故障注入侧车状态异常：' + (data.billingAdversary?.status || 'UNKNOWN'));
   else if (mixedPathUnhealthy) showAlert('真实混合 P2P 路径异常：' + (data.mixedPath?.status || 'NOT_STARTED'));
@@ -2022,10 +2088,25 @@ function unique(values) {
 function naturalCompare(left, right) {
   return String(left).localeCompare(String(right), 'en', {numeric:true});
 }
-function renderNodes(id, nodes) {
+function renderDeployment(deployment = {}, ca = {}) {
+  const services = Array.isArray(deployment.services) ? deployment.services : [];
+  const healthy = deployment.healthy === true;
+  const mode = deployment.mode || 'UNKNOWN';
+  $('deploymentMode').textContent = `${mode} · ${deployment.status || 'UNKNOWN'}`;
+  $('deploymentMode').className = `status ${healthy ? 'ok' : mode === 'STOPPED' ? 'warn' : 'bad'}`;
+  $('deploymentSummary').className = `worker-summary ${healthy ? 'ok' : 'bad'}`;
+  $('deploymentSummary').innerHTML = `<strong>${num(deployment.healthyCount)} / ${num(deployment.expected)} 健康</strong><span class="muted small">${num(deployment.workloadRunning)} 个压测业务服务运行 · CA API ${ca.reachable ? '可达' : '不可达'} · Restart ${num(deployment.totalRestarts)}</span>`;
+  const roleLabels = {database:'PostgreSQL', 'ca-api':'CA API', web:'CA Web'};
+  $('deploymentNodes').innerHTML = services.length ? services.map(service => {
+    const cls = service.running && ['healthy','running'].includes(service.health) ? 'ok' : service.running ? 'warn' : 'bad';
+    return `<div class="node"><div class="node-head"><span>${escapeHtml(service.service)}</span><span class="status ${cls}">${escapeHtml(service.health)}</span></div><div class="node-meta">${escapeHtml(roleLabels[service.role] || service.role || 'service')} · ${service.running ? '运行中' : '未运行'}<br>Restart ${num(service.restartCount)}</div></div>`;
+  }).join('') : '<div class="empty-state">尚无部署服务状态</div>';
+}
+function renderNodes(id, nodes, inactive = false) {
   $(id).innerHTML = nodes.map(node => {
-    const cls = node.running && ['healthy','running'].includes(node.health) ? 'ok' : node.running ? 'warn' : 'bad';
-    return `<div class="node"><div class="node-head"><span>${escapeHtml(node.service)}</span><span class="status ${cls}">${escapeHtml(node.health)}</span></div><div class="node-meta">${escapeHtml(node.ipType || 'IPv4（默认网络）')} · ${escapeHtml(node.transportStack || 'KCP/UDP + TCP 故障切换')}<br>Restart ${node.restartCount||0}</div></div>`;
+    const cls = node.running && ['healthy','running'].includes(node.health) ? 'ok' : node.running || inactive ? 'warn' : 'bad';
+    const health = inactive && !node.running ? 'stopped' : node.health;
+    return `<div class="node"><div class="node-head"><span>${escapeHtml(node.service)}</span><span class="status ${cls}">${escapeHtml(health)}</span></div><div class="node-meta">${escapeHtml(node.ipType || 'IPv4（默认网络）')} · ${escapeHtml(node.transportStack || 'KCP/UDP + TCP 故障切换')}<br>Restart ${node.restartCount||0}</div></div>`;
   }).join('');
 }
 function drawChart(rows, thresholds) {

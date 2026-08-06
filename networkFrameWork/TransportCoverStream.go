@@ -636,6 +636,12 @@ func (t *TransportCover) runIdleSweeper(period time.Duration) {
 			// a connected TCP backup remains immediately usable. The endpoint
 			// heartbeat now promotes that backup; only reap after all carriers have
 			// actually closed so a valid long-idle registration is never destroyed.
+			if group.relayCarrierStale(timeout) {
+				logx.Warnf("[relay] 回收收帧已停止的注册 StreamGroup: nodeId=%.16s idle=%s timeout=%s",
+					nodeID, time.Since(lastReceive).Round(time.Second), timeout)
+				group.Close()
+				continue
+			}
 			if group.hasLiveRelayCarrier() {
 				continue
 			}

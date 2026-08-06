@@ -335,7 +335,7 @@ func (s *StreamGroup) startFramePump(connectionId string, resource *connectionRe
 		return
 	}
 	go func() {
-		pumpClientToRelay(ctx, frame, relayFrame, s.frameRoutes, hookConfig, s.nodeId)
+		pumpClientToRelay(ctx, frame, relayFrame, s.frameRoutes, hookConfig, s.nodeId, s.registrationSessionID)
 		s.closeTargetConnectionIfMatch(connectionId, resource)
 	}()
 }
@@ -355,7 +355,7 @@ func (s *StreamGroup) startConnectionLoop(connectionId string, resource *connect
 	go func(c *connectionResource, connectionId string, ctx context.Context) {
 		defer func() {
 			if err := recover(); err != nil {
-				fmt.Printf("%v", err)
+				logx.Errorf("[StreamGroup] message relay loop isolated panic: nodeId=%.16s connId=%s panic=%v", s.nodeId, connectionId, err)
 			}
 		}()
 		for {
@@ -396,7 +396,7 @@ func (s *StreamGroup) StartListen() {
 			return resource.frame
 		}, s.frameRoutes, s.forwardHookConfig, s.nodeId, func(connID string, endpoint FrameRelayEndpoint) {
 			s.closeTargetConnectionByFrame(connID, endpoint)
-		})
+		}, s.registrationSessionID)
 		return
 	}
 
@@ -441,6 +441,14 @@ func (s *StreamGroup) hasLiveRelayCarrier() bool {
 	relayStream := s.relayStream
 	s.lock.Unlock()
 	return relayStream != nil && !streamIsClosed(relayStream)
+}
+
+func (s *StreamGroup) relayCarrierStale(maxSilence time.Duration) bool {
+	s.lock.Lock()
+	relayStream := s.relayStream
+	s.lock.Unlock()
+	dual, ok := relayStream.(*DualStream)
+	return ok && dual.isStale(maxSilence)
 }
 
 // CloseTargetConnection 强制关闭挂在本 group 上的某条 client leg。
@@ -491,8 +499,13 @@ func (s *StreamGroup) failBusinessConnectionInitialization(connectionId string, 
 		delete(s.connectionMap, connectionId)
 		s.frameRoutes.purgeConnection(connectionId)
 		if s.forwardHookConfig != nil {
-			s.forwardHookConfig.ensureRetransmitCache().forgetConnection(s.nodeId, connectionId)
-			s.forwardHookConfig.forgetHeldConnection(s.nodeId, connectionId)
+			scopeID := billingHoldbackScopeID(s.nodeId, s.registrationSessionID)
+			s.forwardHookConfig.ensureRetransmitCache().forgetConnection(scopeID, connectionId)
+			if failedResource != nil && failedResource.resume {
+				s.forwardHookConfig.resetHeldConnectionForSession(s.nodeId, s.registrationSessionID, connectionId)
+			} else {
+				s.forwardHookConfig.forgetHeldConnectionForSession(s.nodeId, s.registrationSessionID, connectionId)
+			}
 		}
 	}
 	s.lock.Unlock()
@@ -524,8 +537,9 @@ func (s *StreamGroup) closeTargetConnection(connectionId string, expectedResourc
 	delete(s.connectionMap, connectionId)
 	s.frameRoutes.purgeConnection(connectionId)
 	if s.forwardHookConfig != nil {
-		s.forwardHookConfig.ensureRetransmitCache().forgetConnection(s.nodeId, connectionId)
-		s.forwardHookConfig.forgetHeldConnection(s.nodeId, connectionId)
+		scopeID := billingHoldbackScopeID(s.nodeId, s.registrationSessionID)
+		s.forwardHookConfig.ensureRetransmitCache().forgetConnection(scopeID, connectionId)
+		s.forwardHookConfig.resetHeldConnectionForSession(s.nodeId, s.registrationSessionID, connectionId)
 	}
 	remainingConnections := len(s.connectionMap)
 	s.lock.Unlock()
@@ -687,9 +701,10 @@ func (s *StreamGroup) Close() {
 		s.frameRoutes.clear()
 		if s.forwardHookConfig != nil {
 			cache := s.forwardHookConfig.ensureRetransmitCache()
-			for connectionID := range resources {
-				cache.forgetConnection(s.nodeId, connectionID)
-				s.forwardHookConfig.forgetHeldConnection(s.nodeId, connectionID)
+			scopeID := billingHoldbackScopeID(s.nodeId, s.registrationSessionID)
+			for _, connectionID := range s.dormantConnectionIDs {
+				cache.forgetConnection(scopeID, connectionID)
+				s.forwardHookConfig.forgetHeldConnectionForSession(s.nodeId, s.registrationSessionID, connectionID)
 			}
 		}
 		relayStream := s.relayStream

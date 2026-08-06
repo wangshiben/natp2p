@@ -40,20 +40,18 @@ func main() {
 	billingQueue := flag.String("billing-queue", "", "双签凭证 waitSubmit 持久文件")
 	flag.Parse()
 
-	logx.SetLevel(logx.LevelInfo)
-
 	var privateKey *ecdh.PrivateKey
 	var err error
 	if *keyPath != "" {
 		privateKey, err = natnode.LoadOrCreatePrivateKeyFile(*keyPath)
 		if err != nil {
-			fmt.Printf("加载或创建 Relay 身份失败: %v\n", err)
+			logx.Errorf("加载或创建 Relay 身份失败: %v", err)
 			os.Exit(1)
 		}
 	}
 	rn, err := relaynode.NewRelayNode(privateKey, *listen, *public)
 	if err != nil {
-		fmt.Printf("创建节点失败: %v\n", err)
+		logx.Errorf("创建节点失败: %v", err)
 		os.Exit(1)
 	}
 	if *bridgeWidth > 0 {
@@ -61,13 +59,13 @@ func main() {
 		fmt.Printf("跨中继条带化宽度(强制): %d\n", *bridgeWidth)
 	}
 	if err := rn.SetBillingQueuePath(*billingQueue); err != nil {
-		fmt.Printf("配置 waitSubmit 持久文件失败: %v\n", err)
+		logx.Errorf("配置 waitSubmit 持久文件失败: %v", err)
 		os.Exit(1)
 	}
 
 	// 网络准入 + 计费（-ca 给了才启用；index 与 relay 都需持 relay 角色证书）。
 	if err := admissioncli.SetupRelay(rn, *caURL, *admissionMode); err != nil {
-		fmt.Printf("启用网络准入失败: %v\n", err)
+		logx.Errorf("启用网络准入失败: %v", err)
 		os.Exit(1)
 	}
 

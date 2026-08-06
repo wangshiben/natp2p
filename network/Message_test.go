@@ -79,3 +79,13 @@ func TestMessageSerialization(t *testing.T) {
 
 	t.Logf("Serialization and Deserialization successful.")
 }
+
+func TestMessageSerializationRejectsMissingMessageState(t *testing.T) {
+	var missingMessage *Message
+	if _, err := missingMessage.ParseToBytes(); err == nil {
+		t.Fatal("nil message must return an error")
+	}
+	if _, err := (&Message{}).ParseToBytes(); err == nil {
+		t.Fatal("missing message header must return an error")
+	}
+}

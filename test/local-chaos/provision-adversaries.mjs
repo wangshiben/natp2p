@@ -7,27 +7,17 @@ process.umask(0o077);
 
 const privateRoot = path.resolve(process.env.PRIVATE_RUNTIME_DIR ?? "");
 const caBaseURL = new URL(process.env.CA_BASE_URL ?? "http://127.0.0.1:19100");
-const serverTokenFile = path.resolve(process.env.CA_SERVER_ENROLLMENT_TOKEN_FILE ?? "");
-const relayTokenFile = path.resolve(process.env.CA_RELAY_ENROLLMENT_TOKEN_FILE ?? "");
-const adminTokenFile = path.resolve(process.env.CA_ADMIN_TOKEN_FILE ?? "");
 const timeoutMs = boundedInteger(process.env.PROVISION_TIMEOUT_MS, 30000, 1000, 120000);
-const creditBytes = boundedInteger(process.env.ADVERSARY_CREDIT_BYTES, 64 * 1024 * 1024 * 1024, 16 * 1024 * 1024, Number.MAX_SAFE_INTEGER);
 
 try {
   validateConfiguration();
-  const tokens = {
-    server: await readToken(serverTokenFile),
-    relay: await readToken(relayTokenFile),
-    admin: await readToken(adminTokenFile),
-  };
-  const actors = [
-    { service: "malicious-natserver", role: "server", token: tokens.server, credit: true },
-    { service: "malicious-relay", role: "relay", token: tokens.relay, credit: false },
-  ];
-  for (const actor of actors) {
+  for (const actor of [
+    { service: "malicious-natserver", role: "server" },
+    { service: "malicious-relay", role: "relay" },
+  ]) {
     await provisionActor(actor);
   }
-  process.stdout.write("container adversary identities provisioned\n");
+  process.stdout.write("container adversary billing identities provisioned\n");
 } catch (error) {
   process.stderr.write(`container adversary provisioning failed: ${safeCode(error?.code || "provision_failed")}\n`);
   process.exitCode = 1;
@@ -38,73 +28,156 @@ function validateConfiguration() {
     throw codedError("private_runtime_invalid");
   }
   if (caBaseURL.protocol !== "http:" || !isLoopback(caBaseURL.hostname)
-    || caBaseURL.username || caBaseURL.password || caBaseURL.search || caBaseURL.hash) {
+    || caBaseURL.username || caBaseURL.password || caBaseURL.search || caBaseURL.hash
+    || !["", "/"].includes(caBaseURL.pathname)) {
     throw codedError("ca_url_invalid");
-  }
-  for (const [value, code] of [
-    [process.env.CA_SERVER_ENROLLMENT_TOKEN_FILE, "server_token_file_missing"],
-    [process.env.CA_RELAY_ENROLLMENT_TOKEN_FILE, "relay_token_file_missing"],
-    [process.env.CA_ADMIN_TOKEN_FILE, "admin_token_file_missing"],
-  ]) {
-    if (!value) throw codedError(code);
   }
 }
 
 async function provisionActor(actor) {
   const stateDir = path.join(privateRoot, actor.service);
-  const enrollmentPath = path.join(stateDir, "enrollment.json");
-  const enrollment = await waitForEnrollment(enrollmentPath, actor.role);
-  const issue = await requestJSON("POST", "/issue", {
-    subject_pubkey: enrollment.publicKey,
-    role: actor.role,
-    ttl_seconds: 86400,
-  }, actor.token);
-  if (issue.status !== 200 || !validCertificate(issue.body?.signed_cert, enrollment, actor.role)) {
-    throw codedError(`${actor.service}_issue_rejected`);
+  const enrollment = await waitForEnrollment(path.join(stateDir, "enrollment.json"), actor.role);
+  const bundle = await readPrivateJSON(path.join(stateDir, "billing-key.json"));
+  const billingPrivateKey = validateBillingBundle(bundle);
+  const authorization = signedAuthorization(enrollment, bundle.key_id, billingPrivateKey);
+  const issued = await requestJSON("POST", "/v1/node/authorize", authorization);
+  if (issued.status !== 200
+    || !validCertificate(issued.body?.signed_cert, enrollment, actor.role, bundle)
+    || issued.body?.node_id !== enrollment.nodeID
+    || issued.body?.authorization_id !== authorizationID(enrollment.nodeID, bundle.key_id)) {
+    throw codedError(`${actor.service}_authorization_rejected`);
   }
-  await writeJSONAtomic(path.join(stateDir, "certificate.json"), issue.body.signed_cert);
-  if (actor.credit) await ensureCredit(enrollment.nodeID);
+  await writeJSONAtomic(path.join(stateDir, "certificate.json"), issued.body.signed_cert);
 }
 
-async function ensureCredit(nodeID) {
-  const current = await requestJSON("GET", `/balance?node=${encodeURIComponent(nodeID)}`, null, "");
-  const balance = Number(current.body?.balance);
-  if (current.status !== 200 || !Number.isSafeInteger(balance) || balance < 0) {
-    throw codedError("adversary_balance_invalid");
-  }
-  if (balance >= creditBytes) return;
-  const credit = await requestJSON("POST", "/credit", {
-    node_id: nodeID,
-    add_bytes: creditBytes - balance,
-  }, await readToken(adminTokenFile));
-  if (credit.status !== 200 || Number(credit.body?.balance) !== creditBytes) {
-    throw codedError("adversary_credit_rejected");
-  }
+function signedAuthorization(enrollment, billingKeyID, billingPrivateKey) {
+  const request = {
+    subject_pubkey: enrollment.publicKey,
+    role: enrollment.role,
+    billing_key_id: billingKeyID,
+    timestamp: Math.floor(Date.now() / 1000),
+    nonce: crypto.randomBytes(24).toString("base64url"),
+    ttl_seconds: 86400,
+    node_signature: "",
+    billing_signature: "",
+  };
+  const canonical = authorizationCanonical(request);
+  request.node_signature = signCanonical(canonical, enrollment.privateKey);
+  request.billing_signature = signCanonical(canonical, billingPrivateKey);
+  return request;
+}
+
+function authorizationCanonical(request) {
+  return [
+    "CA-NODE-AUTHORIZATION-V1",
+    request.subject_pubkey,
+    request.role,
+    request.billing_key_id,
+    String(request.timestamp),
+    request.nonce,
+    String(request.ttl_seconds),
+  ].join("\n");
+}
+
+function signCanonical(canonical, privateKey) {
+  return crypto.sign("sha256", Buffer.from(canonical), {
+    key: privateKey,
+    dsaEncoding: "der",
+  }).toString("base64url");
+}
+
+function authorizationID(nodeID, billingKeyID) {
+  return crypto.createHash("sha256")
+    .update(`CA-NODE-AUTHORIZATION-ID-V1\0${nodeID}\0${billingKeyID}`)
+    .digest("hex");
 }
 
 async function waitForEnrollment(filename, role) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = await readJSON(filename);
-    if (validEnrollment(value, role)) return value;
+    const value = await readEnrollment(filename);
+    if (value && value.role === role) return value;
     await delay(100);
   }
   throw codedError(`${role}_enrollment_timeout`);
 }
 
-function validEnrollment(value, role) {
-  if (!value || value.schemaVersion !== 1 || value.role !== role
+async function readEnrollment(filename) {
+  try {
+    const encoded = await fs.readFile(filename, "utf8");
+    if (encoded.length > 65536) return null;
+    const value = JSON.parse(encoded);
+    if (!validEnrollment(value)) return null;
+    const privateKeyPath = path.join(path.dirname(filename), "identity.key");
+    const privateScalar = await fs.readFile(privateKeyPath);
+    if (privateScalar.length !== 32) throw codedError("identity_private_key_invalid");
+    const privateKey = privateKeyFromScalar(privateScalar);
+    if (publicKeyHex(privateKey) !== value.publicKey) throw codedError("identity_key_binding_invalid");
+    return { ...value, privateKey };
+  } catch (error) {
+    if (error?.code && error.code !== "ENOENT") throw error;
+    return null;
+  }
+}
+
+function validEnrollment(value) {
+  if (!value || value.schemaVersion !== 1 || !["server", "relay"].includes(value.role)
     || !/^04[0-9a-f]{128}$/.test(String(value.publicKey ?? ""))
     || !/^[0-9a-f]{64}$/.test(String(value.nodeID ?? ""))) return false;
   const derived = crypto.createHash("sha256").update(value.publicKey).digest("hex");
   return crypto.timingSafeEqual(Buffer.from(derived, "hex"), Buffer.from(value.nodeID, "hex"));
 }
 
-function validCertificate(value, enrollment, role) {
+function validateBillingBundle(bundle) {
+  if (!bundle || bundle.version !== 1 || bundle.algorithm !== "ECDSA_P256_SHA256"
+    || bundle.registration_status !== "active" || !/^[0-9a-f]{64}$/.test(String(bundle.key_id ?? ""))
+    || !/^04[0-9a-f]{128}$/.test(String(bundle.public_key_hex ?? ""))
+    || !bundle.private_key_jwk?.d) throw codedError("billing_bundle_invalid");
+  let privateKey;
+  try {
+    privateKey = crypto.createPrivateKey({ key: bundle.private_key_jwk, format: "jwk" });
+  } catch {
+    throw codedError("billing_private_key_invalid");
+  }
+  const publicHex = publicKeyHex(privateKey);
+  const keyID = crypto.createHash("sha256").update(Buffer.from(publicHex, "hex")).digest("hex");
+  if (publicHex !== bundle.public_key_hex || keyID !== bundle.key_id) {
+    throw codedError("billing_key_binding_invalid");
+  }
+  return privateKey;
+}
+
+function privateKeyFromScalar(privateScalar) {
+  const ecdh = crypto.createECDH("prime256v1");
+  ecdh.setPrivateKey(privateScalar);
+  const publicKey = ecdh.getPublicKey(undefined, "uncompressed");
+  const jwk = {
+    kty: "EC",
+    crv: "P-256",
+    x: publicKey.subarray(1, 33).toString("base64url"),
+    y: publicKey.subarray(33, 65).toString("base64url"),
+    d: privateScalar.toString("base64url"),
+  };
+  return crypto.createPrivateKey({ key: jwk, format: "jwk" });
+}
+
+function publicKeyHex(privateKey) {
+  const jwk = crypto.createPublicKey(privateKey).export({ format: "jwk" });
+  return Buffer.concat([
+    Buffer.from([4]),
+    Buffer.from(jwk.x, "base64url"),
+    Buffer.from(jwk.y, "base64url"),
+  ]).toString("hex");
+}
+
+function validCertificate(value, enrollment, role, bundle) {
   return value && typeof value === "object"
     && value.cert?.subject_node_id === enrollment.nodeID
     && value.cert?.subject_pubkey === enrollment.publicKey
     && value.cert?.role === role
+    && value.cert?.billing_key_id === bundle.key_id
+    && value.cert?.billing_public_key === bundle.public_key_hex
+    && value.cert?.authorization_id === authorizationID(enrollment.nodeID, bundle.key_id)
     && Number.isSafeInteger(value.cert?.not_before)
     && Number.isSafeInteger(value.cert?.not_after)
     && value.cert.not_after > value.cert.not_before
@@ -112,21 +185,19 @@ function validCertificate(value, enrollment, role) {
     && /^[0-9a-f]{16,256}$/.test(value.sig);
 }
 
-async function requestJSON(method, pathname, body, token) {
+async function requestJSON(method, pathname, body) {
   const target = new URL(pathname, caBaseURL);
-  const headers = { Accept: "application/json" };
-  if (body !== null) headers["Content-Type"] = "application/json";
-  if (token) headers.Authorization = `Bearer ${token}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
     const response = await fetch(target, {
       method,
-      headers,
-      body: body === null ? undefined : JSON.stringify(body),
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     const text = await response.text();
+    if (text.length > 65536) throw codedError("ca_response_too_large");
     let decoded = {};
     try {
       decoded = text ? JSON.parse(text) : {};
@@ -142,36 +213,27 @@ async function requestJSON(method, pathname, body, token) {
   }
 }
 
-async function readToken(filename) {
-  let encoded;
+async function readPrivateJSON(filename) {
+  const handle = await fs.open(filename, "r");
   try {
-    encoded = await fs.readFile(filename, "utf8");
-  } catch {
-    throw codedError("credential_unavailable");
-  }
-  if (encoded.length > 4096) throw codedError("credential_invalid");
-  const token = encoded.trim();
-  if (token.length < 32 || !/^[A-Za-z0-9\-._~+/]+={0,2}$/.test(token)) {
-    throw codedError("credential_invalid");
-  }
-  return token;
-}
-
-async function readJSON(filename) {
-  try {
-    const encoded = await fs.readFile(filename, "utf8");
-    if (encoded.length > 65536) return {};
-    return JSON.parse(encoded);
-  } catch {
-    return {};
+    const stat = await handle.stat();
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0 || stat.size <= 0 || stat.size > 65536) {
+      throw codedError("private_json_invalid");
+    }
+    return JSON.parse(await handle.readFile("utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw codedError("private_json_invalid");
+    throw error;
+  } finally {
+    await handle.close();
   }
 }
 
 async function writeJSONAtomic(filename, value) {
   const temporary = `${filename}.tmp-${process.pid}`;
-  await fs.writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-  const handle = await fs.open(temporary, "r");
+  const handle = await fs.open(temporary, "wx", 0o600);
   try {
+    await handle.writeFile(`${JSON.stringify(value)}\n`);
     await handle.sync();
   } finally {
     await handle.close();
@@ -199,8 +261,12 @@ function safeCode(value) {
 }
 
 function boundedInteger(value, fallback, minimum, maximum) {
+  if (value === undefined || value === "") return fallback;
   const number = Number(value);
-  return Number.isSafeInteger(number) && number >= minimum && number <= maximum ? number : fallback;
+  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+    throw codedError("integer_configuration_invalid");
+  }
+  return number;
 }
 
 function delay(milliseconds) {

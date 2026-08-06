@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
+	"os"
+	"strings"
+
+	"bnfs_p2p/logx"
 	"github.com/google/uuid"
 	"github.com/pion/ice/v3"
-	"log"
-	"net"
 )
 
 func main() {
@@ -17,22 +20,25 @@ func main() {
 	// 连接中继服务器
 	conn, err := net.Dial("tcp", "localhost:9000")
 	if err != nil {
-		log.Fatalf("Failed to connect to relay server: %v", err)
+		logx.Errorf("Failed to connect to relay server: %v", err)
+		os.Exit(1)
 	}
 	defer conn.Close()
 
 	// 注册
 	_, err = conn.Write([]byte(fmt.Sprintf("REGISTER %s\n", nodeID)))
 	if err != nil {
-		log.Fatalf("Failed to register: %v", err)
+		logx.Errorf("Failed to register: %v", err)
+		os.Exit(1)
 	}
 
 	reader := bufio.NewReader(conn)
 	response, _ := reader.ReadString('\n')
 	fmt.Print("Server response: ", response)
 
-	if response[:2] != "OK" {
-		log.Fatal("Registration failed")
+	if !strings.HasPrefix(response, "OK") {
+		logx.Errorf("Registration failed: response=%q", strings.TrimSpace(response))
+		os.Exit(1)
 	}
 
 	fmt.Println("Waiting for messages from ClientB... (Press Ctrl+C to exit)")
@@ -46,7 +52,7 @@ func main() {
 	}
 	agent, err := ice.NewAgent(agentConfig)
 	if err != nil {
-		log.Printf("Warning: Failed to create ICE agent (normal in loopback test): %v", err)
+		logx.Warnf("Failed to create ICE agent (normal in loopback test): %v", err)
 	} else {
 		defer agent.Close()
 		fmt.Println("ICE Agent initialized (Ready for P2P negotiation)")
@@ -56,7 +62,7 @@ func main() {
 	for {
 		msg, err := reader.ReadString('\n')
 		if err != nil {
-			log.Printf("Connection lost: %v", err)
+			logx.Warnf("Connection lost: %v", err)
 			break
 		}
 		fmt.Printf("Received: %s", msg)

@@ -23,6 +23,7 @@ DEFAULT_MAX_INFLIGHT=1
 DEFAULT_DASHBOARD_HOST=0.0.0.0
 DEFAULT_DASHBOARD_PORT=8911
 DEFAULT_CA_PORT=19100
+DEFAULT_CA_WEB_PORT=8088
 DEFAULT_RECONNECT_GATE_PORT=18912
 DEFAULT_SOAK_CREDIT_BYTES=2199023255552
 DEFAULT_WORKLOAD_LIMIT_MIBPS=5
@@ -34,10 +35,14 @@ DEFAULT_BILLING_ADVERSARY_MODE=enforce
 DEFAULT_DASHBOARD_STATUS_PROBE_SECONDS=5
 DEFAULT_DASHBOARD_STATUS_FAILURE_GRACE_SECONDS=20
 DEFAULT_DASHBOARD_STATUS_MIN_FAILURES=3
+DEFAULT_CORE_HEALTH_FAILURE_GRACE_SECONDS=15
+DEFAULT_CORE_HEALTH_MIN_FAILURES=3
+DEFAULT_CORE_HEALTH_PROBE_SECONDS=3
 DEFAULT_VALIDATION_MODE=full
 DEFAULT_IP_FAMILY_COVERAGE=off
 DEFAULT_RANDOM_ATTEMPT_TIMEOUT_SECONDS=900
 SMOKE_RANDOM_ATTEMPT_TIMEOUT_SECONDS=180
+DEFAULT_PROFILE_RELAY_MIGRATION_TIMEOUT_SECONDS=360
 DEFAULT_RANDOM_WORKER_STOP_TIMEOUT_SECONDS=5
 DEFAULT_RESOURCE_GUARD_STOP_TIMEOUT_SECONDS=10
 DEFAULT_WAIT_INTERVAL_SECONDS=30
@@ -72,10 +77,16 @@ FAILURE_WATCHER_SOURCE_SIZE=
 FAILURE_WATCHER_SOURCE_OFFSET=
 FAILURE_WATCHER_NEW_FAILURES=
 RESOURCE_GUARD_DETAIL=
+CORE_HEALTH_DETAIL=
+CORE_HEALTH_UNHEALTHY_SERVICES=
+CORE_HEALTH_SNAPSHOT=
+CORE_IDENTITY_DETAIL=
+PROFILE_SETUP_DETAIL=
 
 source "$STABILITY_SUPPORT_ROOT/test/local-chaos/billing-adversary-gate.sh"
 source "$STABILITY_SUPPORT_ROOT/test/local-chaos/billing-production-gate.sh"
 source "$STABILITY_SUPPORT_ROOT/test/local-chaos/mixed-path-gate.sh"
+source "$STABILITY_SUPPORT_ROOT/test/local-chaos/network-pools.sh"
 REAL_BILLING_GATE_SERVER=natserver06
 
 usage() {
@@ -100,6 +111,7 @@ run/start options:
   --dashboard-host HOST         dashboard bind host (default: 0.0.0.0)
   --dashboard-port PORT         dashboard port (default: 8911)
   --ca-port PORT                loopback CA port (default: 19100)
+  --ca-web-port PORT            HTTPS CA Web port (default: 8088)
   --billing-adversary MODE      enforce|report|off (default: enforce)
   --validation-mode MODE        smoke|full validation (default: full)
   --ip-family-coverage MODE     off|random IPv4/IPv6/dual-stack coverage (default: off)
@@ -125,7 +137,12 @@ numbered_service_names() {
 }
 
 core_service_names() {
-  printf '%s\n' ca index
+	printf '%s\n' ca-postgres ca ca-web index
+  numbered_service_names relay "$TOPOLOGY_RELAY_COUNT"
+}
+
+core_identity_service_names() {
+	printf '%s\n' ca-postgres ca index
   numbered_service_names relay "$TOPOLOGY_RELAY_COUNT"
 }
 
@@ -135,6 +152,7 @@ worker_runtime_snapshot_files() {
     test/local-chaos/billing-adversary-gate.sh \
     test/local-chaos/billing-production-gate.sh \
     test/local-chaos/mixed-path-gate.sh \
+    test/local-chaos/network-pools.sh \
     test/local-chaos/lib.sh
 }
 
@@ -812,7 +830,8 @@ start_run() {
   local billing_adversary_mode=$DEFAULT_BILLING_ADVERSARY_MODE
   local validation_mode=$DEFAULT_VALIDATION_MODE random_attempt_timeout_seconds random_drain_timeout_seconds
   local ip_family_coverage=$DEFAULT_IP_FAMILY_COVERAGE
-  local dashboard_host=$DEFAULT_DASHBOARD_HOST dashboard_port=$DEFAULT_DASHBOARD_PORT ca_port=$DEFAULT_CA_PORT
+  local dashboard_host=$DEFAULT_DASHBOARD_HOST dashboard_port=$DEFAULT_DASHBOARD_PORT
+  local ca_port=$DEFAULT_CA_PORT ca_web_port=$DEFAULT_CA_WEB_PORT
 
   scenario=random
   while (($#)); do
@@ -829,6 +848,7 @@ start_run() {
       --dashboard-host) dashboard_host=${2:?}; shift 2 ;;
       --dashboard-port) dashboard_port=${2:?}; shift 2 ;;
       --ca-port) ca_port=${2:?}; shift 2 ;;
+      --ca-web-port) ca_web_port=${2:?}; shift 2 ;;
       --billing-adversary) billing_adversary_mode=${2:?}; shift 2 ;;
       --validation-mode) validation_mode=${2:?}; shift 2 ;;
       --ip-family-coverage) ip_family_coverage=${2:?}; shift 2 ;;
@@ -856,7 +876,7 @@ start_run() {
   if (( workload_limit_mibps > 0 )); then
     per_transfer_limit_mibps=$workload_limit_mibps
   fi
-  for value in "$dashboard_port" "$ca_port"; do
+  for value in "$dashboard_port" "$ca_port" "$ca_web_port"; do
     is_port "$value" || { printf 'invalid TCP port: %s\n' "$value" >&2; exit 2; }
   done
   [[ $dashboard_host =~ ^[A-Za-z0-9.-]+$ ]] || {
@@ -900,6 +920,8 @@ start_run() {
     exit 2
   fi
 
+  select_topology_network_octets || exit 1
+
   if [[ $scenario == random ]]; then
     read -r scenario random_value < <(random_scenario)
   else
@@ -937,10 +959,13 @@ start_run() {
     "dashboard_host=$dashboard_host" \
     "dashboard_port=$dashboard_port" \
     "ca_port=$ca_port" \
+    "ca_web_port=$ca_web_port" \
     "billing_adversary_mode=$billing_adversary_mode" \
     "validation_mode=$validation_mode" \
     "ip_family_coverage=$ip_family_coverage" \
     "ip_family_plan_file=$run_dir/ip-family-plan.tsv" \
+    "control_network_second_octet=$BNFS_CHAOS_CONTROL_NETWORK_SECOND_OCTET" \
+    "access_network_second_octet=$BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET" \
     "random_attempt_timeout_seconds=$random_attempt_timeout_seconds" \
     "random_worker_drain_timeout_seconds=$random_drain_timeout_seconds" \
     "compose_project=$project"
@@ -971,8 +996,9 @@ start_run() {
 
   local phase
   phase=$(cat "$run_dir/phase" 2>/dev/null || printf 'UNKNOWN')
-  printf 'run_id=%s\nscenario=%s\nscenario_name=%s\nphase=%s\nrun_dir=%s\ndashboard=http://%s:%s/\n' \
-    "$run_id" "$scenario" "$(scenario_name "$scenario")" "$phase" "$run_dir" "$dashboard_host" "$dashboard_port"
+  printf 'run_id=%s\nscenario=%s\nscenario_name=%s\nphase=%s\nrun_dir=%s\ndashboard=http://%s:%s/\nca_web=https://%s:%s/\n' \
+    "$run_id" "$scenario" "$(scenario_name "$scenario")" "$phase" "$run_dir" \
+    "$dashboard_host" "$dashboard_port" "$dashboard_host" "$ca_web_port"
   if [[ $phase == COMPLETED ]]; then
     completed_terminal_evidence_valid "$run_dir/status.env"
     return
@@ -1011,28 +1037,20 @@ run_foreground() {
 }
 
 credit_node() {
-  local ca_port=$1 node_id=$2 add_bytes=$3 response balance payload
-  # Perform ledger mutation inside the CA container. This remains reliable
-  # even when Docker host-port forwarding is unavailable during startup; the
-  # loopback host port is reserved for the read-only monitoring/dashboard path.
+  local ca_port=$1 node_id=$2 add_bytes=$3 response balance payload token
   payload="{\"node_id\":\"$node_id\",\"add_bytes\":$add_bytes}"
-  response=$(dc exec -T ca sh -c '
-    token=$(cat /artifacts/.private/admin.token) || exit 1
-    exec curl -fsS --connect-timeout 5 -H "Authorization: Bearer $token" \
-      -H "Content-Type: application/json" --data-binary "$1" \
-      http://127.0.0.1:9100/credit
-  ' _ "$payload") || return 1
+  token=$(<"$PRIVATE_RUNTIME_DIR/ca/admin.token") || return 1
+  response=$(curl -fsS --connect-timeout 5 --max-time 10 \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data-binary "$payload" "http://127.0.0.1:$ca_port/credit") || return 1
   balance=$(sed -n 's/.*"balance":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' <<< "$response")
   [[ $balance =~ ^[1-9][0-9]*$ ]]
 }
 
 provision_container_adversaries() {
-  local run_dir=$1 ca_port=$2 credential_root=$PRIVATE_RUNTIME_DIR/ca
+  local run_dir=$1 ca_port=$2
   PRIVATE_RUNTIME_DIR="$PRIVATE_RUNTIME_DIR" \
     CA_BASE_URL="http://127.0.0.1:$ca_port" \
-    CA_SERVER_ENROLLMENT_TOKEN_FILE="$credential_root/enroll-server.token" \
-    CA_RELAY_ENROLLMENT_TOKEN_FILE="$credential_root/enroll-relay.token" \
-    CA_ADMIN_TOKEN_FILE="$credential_root/admin.token" \
     node "$ROOT_DIR/test/local-chaos/provision-adversaries.mjs" \
       > "$run_dir/container-adversary-provision.log" 2>&1
 }
@@ -1677,13 +1695,147 @@ probe_once() {
 }
 
 core_services_healthy() {
-  local service
-  while IFS= read -r service; do
-    local id health
-    id=$(dc ps -q "$service" 2>/dev/null || true)
-    health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id" 2>/dev/null || true)
-    [[ $health == healthy ]] || return 1
-  done < <(core_service_names)
+  local snapshot_file=${1:-} ids rows= service row row_count state health
+  local timestamp epoch temporary result=0
+  CORE_HEALTH_DETAIL=
+  CORE_HEALTH_UNHEALTHY_SERVICES=
+  CORE_HEALTH_SNAPSHOT=
+  timestamp=$(date --iso-8601=seconds)
+  epoch=$(date +%s)
+
+  if ! ids=$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" 2>/dev/null); then
+    CORE_HEALTH_DETAIL=docker_ps_failed
+    result=1
+  elif [[ -z $ids ]]; then
+    CORE_HEALTH_DETAIL=project_containers_missing
+    result=1
+  elif ! rows=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}	{{.Id}}	{{.State.Status}}	{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}	{{.State.StartedAt}}	{{.RestartCount}}' $ids 2>/dev/null); then
+    CORE_HEALTH_DETAIL=docker_inspect_failed
+    result=1
+  fi
+  CORE_HEALTH_SNAPSHOT=$rows
+
+  if [[ -n $rows ]]; then
+    while IFS= read -r service; do
+      row_count=$(awk -F '\t' -v service="$service" '$1 == service { count++ } END { print count + 0 }' <<< "$rows")
+      if [[ $row_count != 1 ]]; then
+        CORE_HEALTH_UNHEALTHY_SERVICES+="${CORE_HEALTH_UNHEALTHY_SERVICES:+,}$service:instances=$row_count"
+        result=1
+        continue
+      fi
+      row=$(awk -F '\t' -v service="$service" '$1 == service { print; exit }' <<< "$rows")
+      IFS=$'\t' read -r _ _ state health _ _ <<< "$row"
+      if [[ $state != running || $health != healthy ]]; then
+        CORE_HEALTH_UNHEALTHY_SERVICES+="${CORE_HEALTH_UNHEALTHY_SERVICES:+,}$service:$state/$health"
+        result=1
+      fi
+    done < <(core_service_names)
+  elif [[ $result == 0 ]]; then
+    CORE_HEALTH_DETAIL=inspect_rows_empty
+    result=1
+  fi
+
+  if [[ $CORE_HEALTH_DETAIL == docker_inspect_failed && -n $rows \
+    && -z $CORE_HEALTH_UNHEALTHY_SERVICES ]]; then
+    CORE_HEALTH_DETAIL=partial_inspect_ignored
+    result=0
+  fi
+
+  if [[ -n $snapshot_file ]]; then
+    temporary=$snapshot_file.tmp.$BASHPID
+    {
+      printf 'timestamp\tepoch\tservice\tcontainer_id\tstate\thealth\tstarted_at\trestart_count\n'
+      if [[ -n $rows ]]; then
+        while IFS= read -r service; do
+          awk -F '\t' -v service="$service" -v timestamp="$timestamp" -v epoch="$epoch" \
+            '$1 == service { print timestamp "\t" epoch "\t" $0 }' <<< "$rows"
+        done < <(core_service_names)
+      fi
+    } > "$temporary"
+    mv "$temporary" "$snapshot_file"
+  fi
+
+  if (( result == 0 )); then
+    [[ -n $CORE_HEALTH_DETAIL ]] || CORE_HEALTH_DETAIL=healthy
+    return 0
+  fi
+  [[ -n $CORE_HEALTH_DETAIL ]] || CORE_HEALTH_DETAIL=service_unhealthy
+  return 1
+}
+
+core_services_snapshot_unchanged() {
+  local snapshot=$1 identity_file=$2 service row row_count
+  local current_id current_started current_restarts expected_id expected_started expected_restarts
+  CORE_IDENTITY_DETAIL=
+  [[ -n $snapshot && -s $identity_file ]] || {
+    CORE_IDENTITY_DETAIL=core_snapshot_unavailable
+    return 1
+  }
+  while IFS=$'\t' read -r service expected_id expected_started expected_restarts; do
+    [[ $service != service ]] || continue
+    row_count=$(awk -F '\t' -v service="$service" '$1 == service { count++ } END { print count + 0 }' <<< "$snapshot")
+    if [[ $row_count != 1 ]]; then
+      CORE_IDENTITY_DETAIL="$service:instances=$row_count"
+      return 1
+    fi
+    row=$(awk -F '\t' -v service="$service" '$1 == service { print; exit }' <<< "$snapshot")
+    IFS=$'\t' read -r _ current_id _ _ current_started current_restarts <<< "$row"
+    if [[ $current_id != "$expected_id" ]]; then
+      CORE_IDENTITY_DETAIL="$service:container_id_changed"
+      return 1
+    fi
+    if [[ $current_started != "$expected_started" ]]; then
+      CORE_IDENTITY_DETAIL="$service:started_at_changed"
+      return 1
+    fi
+    if [[ $current_restarts != "$expected_restarts" ]]; then
+      CORE_IDENTITY_DETAIL="$service:restart_count_changed"
+      return 1
+    fi
+  done < "$identity_file"
+  return 0
+}
+
+wait_core_services_healthy() {
+  local run_dir=$1 identity_file=$2 timeout_seconds=${3:-$DEFAULT_CORE_HEALTH_FAILURE_GRACE_SECONDS}
+  local deadline now
+  is_positive_integer "$timeout_seconds" || return 1
+  deadline=$(( $(date +%s) + timeout_seconds ))
+  while :; do
+    if core_services_healthy "$run_dir/core-health-latest.tsv"; then
+      core_services_snapshot_unchanged "$CORE_HEALTH_SNAPSHOT" "$identity_file" || return 1
+      return 0
+    fi
+    if [[ -n $CORE_HEALTH_SNAPSHOT ]] \
+      && ! core_services_snapshot_unchanged "$CORE_HEALTH_SNAPSHOT" "$identity_file"; then
+      return 1
+    fi
+    now=$(date +%s)
+    (( now >= deadline )) && return 1
+    sleep 1
+  done
+}
+
+core_health_failure_is_fatal() {
+  local now_epoch=$1 failed_since=$2 consecutive_failures=$3
+  [[ $now_epoch =~ ^[1-9][0-9]*$ && $failed_since =~ ^[1-9][0-9]*$ \
+    && $consecutive_failures =~ ^[1-9][0-9]*$ ]] || return 1
+  (( consecutive_failures >= DEFAULT_CORE_HEALTH_MIN_FAILURES \
+    && now_epoch - failed_since >= DEFAULT_CORE_HEALTH_FAILURE_GRACE_SECONDS ))
+}
+
+record_core_health_event() {
+  local run_dir=$1 event=$2 consecutive_failures=$3 failed_since=$4
+  local now_epoch duration_seconds=0
+  now_epoch=$(date +%s)
+  if [[ $failed_since =~ ^[1-9][0-9]*$ && $now_epoch -ge $failed_since ]]; then
+    duration_seconds=$((now_epoch - failed_since))
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date --iso-8601=seconds)" "$event" "$consecutive_failures" \
+    "$duration_seconds" "${CORE_HEALTH_DETAIL:-unknown}" \
+    "${CORE_HEALTH_UNHEALTHY_SERVICES:-unknown}" "$now_epoch" \
+    >> "$run_dir/core-health-events.tsv"
 }
 
 write_core_identity() {
@@ -1695,21 +1847,14 @@ write_core_identity() {
     started=$(docker inspect --format '{{.State.StartedAt}}' "$id" 2>/dev/null || true)
     restart_count=$(docker inspect --format '{{.RestartCount}}' "$id" 2>/dev/null || true)
     printf '%s\t%s\t%s\t%s\n' "$service" "$id" "$started" "$restart_count" >> "$output"
-  done < <(core_service_names)
+  done < <(core_identity_service_names)
 }
 
 core_services_unchanged() {
-  local identity_file=$1 service expected_id expected_started expected_restarts
+  local identity_file=$1
   [[ -s $identity_file ]] || return 1
-  while IFS=$'\t' read -r service expected_id expected_started expected_restarts; do
-    [[ $service != service ]] || continue
-    local id started restart_count
-    id=$(dc ps -q "$service" 2>/dev/null || true)
-    [[ -n $id && $id == "$expected_id" ]] || return 1
-    started=$(docker inspect --format '{{.State.StartedAt}}' "$id" 2>/dev/null || true)
-    restart_count=$(docker inspect --format '{{.RestartCount}}' "$id" 2>/dev/null || true)
-    [[ $started == "$expected_started" && $restart_count == "$expected_restarts" ]] || return 1
-  done < "$identity_file"
+  core_services_healthy || return 1
+  core_services_snapshot_unchanged "$CORE_HEALTH_SNAPSHOT" "$identity_file"
 }
 
 capture_project_evidence() {
@@ -1722,6 +1867,33 @@ capture_project_evidence() {
   docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}|{{.Id}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.State.StartedAt}}|{{.RestartCount}}' \
     $ids 2>/dev/null | awk -F '|' 'BEGIN { OFS="\t" } { print $1, $2, $3, $4, $5, $6 }' \
     | sort >> "$run_dir/containers-$suffix.tsv" || true
+}
+
+prepare_stability_profile() {
+  local run_dir=$1 scenario=$2 ca_port=$3 max_inflight=$4
+  local per_transfer_limit_mibps=$5 workload_limit_mibps=$6
+  PROFILE_SETUP_DETAIL=
+
+  if ! configure_profile "$run_dir" "$scenario" "$ca_port" "$per_transfer_limit_mibps"; then
+    PROFILE_SETUP_DETAIL=profile_configuration_failed
+  elif ! initialize_random_workload "$run_dir" "$ca_port" "$scenario" "$max_inflight" \
+    "$per_transfer_limit_mibps" "$workload_limit_mibps"; then
+    PROFILE_SETUP_DETAIL=random_workload_initialization_failed
+  elif ! verify_profile3_tcp_cold_start "$run_dir" "$scenario"; then
+    PROFILE_SETUP_DETAIL=profile_transport_gate_failed
+  elif ! wait_core_services_healthy "$run_dir" "$run_dir/core-identity.pre-gate.tsv"; then
+    if [[ -n $CORE_IDENTITY_DETAIL ]]; then
+      PROFILE_SETUP_DETAIL=profile_core_identity_changed
+    else
+      PROFILE_SETUP_DETAIL=profile_core_health_timeout
+    fi
+  else
+    PROFILE_SETUP_DETAIL=ready
+    return 0
+  fi
+
+  record_profile_setup_failure "$run_dir" "$PROFILE_SETUP_DETAIL"
+  return 1
 }
 
 configure_profile() {
@@ -1764,14 +1936,18 @@ configure_profile() {
     disconnect_relay_path "$client" relay01 || return 1
     unblock_relay "$server" relay02
     unblock_relay "$client" relay02
-    deadline=$((SECONDS + 70))
+    deadline=$((SECONDS + DEFAULT_PROFILE_RELAY_MIGRATION_TIMEOUT_SECONDS))
     while (( SECONDS < deadline )); do
       grep -q "注册到 relay: $relay02_server_ip:9000" "$RUNTIME_DIR/$scenario/$server.log" && server_migrated=1
       grep -q "注册到 relay: $relay02_client_ip:9000" "$RUNTIME_DIR/$scenario/$client.log" && client_migrated=1
       (( server_migrated == 1 && client_migrated == 1 )) && break
       sleep 1
     done
-    (( server_migrated == 1 && client_migrated == 1 )) || return 1
+    if (( server_migrated != 1 || client_migrated != 1 )); then
+      record_profile_setup_failure "$run_dir" \
+        "relay02_migration_timeout_server_${server_migrated}_client_${client_migrated}"
+      return 1
+    fi
   fi
 
   source_sha=$(dc exec -T "$server" curl -fsS http://127.0.0.1:8080/checksum | tr -d '[:space:]')
@@ -2081,20 +2257,35 @@ initialize_random_workload() {
 
 ip_family_address_gate() {
   local service=$1 family=$2 expected_host=${3:-} ipv4_pattern= ipv6_pattern=
+  local container_id addresses
   case $family in
     ipv4) ipv4_pattern='10.253.41.' ;;
     ipv6) ipv6_pattern='fd92:7b5e:4c31:42:' ;;
     dual) ipv4_pattern='10.253.43.'; ipv6_pattern='fd92:7b5e:4c31:43:' ;;
     *) return 1 ;;
   esac
-  if [[ -n $ipv4_pattern ]] && ! dc exec -T "$service" ip -o -4 addr show 2>/dev/null | grep -Fq "$ipv4_pattern"; then
+  container_id=$(dc ps -q "$service" 2>/dev/null) || return 1
+  [[ $container_id =~ ^[[:xdigit:]]{12,64}$ ]] || return 1
+  addresses=$(docker inspect --format \
+    '{{range .NetworkSettings.Networks}}{{printf "%s\t%s\n" .IPAddress .GlobalIPv6Address}}{{end}}' \
+    "$container_id" 2>/dev/null) || return 1
+  if [[ -n $ipv4_pattern ]] && ! awk -F '\t' -v prefix="$ipv4_pattern" '
+    { for (field = 1; field <= NF; field++) if (index($field, prefix) == 1) found=1 }
+    END { exit !found }
+  ' <<< "$addresses"; then
     return 1
   fi
-  if [[ -n $ipv6_pattern ]] && ! dc exec -T "$service" ip -o -6 addr show 2>/dev/null | grep -Fq "$ipv6_pattern"; then
+  if [[ -n $ipv6_pattern ]] && ! awk -F '\t' -v prefix="$ipv6_pattern" '
+    { for (field = 1; field <= NF; field++) if (index($field, prefix) == 1) found=1 }
+    END { exit !found }
+  ' <<< "$addresses"; then
     return 1
   fi
   [[ -z $expected_host ]] && return 0
-  dc exec -T "$service" ip -o addr show 2>/dev/null | grep -Fq "$expected_host"
+  awk -F '\t' -v expected="$expected_host" '
+    { for (field = 1; field <= NF; field++) if ($field == expected) found=1 }
+    END { exit !found }
+  ' <<< "$addresses"
 }
 
 ip_family_relay_socket_gate() {
@@ -3425,7 +3616,7 @@ finalize_run_terminal_result() {
 
 run_internal() {
   local run_dir=$1
-  local scenario duration cpu_limit memory_limit disk_limit sample_seconds probe_seconds max_inflight workload_limit_mibps per_transfer_limit_mibps dashboard_host dashboard_port ca_port billing_adversary_mode validation_mode ip_family_coverage ip_family_plan_path random_attempt_timeout random_worker_drain_timeout enable_container_adversaries project
+  local scenario duration cpu_limit memory_limit disk_limit sample_seconds probe_seconds max_inflight workload_limit_mibps per_transfer_limit_mibps dashboard_host dashboard_port ca_port ca_web_port billing_adversary_mode validation_mode ip_family_coverage ip_family_plan_path random_attempt_timeout random_worker_drain_timeout enable_container_adversaries project
   local reconnect_gate_port=$DEFAULT_RECONNECT_GATE_PORT reconnect_gate_token reconnect_gate_pid= reconnect_gate_start=
   source "$run_dir/metadata.env"
   scenario=${scenario:?}
@@ -3441,6 +3632,7 @@ run_internal() {
   dashboard_host=${dashboard_host:?}
   dashboard_port=${dashboard_port:?}
   ca_port=${ca_port:?}
+  ca_web_port=${ca_web_port:?}
   billing_adversary_mode=${billing_adversary_mode:-$DEFAULT_BILLING_ADVERSARY_MODE}
   validation_mode=${validation_mode:-$DEFAULT_VALIDATION_MODE}
   ip_family_coverage=${ip_family_coverage:-$DEFAULT_IP_FAMILY_COVERAGE}
@@ -3474,8 +3666,11 @@ run_internal() {
     > "$run_dir/transfers.tsv"
   printf 'timestamp\tbatch_id\tselected_server\tserver_pool_includes_malicious\tserver_malicious\tmode\trequested_clients\tselected_clients\tclient_pool_includes_malicious\tmalicious_client_selected\tstatus\ttarget_pairs\tsucceeded\tfailed\n' \
     > "$run_dir/random-batches.tsv"
+  printf 'timestamp\tevent\tconsecutive_failures\tduration_seconds\tdetail\tservices\tepoch\n' \
+    > "$run_dir/core-health-events.tsv"
   local stop_requested=0 guard_pid= guard_start= dashboard_pid= dashboard_start= failure_watcher_pid= billing_adversary_pid= mixed_path_pid= outcome=FAILED detail=initializing
   local failure_watcher_degraded_since=0 failure_watcher_lag_since=0
+  local core_health_failed_since=0 core_health_consecutive_failures=0 core_health_next_probe=0 core_health_now=0
   local dashboard_status_failed_since=0 dashboard_status_consecutive_failures=0
   local dashboard_status_next_probe=0 dashboard_status_probe_file=$run_dir/dashboard-status-probe.tmp
 
@@ -3506,11 +3701,15 @@ run_internal() {
   export COMPOSE_FILE=$compose_file
   export COMPOSE_PROJECT=$project
   export BNFS_CHAOS_IMAGE=${BNFS_CHAOS_IMAGE:-bnfs-local-chaos:latest}
+  if [[ -z ${BNFS_CHAOS_CA_ADMIN_TOKEN_FILE:-} && -f $SOAK_HOME/secrets/ca-admin.token ]]; then
+    export BNFS_CHAOS_CA_ADMIN_TOKEN_FILE=$SOAK_HOME/secrets/ca-admin.token
+  fi
   reconnect_gate_token=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]') || return 1
   [[ $reconnect_gate_token =~ ^[[:xdigit:]]{64}$ ]] || return 1
   printf '%s\n' "$reconnect_gate_token" > "$run_dir/reconnect-gate.token"
   chmod 600 "$run_dir/reconnect-gate.token"
   BNFS_CHAOS_ENABLE_CA=1 BNFS_CHAOS_ENABLE_ADVERSARIES="$enable_container_adversaries" BNFS_CHAOS_CA_HOST_PORT="$ca_port" \
+    BNFS_CHAOS_CA_WEB_HOST_PORT="$ca_web_port" \
     BNFS_CHAOS_IP_FAMILY_PLAN_FILE="$ip_family_plan_path" \
     BNFS_CHAOS_RECONNECT_GATE_URL="http://host.docker.internal:$reconnect_gate_port" \
     BNFS_CHAOS_RECONNECT_GATE_TOKEN="$reconnect_gate_token" \
@@ -3532,6 +3731,13 @@ run_internal() {
     set_phase "$run_dir" FAILED
     return 1
   fi
+  if ss -lntH "sport = :$ca_web_port" | grep -q .; then
+    printf 'outcome=FAILED\ndetail=ca_web_port_busy\n' > "$run_dir/status.env"
+    set_phase "$run_dir" FAILED
+    return 1
+  fi
+
+  export BNFS_CHAOS_CA_HOST_PORT=$ca_port
 
   env RUN_DIR="$run_dir" WATCH_PID="$runner_pid" \
     node "$ROOT_DIR/test/local-chaos/monitor/failure-watcher.mjs" \
@@ -3568,7 +3774,7 @@ run_internal() {
   # available after the runner and Compose project have stopped. Explicit stop
   # and the next start reclaim it through the recorded PID identity.
   setsid env HOST="$dashboard_host" PORT="$dashboard_port" RUN_DIR="$run_dir" \
-    COMPOSE_PROJECT="$project" COMPOSE_FILE="$compose_file" CA_PORT="$ca_port" \
+    COMPOSE_PROJECT="$project" COMPOSE_FILE="$compose_file" CA_PORT="$ca_port" CA_WEB_PORT="$ca_web_port" \
     BNFS_RECONNECT_GATE_MONITOR_URL="http://127.0.0.1:$reconnect_gate_port" \
     BNFS_RECONNECT_GATE_TOKEN="$reconnect_gate_token" \
     node "$ROOT_DIR/test/local-chaos/monitor/server.mjs" > "$run_dir/dashboard.log" 2>&1 < /dev/null &
@@ -3615,12 +3821,8 @@ run_internal() {
         detail=core_identity_capture_failed
       else
         capture_project_evidence "$run_dir" initial
-        if configure_profile "$run_dir" "$scenario" "$ca_port" "$per_transfer_limit_mibps" \
-          && initialize_random_workload "$run_dir" "$ca_port" "$scenario" "$max_inflight" \
-            "$per_transfer_limit_mibps" "$workload_limit_mibps" \
-          && verify_profile3_tcp_cold_start "$run_dir" "$scenario" \
-          && core_services_healthy \
-          && core_services_unchanged "$run_dir/core-identity.pre-gate.tsv"; then
+        if prepare_stability_profile "$run_dir" "$scenario" "$ca_port" "$max_inflight" \
+          "$per_transfer_limit_mibps" "$workload_limit_mibps"; then
           if [[ -s $run_dir/resource-termination.tsv ]] \
             && (( $(wc -l < "$run_dir/resource-termination.tsv") > 1 )); then
             outcome=RESOURCE_LIMIT
@@ -3804,15 +4006,51 @@ run_internal() {
                         fi
                       fi
                     fi
-                    if ! core_services_healthy; then
-                      outcome=FAILED
-                      detail=core_service_unhealthy
-                      break
-                    fi
-                    if ! core_services_unchanged "$run_dir/core-identity.tsv"; then
-                      outcome=FAILED
-                      detail=core_service_recreated_or_restarted
-                      break
+                    core_health_now=$(date +%s)
+                    if (( core_health_now >= core_health_next_probe )); then
+                      core_health_next_probe=$((core_health_now + DEFAULT_CORE_HEALTH_PROBE_SECONDS))
+                      if core_services_healthy "$run_dir/core-health-latest.tsv"; then
+                        if ! core_services_snapshot_unchanged "$CORE_HEALTH_SNAPSHOT" \
+                          "$run_dir/core-identity.tsv"; then
+                          outcome=FAILED
+                          detail=core_service_recreated_or_restarted
+                          CORE_HEALTH_DETAIL=$CORE_IDENTITY_DETAIL
+                          record_core_health_event "$run_dir" identity_changed \
+                            "$core_health_consecutive_failures" "$core_health_failed_since"
+                          break
+                        fi
+                        if (( core_health_failed_since > 0 )); then
+                          record_core_health_event "$run_dir" recovered \
+                            "$core_health_consecutive_failures" "$core_health_failed_since"
+                          core_health_failed_since=0
+                          core_health_consecutive_failures=0
+                        fi
+                      else
+                        if [[ -n $CORE_HEALTH_SNAPSHOT ]] \
+                          && ! core_services_snapshot_unchanged "$CORE_HEALTH_SNAPSHOT" \
+                            "$run_dir/core-identity.tsv"; then
+                          outcome=FAILED
+                          detail=core_service_recreated_or_restarted
+                          CORE_HEALTH_DETAIL=$CORE_IDENTITY_DETAIL
+                          record_core_health_event "$run_dir" identity_changed \
+                            "$core_health_consecutive_failures" "$core_health_failed_since"
+                          break
+                        fi
+                        (( core_health_consecutive_failures += 1 ))
+                        if (( core_health_failed_since == 0 )); then
+                          core_health_failed_since=$core_health_now
+                        fi
+                        record_core_health_event "$run_dir" degraded \
+                          "$core_health_consecutive_failures" "$core_health_failed_since"
+                        if core_health_failure_is_fatal "$core_health_now" \
+                          "$core_health_failed_since" "$core_health_consecutive_failures"; then
+                          outcome=FAILED
+                          detail=core_service_unhealthy
+                          record_core_health_event "$run_dir" terminal \
+                            "$core_health_consecutive_failures" "$core_health_failed_since"
+                          break
+                        fi
+                      fi
                     fi
                     worker_failed=0
                     for worker_index in "${!RANDOM_WORKER_PIDS[@]}"; do
@@ -3890,12 +4128,10 @@ run_internal() {
                     "$failure_watcher_degraded_since"; then
                     outcome=FAILED
                     detail=$FAILURE_WATCHER_DETAIL
-                  elif ! core_services_healthy; then
+                  elif ! wait_core_services_healthy "$run_dir" "$run_dir/core-identity.tsv"; then
                     outcome=FAILED
                     detail=core_service_unhealthy
-                  elif ! core_services_unchanged "$run_dir/core-identity.tsv"; then
-                    outcome=FAILED
-                    detail=core_service_recreated_or_restarted
+                    [[ -n $CORE_IDENTITY_DETAIL ]] && detail=core_service_recreated_or_restarted
                   elif ! validate_random_workload_coverage "$run_dir" "$scenario" "$validation_mode"; then
                     outcome=FAILED
                     detail=random_workload_coverage_failed
@@ -3912,7 +4148,7 @@ run_internal() {
             fi
           fi
         else
-          detail=profile_setup_failed
+          detail=${PROFILE_SETUP_DETAIL:-profile_setup_failed}
         fi
       fi
     fi

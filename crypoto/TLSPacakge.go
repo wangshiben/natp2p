@@ -7,7 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
-	"log"
+
+	"bnfs_p2p/logx"
 )
 
 // aesGCMEncrypt 使用 AES-GCM 模式加密数据
@@ -66,7 +67,7 @@ func aesGCMDecrypt(ciphertext, key []byte) ([]byte, error) {
 
 // 模拟 Client A (发送方)
 func clientASend(clientB_PubKeyHex string, message string) ([]byte, error) {
-	log.Printf(">>> [Client A] 准备发送消息...")
+	logx.Infof(">>> [Client A] 准备发送消息...")
 
 	// 1. 解析 B 的公钥
 	bPubKey, err := ExtractPublicKeyFromHex(clientB_PubKeyHex)
@@ -107,7 +108,7 @@ func clientASend(clientB_PubKeyHex string, message string) ([]byte, error) {
 
 // 模拟 Client B (接收方)
 func clientBReceive(myPriv *ecdh.PrivateKey, packet []byte) error {
-	log.Printf("<<< [Client B] 收到数据包，开始解密...")
+	logx.Infof("<<< [Client B] 收到数据包，开始解密...")
 
 	// 1. 解析数据包
 	pubKeyHexLen := 130 // P-256 公钥 Hex 长度固定为 130
@@ -140,6 +141,6 @@ func clientBReceive(myPriv *ecdh.PrivateKey, packet []byte) error {
 		return fmt.Errorf("解密失败: %v", err)
 	}
 
-	log.Printf("<<< [Client B] 解密成功！消息内容: %s\n", string(plaintext))
+	logx.Infof("<<< [Client B] 解密成功！消息内容: %s", string(plaintext))
 	return nil
 }

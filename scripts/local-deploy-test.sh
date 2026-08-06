@@ -7,7 +7,12 @@ RUNTIME_DIR=${BNFS_CHAOS_RUNTIME_DIR:-$ROOT_DIR/test/local-chaos/.runtime}
 COMPOSE_FILE=$RUNTIME_DIR/compose.json
 COMPOSE_PROJECT=${BNFS_CHAOS_COMPOSE_PROJECT:-bnfs-local-chaos}
 BNFS_CHAOS_IMAGE=${BNFS_CHAOS_IMAGE:-bnfs-local-chaos:latest}
+BNFS_CA_WEB_ROOT=${BNFS_CA_WEB_ROOT:-$ROOT_DIR/ca_web}
+BNFS_CHAOS_CA_BACKEND_IMAGE=${BNFS_CHAOS_CA_BACKEND_IMAGE:-bnfs-ca-web-backend:latest}
+BNFS_CHAOS_CA_FRONTEND_IMAGE=${BNFS_CHAOS_CA_FRONTEND_IMAGE:-bnfs-ca-web-frontend:latest}
 export ROOT_DIR RUNTIME_DIR COMPOSE_FILE COMPOSE_PROJECT BNFS_CHAOS_IMAGE
+export BNFS_CA_WEB_ROOT BNFS_CHAOS_CA_BACKEND_IMAGE BNFS_CHAOS_CA_FRONTEND_IMAGE
+source "$ROOT_DIR/test/local-chaos/network-pools.sh"
 
 scenario=all
 keep=0
@@ -53,12 +58,24 @@ case "$scenario" in
   *) printf 'invalid scenario: %s\n' "$scenario" >&2; exit 2 ;;
 esac
 
+if [[ ${BNFS_CHAOS_ENABLE_CA:-0} == 1 && -z ${BNFS_CHAOS_CA_CLIENT_ROLE_SERVICES:-} ]]; then
+  export BNFS_CHAOS_CA_CLIENT_ROLE_SERVICES=natserver01,natserver04,natserver06
+fi
+if [[ ${BNFS_CHAOS_ENABLE_CA:-0} == 1 && -z ${BNFS_CHAOS_AUTO_CREDIT_BYTES:-} ]]; then
+  export BNFS_CHAOS_AUTO_CREDIT_BYTES=2199023255552
+fi
+
+select_topology_network_octets || exit 1
 mkdir -p "$RUNTIME_DIR"
 if ! node "$ROOT_DIR/test/local-chaos/generate-compose.mjs" "$RUNTIME_DIR" > "$COMPOSE_FILE"; then
   printf '[local-chaos] 生成 Compose 拓扑失败\n' >&2
   exit 1
 fi
 source "$ROOT_DIR/test/local-chaos/lib.sh"
+
+if [[ ${BNFS_CHAOS_ENABLE_CA:-0} == 1 && -z ${BNFS_CHAOS_NAT_CA_URL:-} ]]; then
+  export BNFS_CHAOS_NAT_CA_URL=http://ca:9100
+fi
 
 cleanup() {
   if (( keep == 0 )); then
@@ -94,6 +111,22 @@ if (( build == 1 )); then
     --file "$ROOT_DIR/test/local-chaos/Dockerfile" "$build_dir"; then
     printf '[local-chaos] 镜像构建失败\n' >&2
     exit 1
+  fi
+  if [[ ${BNFS_CHAOS_ENABLE_CA:-0} == 1 ]]; then
+    if [[ ! -f $BNFS_CA_WEB_ROOT/backend/Dockerfile || ! -f $BNFS_CA_WEB_ROOT/frontend/Dockerfile ]]; then
+      printf '[local-chaos] CA Web 源码目录无效: %s\n' "$BNFS_CA_WEB_ROOT" >&2
+      exit 1
+    fi
+    printf '[local-chaos] 构建 CA Web 后端镜像 %s\n' "$BNFS_CHAOS_CA_BACKEND_IMAGE"
+    if ! docker build --pull=false --tag "$BNFS_CHAOS_CA_BACKEND_IMAGE" "$BNFS_CA_WEB_ROOT/backend"; then
+      printf '[local-chaos] CA Web 后端镜像构建失败\n' >&2
+      exit 1
+    fi
+    printf '[local-chaos] 构建 CA Web 前端镜像 %s\n' "$BNFS_CHAOS_CA_FRONTEND_IMAGE"
+    if ! docker build --pull=false --tag "$BNFS_CHAOS_CA_FRONTEND_IMAGE" "$BNFS_CA_WEB_ROOT/frontend"; then
+      printf '[local-chaos] CA Web 前端镜像构建失败\n' >&2
+      exit 1
+    fi
   fi
 fi
 

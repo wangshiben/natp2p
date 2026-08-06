@@ -42,6 +42,17 @@ func SignRelay(body VoucherBody, identity *ecdh.PrivateKey) ([]byte, error) {
 	return signBody(body, identity, body.PayeeRelayID, relaySignatureDomain)
 }
 
+// SignPayerBilling 使用已由 CA 证书绑定的独立扣费密钥签署 payer 凭证。
+// 调用方必须先校验证书中的节点身份与扣费公钥绑定。
+func SignPayerBilling(body VoucherBody, billingKey *ecdh.PrivateKey) ([]byte, error) {
+	return signBodyWithBillingKey(body, billingKey, payerSignatureDomain)
+}
+
+// SignRelayBilling 使用已由 CA 证书绑定的独立扣费密钥签署 Relay 凭证。
+func SignRelayBilling(body VoucherBody, billingKey *ecdh.PrivateKey) ([]byte, error) {
+	return signBodyWithBillingKey(body, billingKey, relaySignatureDomain)
+}
+
 func VerifyPayerSignature(body VoucherBody, signature []byte, identity *ecdh.PublicKey) error {
 	return verifyBodySignature(body, signature, identity, body.PayerNatID, payerSignatureDomain)
 }
@@ -50,12 +61,34 @@ func VerifyRelaySignature(body VoucherBody, signature []byte, identity *ecdh.Pub
 	return verifyBodySignature(body, signature, identity, body.PayeeRelayID, relaySignatureDomain)
 }
 
+// VerifyPayerBillingSignature 校验 CA 已绑定扣费公钥的 payer 签名，不把扣费公钥误作 Node ID。
+func VerifyPayerBillingSignature(body VoucherBody, signature []byte, billingKey *ecdh.PublicKey) error {
+	return verifyBodyBillingSignature(body, signature, billingKey, payerSignatureDomain)
+}
+
+// VerifyRelayBillingSignature 校验 CA 已绑定扣费公钥的 Relay 签名。
+func VerifyRelayBillingSignature(body VoucherBody, signature []byte, billingKey *ecdh.PublicKey) error {
+	return verifyBodyBillingSignature(body, signature, billingKey, relaySignatureDomain)
+}
+
 func (voucher MutualVoucher) Verify(payerIdentity, relayIdentity *ecdh.PublicKey) error {
 	if err := VerifyPayerSignature(voucher.Body, voucher.PayerSignature, payerIdentity); err != nil {
 		return fmt.Errorf("billingvoucher: payer verification failed: %w", err)
 	}
 	if err := VerifyRelaySignature(voucher.Body, voucher.RelaySignature, relayIdentity); err != nil {
 		return fmt.Errorf("billingvoucher: Relay verification failed: %w", err)
+	}
+	return nil
+}
+
+// VerifyBillingSignatures 校验已通过 CA 证书绑定的两组扣费公钥。
+// 节点 ID 与身份公钥的校验由调用方在调用本方法前完成。
+func (voucher MutualVoucher) VerifyBillingSignatures(payerBillingKey, relayBillingKey *ecdh.PublicKey) error {
+	if err := VerifyPayerBillingSignature(voucher.Body, voucher.PayerSignature, payerBillingKey); err != nil {
+		return fmt.Errorf("billingvoucher: payer billing verification failed: %w", err)
+	}
+	if err := VerifyRelayBillingSignature(voucher.Body, voucher.RelaySignature, relayBillingKey); err != nil {
+		return fmt.Errorf("billingvoucher: Relay billing verification failed: %w", err)
 	}
 	return nil
 }
@@ -75,6 +108,21 @@ func signBody(body VoucherBody, identity *ecdh.PrivateKey, expectedID Identifier
 	if actualID != expectedID {
 		return nil, errors.New("billingvoucher: signer identity does not match voucher binding")
 	}
+	return signValidatedBody(body, privateKey, domain)
+}
+
+func signBodyWithBillingKey(body VoucherBody, billingKey *ecdh.PrivateKey, domain string) ([]byte, error) {
+	if err := body.Validate(); err != nil {
+		return nil, err
+	}
+	privateKey, err := ecdsaPrivateKey(billingKey)
+	if err != nil {
+		return nil, err
+	}
+	return signValidatedBody(body, privateKey, domain)
+}
+
+func signValidatedBody(body VoucherBody, privateKey *ecdsa.PrivateKey, domain string) ([]byte, error) {
 	bodyID, err := body.BodyID()
 	if err != nil {
 		return nil, err
@@ -102,6 +150,31 @@ func verifyBodySignature(body VoucherBody, signature []byte, identity *ecdh.Publ
 	if actualID != expectedID {
 		return errors.New("billingvoucher: verifier identity does not match voucher binding")
 	}
+	return verifyValidatedBodySignature(body, signature, publicKey, domain)
+}
+
+func verifyBodyBillingSignature(
+	body VoucherBody,
+	signature []byte,
+	billingKey *ecdh.PublicKey,
+	domain string,
+) error {
+	if err := body.Validate(); err != nil {
+		return err
+	}
+	publicKey, err := ecdsaPublicKey(billingKey)
+	if err != nil {
+		return err
+	}
+	return verifyValidatedBodySignature(body, signature, publicKey, domain)
+}
+
+func verifyValidatedBodySignature(
+	body VoucherBody,
+	signature []byte,
+	publicKey *ecdsa.PublicKey,
+	domain string,
+) error {
 	parsed, err := parseCanonicalSignature(signature, true)
 	if err != nil {
 		return err

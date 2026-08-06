@@ -12,6 +12,10 @@ import (
 )
 
 func holdbackTestE2ERecord(plaintextBytes int, marker byte) []byte {
+	return holdbackTestE2ERecordForSession(plaintextBytes, marker, 0xa5)
+}
+
+func holdbackTestE2ERecordForSession(plaintextBytes int, marker, sessionMarker byte) []byte {
 	record := make([]byte, 64+plaintextBytes+16)
 	copy(record[:8], "BNFSE2E2")
 	record[8] = 2
@@ -19,7 +23,9 @@ func holdbackTestE2ERecord(plaintextBytes int, marker byte) []byte {
 	record[10] = marker & 1
 	binary.BigEndian.PutUint32(record[12:16], 1)
 	binary.BigEndian.PutUint64(record[16:24], uint64(marker)+1)
-	record[24] = marker + 1
+	for index := 24; index < 56; index++ {
+		record[index] = sessionMarker
+	}
 	binary.BigEndian.PutUint64(record[56:64], uint64(plaintextBytes))
 	for index := 64; index < len(record); index++ {
 		record[index] = marker
@@ -454,6 +460,212 @@ func TestBillingHoldbackAllowsOnlyEmptyE2EKeepAliveAfterHandshake(t *testing.T) 
 		}
 		holdback.mu.Unlock()
 	})
+}
+
+func TestBillingHoldbackAllowsKeepAliveAfterValidatedMigrationRecord(t *testing.T) {
+	var hookCalls atomic.Int32
+	config := holdbackTestConfig(func(context.Context, *BillableRecord) error {
+		hookCalls.Add(1)
+		return nil
+	})
+	state := newForwardHookState(config, "server-migrated", "registration-new-relay")
+	connectionID := "conn-migrated"
+
+	billable := holdbackTestFrames(
+		t, 91, connectionID, "/p2p/message",
+		holdbackTestE2ERecordForSession(64, 17, 0x51), true, 512,
+	)
+	if ready, err := holdbackTestForwardMessage(state, billable); err != nil || len(ready) != len(billable) {
+		t.Fatalf("first migrated billable record = (%d, %v), want %d allowed frames", len(ready), err, len(billable))
+	}
+	if hookCalls.Load() != 1 {
+		t.Fatalf("billing hook calls=%d, want 1", hookCalls.Load())
+	}
+
+	keepAlive := holdbackTestFrames(
+		t, 92, connectionID, KeepAliveRoute,
+		holdbackTestE2ERecordForSession(0, 18, 0x51), false, 512,
+	)
+	if ready, err := holdbackTestForwardMessage(state, keepAlive); err != nil || len(ready) != len(keepAlive) {
+		t.Fatalf("migrated keepalive = (%d, %v), want %d allowed frames", len(ready), err, len(keepAlive))
+	}
+
+	foreignKeepAlive := holdbackTestFrames(
+		t, 93, connectionID, KeepAliveRoute,
+		holdbackTestE2ERecordForSession(0, 19, 0x52), false, 512,
+	)
+	if _, err := holdbackTestForwardMessage(state, foreignKeepAlive); err == nil ||
+		!strings.Contains(err.Error(), "another E2E session") {
+		t.Fatalf("foreign migrated keepalive error=%v", err)
+	}
+}
+
+func TestBillingHoldbackRetriesTemporaryValidationWithoutReleasingFrames(t *testing.T) {
+	tests := []struct {
+		name       string
+		firstError error
+	}{
+		{name: "retryable billing control failure", firstError: ErrBillableRecordRetryable},
+		{name: "child validation deadline", firstError: context.DeadlineExceeded},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var hookCalls atomic.Int32
+			config := holdbackTestConfig(func(context.Context, *BillableRecord) error {
+				if hookCalls.Add(1) == 1 {
+					return test.firstError
+				}
+				return nil
+			})
+			state := newForwardHookState(config, "server-temporary")
+			frames := holdbackTestFrames(
+				t, 401, "conn-temporary", "/p2p/message", holdbackTestE2ERecord(64, 41), true, 128,
+			)
+			ready, err := holdbackTestForwardMessage(state, frames)
+			if err != nil || len(ready) != 0 {
+				t.Fatalf("temporary failure result = (%d, %v), want held without error", len(ready), err)
+			}
+			snapshot := config.ensureMessageHoldback().snapshot()
+			if snapshot.PendingMessages != 1 || snapshot.PendingFrames != len(frames) {
+				t.Fatalf("deferred holdback state = %+v", snapshot)
+			}
+
+			retransmit := cloneFrame(frames[len(frames)-1])
+			retransmit.FrameType = network.FrameTypeRetransmit
+			if ready, err = state.framesForForward(context.Background(), retransmit, "relay_to_clients"); err != nil || len(ready) != 0 {
+				t.Fatalf("early retransmit result = (%d, %v), want still held", len(ready), err)
+			}
+			if hookCalls.Load() != 1 {
+				t.Fatalf("early retransmit invoked validation %d times, want 1", hookCalls.Load())
+			}
+
+			time.Sleep(2 * holdbackRetryInitialDelay)
+			ready, err = state.framesForForward(context.Background(), retransmit, "relay_to_clients")
+			if err != nil || len(ready) != len(frames) {
+				t.Fatalf("retry result = (%d, %v), want %d released frames", len(ready), err, len(frames))
+			}
+			if hookCalls.Load() != 2 {
+				t.Fatalf("validation calls = %d, want 2", hookCalls.Load())
+			}
+		})
+	}
+}
+
+func TestBillingHoldbackResumeRequiresOriginalE2ESession(t *testing.T) {
+	config := holdbackTestConfig(func(context.Context, *BillableRecord) error { return nil })
+	state := newForwardHookState(config, "server-resume", "registration-a")
+	connectionID := "conn-resume-session"
+	handshake := holdbackTestFrames(
+		t, 411, connectionID, billingHandshakeInfoRoute,
+		holdbackTestE2ERecordForSession(32, 42, 0x11), false, 512,
+	)
+	if ready, err := holdbackTestForwardMessage(state, handshake); err != nil || len(ready) != len(handshake) {
+		t.Fatalf("initial handshake = (%d, %v), want %d frames", len(ready), err, len(handshake))
+	}
+	state.resetHeldConnection(connectionID)
+
+	foreignKeepAlive := holdbackTestFrames(
+		t, 412, connectionID, KeepAliveRoute,
+		holdbackTestE2ERecordForSession(0, 43, 0x22), false, 512,
+	)
+	if _, err := holdbackTestForwardMessage(state, foreignKeepAlive); err == nil ||
+		!strings.Contains(err.Error(), "another E2E session") {
+		t.Fatalf("foreign resumed session error = %v", err)
+	}
+
+	originalKeepAlive := holdbackTestFrames(
+		t, 413, connectionID, KeepAliveRoute,
+		holdbackTestE2ERecordForSession(0, 44, 0x11), false, 512,
+	)
+	if ready, err := holdbackTestForwardMessage(state, originalKeepAlive); err != nil || len(ready) != len(originalKeepAlive) {
+		t.Fatalf("original resumed session = (%d, %v), want %d frames", len(ready), err, len(originalKeepAlive))
+	}
+}
+
+func TestBillingHoldbackRegistrationGenerationsAreIsolated(t *testing.T) {
+	config := holdbackTestConfig(func(context.Context, *BillableRecord) error { return nil })
+	oldState := newForwardHookState(config, "server-generation", "registration-old")
+	newState := newForwardHookState(config, "server-generation", "registration-new")
+	connectionID := "conn-generation"
+
+	for index, fixture := range []struct {
+		state         *forwardHookState
+		sessionMarker byte
+	}{
+		{state: oldState, sessionMarker: 0x31},
+		{state: newState, sessionMarker: 0x32},
+	} {
+		frames := holdbackTestFrames(
+			t, uint64(421+index), connectionID, billingHandshakeInfoRoute,
+			holdbackTestE2ERecordForSession(32, byte(45+index), fixture.sessionMarker), false, 512,
+		)
+		if ready, err := holdbackTestForwardMessage(fixture.state, frames); err != nil || len(ready) != len(frames) {
+			t.Fatalf("generation %d handshake = (%d, %v), want %d frames", index, len(ready), err, len(frames))
+		}
+	}
+	if snapshot := config.ensureMessageHoldback().snapshot(); snapshot.Connections != 2 {
+		t.Fatalf("generation-scoped connections = %d, want 2", snapshot.Connections)
+	}
+
+	oldState.forgetHeldConnection(connectionID)
+	keepAlive := holdbackTestFrames(
+		t, 423, connectionID, KeepAliveRoute,
+		holdbackTestE2ERecordForSession(0, 47, 0x32), false, 512,
+	)
+	if ready, err := holdbackTestForwardMessage(newState, keepAlive); err != nil || len(ready) != len(keepAlive) {
+		t.Fatalf("new generation after old cleanup = (%d, %v), want %d frames", len(ready), err, len(keepAlive))
+	}
+}
+
+func TestBillingHoldbackRecoveryStateExpires(t *testing.T) {
+	limits := defaultMessageHoldbackLimits()
+	limits.recoveryTTL = 15 * time.Millisecond
+	config := holdbackTestConfig(func(context.Context, *BillableRecord) error { return nil })
+	config.holdbackLimits = &limits
+	state := newForwardHookState(config, "server-recovery-ttl", "registration-a")
+	connectionID := "conn-recovery-ttl"
+	handshake := holdbackTestFrames(
+		t, 431, connectionID, billingHandshakeInfoRoute,
+		holdbackTestE2ERecordForSession(32, 48, 0x41), false, 512,
+	)
+	if _, err := holdbackTestForwardMessage(state, handshake); err != nil {
+		t.Fatal(err)
+	}
+	state.resetHeldConnection(connectionID)
+	if snapshot := config.ensureMessageHoldback().snapshot(); snapshot.Connections != 1 {
+		t.Fatalf("recoverable connections = %d, want 1", snapshot.Connections)
+	}
+	waitRelayBatchCondition(t, func() bool {
+		return config.ensureMessageHoldback().snapshot().Connections == 0
+	})
+}
+
+func TestBillingHoldbackValidationLockIsCollectedAfterAcknowledgement(t *testing.T) {
+	config := holdbackTestConfig(func(context.Context, *BillableRecord) error { return nil })
+	state := newForwardHookState(config, "server-validation-lock", "registration-a")
+	frames := holdbackTestFrames(
+		t, 441, "conn-validation-lock", "/p2p/message", holdbackTestE2ERecord(64, 49), true, 128,
+	)
+	if ready, err := holdbackTestForwardMessage(state, frames); err != nil || len(ready) != len(frames) {
+		t.Fatalf("approved message = (%d, %v), want %d frames", len(ready), err, len(frames))
+	}
+	holdback := config.ensureMessageHoldback()
+	holdback.mu.Lock()
+	locksBeforeAck := len(holdback.validationLocks)
+	entryCountsBeforeAck := len(holdback.entriesByNode)
+	holdback.mu.Unlock()
+	if locksBeforeAck != 1 || entryCountsBeforeAck != 1 {
+		t.Fatalf("approved validation state = (%d locks, %d counts), want (1, 1)", locksBeforeAck, entryCountsBeforeAck)
+	}
+
+	state.acknowledgeHeldMessage("conn-validation-lock", frames[0].MessageId)
+	holdback.mu.Lock()
+	locksAfterAck := len(holdback.validationLocks)
+	entryCountsAfterAck := len(holdback.entriesByNode)
+	holdback.mu.Unlock()
+	if locksAfterAck != 0 || entryCountsAfterAck != 0 {
+		t.Fatalf("acknowledged validation state = (%d locks, %d counts), want (0, 0)", locksAfterAck, entryCountsAfterAck)
+	}
 }
 
 func TestMessageHoldbackResourceLimitsAndTimeout(t *testing.T) {

@@ -177,7 +177,10 @@ func (n *NATNode) serveBillingControl(relayAddr string, stream *client.StreamCli
 		if request.Type != billingcontrol.TypeClaim {
 			return errors.New("natnode: invalid billing control claim")
 		}
-		voucher, claimErr := n.billingMeter.cosign(request.Body, request.RelaySignature, request.RelayPublicKey)
+		voucher, claimErr := n.billingMeter.cosign(
+			request.Body, request.RelaySignature, request.RelayPublicKey,
+			request.RelayBillingPublicKey, request.RelayCert,
+		)
 		response := billingcontrol.Message{Type: billingcontrol.TypeReject}
 		if claimErr != nil {
 			response.Error = "billing_claim_rejected"
@@ -189,7 +192,9 @@ func (n *NATNode) serveBillingControl(relayAddr string, stream *client.StreamCli
 			}
 			response = billingcontrol.Message{
 				Type: billingcontrol.TypeCosigned, Voucher: encoded,
-				PayerPublicKey: n.identity.Pubkey(), PayerCert: n.billingMeter.certificate(),
+				PayerPublicKey:        n.identity.Pubkey(),
+				PayerBillingPublicKey: n.billingMeter.billingPublicKeyForWire(),
+				PayerCert:             n.billingMeter.certificate(),
 			}
 		}
 		payload, err := json.Marshal(response)

@@ -38,6 +38,13 @@ const (
 
 var errBillingSessionRotated = errors.New("relaynode: billing session rotated")
 
+func retryableBillableRecordError(err error) error {
+	if err == nil || errors.Is(err, networkFrameWork.ErrBillableRecordRetryable) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", networkFrameWork.ErrBillableRecordRetryable, err)
+}
+
 type relayBillingSnapshot struct {
 	cumulative         uint64
 	lastRecord         billingvoucher.Identifier
@@ -81,9 +88,8 @@ type relayBillingPipeline struct {
 	sessions       map[billingvoucher.Identifier]*relayBillingSession
 	currentByPayer map[billingvoucher.Identifier]*relayBillingSession
 
-	controlMu      sync.Mutex
-	controls       map[billingvoucher.Identifier]*relayBillingControlPeer
-	controlChanged chan struct{}
+	controlMu sync.Mutex
+	controls  map[billingvoucher.Identifier]*relayBillingControlPeer
 
 	errorMu  sync.RWMutex
 	fatalErr error
@@ -132,7 +138,6 @@ func newRelayBillingPipeline(node *RelayNode, queuePath string) (*relayBillingPi
 		sessions:       make(map[billingvoucher.Identifier]*relayBillingSession),
 		currentByPayer: make(map[billingvoucher.Identifier]*relayBillingSession),
 		controls:       make(map[billingvoucher.Identifier]*relayBillingControlPeer),
-		controlChanged: make(chan struct{}),
 		wake:           make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	config := node.admissionConfig()
@@ -153,6 +158,20 @@ func newRelayBillingPipeline(node *RelayNode, queuePath string) (*relayBillingPi
 		config.SelfCert.Cert.SubjectPubKey != node.pubKeyHex() || config.SelfCert.Cert.Role != admission.RoleRelay {
 		_ = queue.Close()
 		return nil, errors.New("relaynode: Relay billing certificate does not match identity or role")
+	}
+	if err := admission.ValidateBillingBinding(config.SelfCert.Cert); err != nil {
+		_ = queue.Close()
+		return nil, fmt.Errorf("relaynode: invalid Relay billing certificate binding: %w", err)
+	}
+	billingPublicKey := node.billingPublicKeyHex()
+	if config.SelfCert.Cert.AuthorizationID == "" {
+		if billingPublicKey != node.pubKeyHex() {
+			_ = queue.Close()
+			return nil, errors.New("relaynode: legacy certificate requires the identity key for billing")
+		}
+	} else if config.SelfCert.Cert.BillingPubKey != billingPublicKey {
+		_ = queue.Close()
+		return nil, errors.New("relaynode: Relay certificate does not match the configured billing private key")
 	}
 	if err := config.Verifier.Verify(config.SelfCert, admission.VerifyOptions{
 		ExpectNodeID: relayID.String(), ExpectRole: admission.RoleRelay,
@@ -254,8 +273,18 @@ func (pipeline *relayBillingPipeline) restoreQueue() error {
 		if voucher.Body.PayeeRelayID != pipeline.relayID {
 			return fmt.Errorf("relaynode: waitSubmit item %d belongs to another Relay", index)
 		}
-		if err := billingvoucher.VerifyRelaySignature(voucher.Body, voucher.RelaySignature, pipeline.node.privKey.PublicKey()); err != nil {
-			return fmt.Errorf("relaynode: waitSubmit item %d has invalid Relay signature: %w", index, err)
+		payerSigningPublicKeyHex, payerBillingPublicKeyHex, err := certificateSigningPublicKey(
+			envelope.PayerCert, envelope.PayerPublicKey,
+		)
+		if err != nil || payerBillingPublicKeyHex != envelope.PayerBillingPublicKey {
+			return fmt.Errorf("relaynode: waitSubmit item %d has an invalid payer billing identity", index)
+		}
+		payerSigningPublicKey, err := parseBillingPublicKey(payerSigningPublicKeyHex)
+		if err != nil {
+			return fmt.Errorf("relaynode: waitSubmit item %d has an invalid payer billing key: %w", index, err)
+		}
+		if err := voucher.VerifyBillingSignatures(payerSigningPublicKey, pipeline.node.billingPrivateKey.PublicKey()); err != nil {
+			return fmt.Errorf("relaynode: waitSubmit item %d has invalid signatures: %w", index, err)
 		}
 		session := pipeline.sessions[voucher.Body.SessionID]
 		if session == nil {
@@ -429,6 +458,12 @@ func (pipeline *relayBillingPipeline) acceptControl(stream network.Stream, first
 	}); err != nil {
 		return fmt.Errorf("relaynode: verify billing control payer: %w", err)
 	}
+	payerSigningPublicKey, payerBillingPublicKey, err := certificateSigningPublicKey(
+		certificate, payerPublicKey,
+	)
+	if err != nil {
+		return fmt.Errorf("relaynode: resolve billing control payer key: %w", err)
+	}
 	challenge, err := billingcontrol.NewChallenge()
 	if err != nil {
 		return err
@@ -516,7 +551,8 @@ func (pipeline *relayBillingPipeline) acceptControl(stream network.Stream, first
 		}
 		if recoveryVoucher != nil {
 			if err := pipeline.installRecoveredVoucher(
-				session, relayState, *recoveryVoucher, payerPublicKey, certificate,
+				session, relayState, *recoveryVoucher, payerPublicKey,
+				payerSigningPublicKey, payerBillingPublicKey, certificate,
 			); err != nil {
 				peer.close()
 				return err
@@ -600,6 +636,8 @@ func (pipeline *relayBillingPipeline) installRecoveredVoucher(
 	advertised relayBillingSnapshot,
 	voucher billingvoucher.MutualVoucher,
 	payerPublicKeyHex string,
+	payerSigningPublicKeyHex string,
+	payerBillingPublicKeyHex string,
 	payerCertificate *admission.SignedCert,
 ) error {
 	if session == nil || payerCertificate == nil {
@@ -611,11 +649,11 @@ func (pipeline *relayBillingPipeline) installRecoveredVoucher(
 		voucher.Body.AuthorizedThroughBytes != billingvoucher.MaxBillableBytes {
 		return errors.New("relaynode: recovery voucher changes the billing channel binding")
 	}
-	payerPublicKey, err := parseBillingPublicKey(payerPublicKeyHex)
+	payerPublicKey, err := parseBillingPublicKey(payerSigningPublicKeyHex)
 	if err != nil {
 		return err
 	}
-	if err := voucher.Verify(payerPublicKey, pipeline.node.privKey.PublicKey()); err != nil {
+	if err := voucher.VerifyBillingSignatures(payerPublicKey, pipeline.node.billingPrivateKey.PublicKey()); err != nil {
 		return fmt.Errorf("relaynode: verify billing recovery voucher: %w", err)
 	}
 	session.mu.Lock()
@@ -661,7 +699,8 @@ func (pipeline *relayBillingPipeline) installRecoveredVoucher(
 		}
 	}
 	err = pipeline.queue.EnqueueEnvelope(billingqueue.Envelope{
-		Voucher: voucher, PayerPublicKey: payerPublicKeyHex, PayerCert: payerCertificate,
+		Voucher: voucher, PayerPublicKey: payerPublicKeyHex,
+		PayerBillingPublicKey: payerBillingPublicKeyHex, PayerCert: payerCertificate,
 	})
 	if err != nil && !errors.Is(err, billingqueue.ErrDuplicate) {
 		if !errors.Is(err, billingqueue.ErrFull) && !errors.Is(err, billingqueue.ErrPayerFull) {
@@ -711,7 +750,6 @@ func (pipeline *relayBillingPipeline) installControl(peer *relayBillingControlPe
 	pipeline.controlMu.Lock()
 	previous := pipeline.controls[peer.payerID]
 	pipeline.controls[peer.payerID] = peer
-	pipeline.signalControlChangedLocked()
 	pipeline.controlMu.Unlock()
 	if previous != nil && previous != peer {
 		previous.close()
@@ -722,7 +760,6 @@ func (pipeline *relayBillingPipeline) removeControl(peer *relayBillingControlPee
 	pipeline.controlMu.Lock()
 	if pipeline.controls[peer.payerID] == peer {
 		delete(pipeline.controls, peer.payerID)
-		pipeline.signalControlChangedLocked()
 	}
 	pipeline.controlMu.Unlock()
 }
@@ -735,40 +772,6 @@ func (pipeline *relayBillingPipeline) controlFor(payerID, sessionID billingvouch
 		return nil
 	}
 	return peer
-}
-
-func (pipeline *relayBillingPipeline) waitForControl(
-	ctx context.Context,
-	payerID, sessionID billingvoucher.Identifier,
-) (*relayBillingControlPeer, error) {
-	waitContext, cancel := context.WithTimeout(ctx, billingControlTimeout)
-	defer cancel()
-	for {
-		pipeline.controlMu.Lock()
-		peer := pipeline.controls[payerID]
-		if peer != nil && peer.sessionID == sessionID {
-			pipeline.controlMu.Unlock()
-			return peer, nil
-		}
-		changed := pipeline.controlChanged
-		if changed == nil {
-			changed = make(chan struct{})
-			pipeline.controlChanged = changed
-		}
-		pipeline.controlMu.Unlock()
-		select {
-		case <-waitContext.Done():
-			return nil, errors.New("relaynode: payer billing control is unavailable")
-		case <-changed:
-		}
-	}
-}
-
-func (pipeline *relayBillingPipeline) signalControlChangedLocked() {
-	if pipeline.controlChanged != nil {
-		close(pipeline.controlChanged)
-	}
-	pipeline.controlChanged = make(chan struct{})
 }
 
 func (peer *relayBillingControlPeer) sendControl(ctx context.Context, message billingcontrol.Message) error {
@@ -792,12 +795,15 @@ func (peer *relayBillingControlPeer) claim(ctx context.Context, message billingc
 	defer peer.requestMu.Unlock()
 	select {
 	case <-peer.done:
-		return billingcontrol.Message{}, errors.New("relaynode: billing control is unavailable")
+		return billingcontrol.Message{}, retryableBillableRecordError(errors.New("relaynode: billing control is unavailable"))
 	default:
 	}
 	if err := peer.sendControl(ctx, message); err != nil {
 		peer.close()
-		return billingcontrol.Message{}, err
+		if ctx.Err() != nil {
+			return billingcontrol.Message{}, ctx.Err()
+		}
+		return billingcontrol.Message{}, retryableBillableRecordError(err)
 	}
 	waitContext, cancel := context.WithTimeout(ctx, billingControlTimeout)
 	defer cancel()
@@ -805,10 +811,13 @@ func (peer *relayBillingControlPeer) claim(ctx context.Context, message billingc
 	case response := <-peer.responses:
 		return response, nil
 	case <-peer.done:
-		return billingcontrol.Message{}, errors.New("relaynode: billing control disconnected")
+		return billingcontrol.Message{}, retryableBillableRecordError(errors.New("relaynode: billing control disconnected"))
 	case <-waitContext.Done():
 		peer.close()
-		return billingcontrol.Message{}, waitContext.Err()
+		if ctx.Err() != nil {
+			return billingcontrol.Message{}, ctx.Err()
+		}
+		return billingcontrol.Message{}, retryableBillableRecordError(waitContext.Err())
 	}
 }
 
@@ -872,13 +881,16 @@ func (pipeline *relayBillingPipeline) observeRecord(ctx context.Context, record 
 	if session == nil || session.payerID != payerID {
 		return errors.New("relaynode: billable record uses an unnegotiated session")
 	}
-	if _, err := pipeline.waitForControl(ctx, payerID, record.SessionID); err != nil {
-		return err
+	if pipeline.controlFor(payerID, record.SessionID) == nil {
+		return retryableBillableRecordError(errors.New("relaynode: payer billing control is unavailable"))
 	}
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if session.blocked != nil {
+		if errors.Is(session.blocked, errBillingSessionRotated) {
+			return retryableBillableRecordError(session.blocked)
+		}
 		return session.blocked
 	}
 	candidate := relayBillingRecord{bytes: record.Bytes, recordID: record.RecordID}
@@ -969,7 +981,7 @@ func (pipeline *relayBillingPipeline) issueVoucher(
 ) (billingvoucher.MutualVoucher, error) {
 	peer := pipeline.controlFor(session.payerID, session.sessionID)
 	if peer == nil {
-		return billingvoucher.MutualVoucher{}, errors.New("relaynode: payer billing control is unavailable")
+		return billingvoucher.MutualVoucher{}, retryableBillableRecordError(errors.New("relaynode: payer billing control is unavailable"))
 	}
 	return pipeline.issueVoucherWithClaim(ctx, session, snapshot, peer.claim)
 }
@@ -1019,13 +1031,15 @@ func (pipeline *relayBillingPipeline) issueVoucherWithClaim(
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, err
 	}
-	relaySignature, err := billingvoucher.SignRelay(body, pipeline.node.privKey)
+	relaySignature, err := billingvoucher.SignRelayBilling(body, pipeline.node.billingPrivateKey)
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, err
 	}
 	response, err := claim(ctx, billingcontrol.Message{
 		Type: billingcontrol.TypeClaim, Body: bodyBytes,
 		RelaySignature: relaySignature, RelayPublicKey: pipeline.node.pubKeyHex(),
+		RelayBillingPublicKey: pipeline.node.billingPublicKeyForWire(),
+		RelayCert:             pipeline.relayCert,
 	})
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, err
@@ -1040,13 +1054,6 @@ func (pipeline *relayBillingPipeline) issueVoucherWithClaim(
 	if voucher.Body != body {
 		return billingvoucher.MutualVoucher{}, errors.New("relaynode: payer changed the billing voucher body")
 	}
-	payerPublicKey, err := parseBillingPublicKey(response.PayerPublicKey)
-	if err != nil {
-		return billingvoucher.MutualVoucher{}, err
-	}
-	if err := voucher.Verify(payerPublicKey, pipeline.node.privKey.PublicKey()); err != nil {
-		return billingvoucher.MutualVoucher{}, err
-	}
 	config := pipeline.node.admissionConfig()
 	if response.PayerCert == nil || response.PayerCert.Cert.SubjectPubKey != response.PayerPublicKey ||
 		config == nil || config.Verifier == nil {
@@ -1057,12 +1064,31 @@ func (pipeline *relayBillingPipeline) issueVoucherWithClaim(
 	}); err != nil {
 		return billingvoucher.MutualVoucher{}, fmt.Errorf("relaynode: verify cosigning payer certificate: %w", err)
 	}
+	payerSigningPublicKeyHex, payerBillingPublicKeyHex, err := certificateSigningPublicKey(
+		response.PayerCert, response.PayerPublicKey,
+	)
+	if err != nil {
+		return billingvoucher.MutualVoucher{}, err
+	}
+	if response.PayerBillingPublicKey != payerBillingPublicKeyHex {
+		return billingvoucher.MutualVoucher{}, errors.New("relaynode: payer billing key does not match its certificate")
+	}
+	payerPublicKey, err := parseBillingPublicKey(payerSigningPublicKeyHex)
+	if err != nil {
+		return billingvoucher.MutualVoucher{}, err
+	}
+	if err := voucher.VerifyBillingSignatures(payerPublicKey, pipeline.node.billingPrivateKey.PublicKey()); err != nil {
+		return billingvoucher.MutualVoucher{}, err
+	}
 	if registered := pipeline.node.accounts.cert(session.payerID.String()); registered == nil ||
-		registered.Cert.SubjectPubKey != response.PayerPublicKey {
+		registered.Cert.SubjectPubKey != response.PayerPublicKey ||
+		registered.Cert.AuthorizationID != response.PayerCert.Cert.AuthorizationID ||
+		registered.Cert.BillingPubKey != response.PayerCert.Cert.BillingPubKey {
 		return billingvoucher.MutualVoucher{}, errors.New("relaynode: cosigning payer differs from the registered server")
 	}
 	if err := pipeline.queue.EnqueueEnvelope(billingqueue.Envelope{
-		Voucher: voucher, PayerPublicKey: response.PayerPublicKey, PayerCert: response.PayerCert,
+		Voucher: voucher, PayerPublicKey: response.PayerPublicKey,
+		PayerBillingPublicKey: response.PayerBillingPublicKey, PayerCert: response.PayerCert,
 	}); err != nil {
 		if errors.Is(err, billingqueue.ErrFull) || errors.Is(err, billingqueue.ErrPayerFull) {
 			return billingvoucher.MutualVoucher{}, fmt.Errorf("relaynode: waitSubmit capacity rejected payer: %w", err)
@@ -1157,23 +1183,28 @@ func (pipeline *relayBillingPipeline) submitPending() {
 			settleContext, cancel := context.WithTimeout(pipeline.node.ctx, billingControlTimeout)
 			response, settleErr := pipeline.settler.SettleVoucher(settleContext, admission.VoucherSettleRequest{
 				CanonicalVoucher: canonical,
-				PayerPublicKey:   envelope.PayerPublicKey,
-				RelayPublicKey:   pipeline.node.pubKeyHex(),
-				PayerCert:        payerCert,
-				RelayCert:        relayCert,
+				PayerPublicKey:   envelope.PayerPublicKey, RelayPublicKey: pipeline.node.pubKeyHex(),
+				PayerBillingPubKey: envelope.PayerBillingPublicKey,
+				RelayBillingPubKey: pipeline.node.billingPublicKeyForWire(),
+				PayerCert:          payerCert, RelayCert: relayCert,
 			})
 			cancel()
 			if settleErr != nil {
-				if response == nil {
-					return
-				}
-				pipeline.node.accounts.setCutoff(payerID, true)
 				deferred[sessionID] = struct{}{}
+				if response == nil {
+					logx.Warnf("[relaynode] waitSubmit 无法访问 CA，保留凭证等待恢复 payer=%.16s seq=%d: %v",
+						payerID, voucher.Body.Sequence, settleErr)
+					continue
+				}
 				if response.Retryable {
+					if response.ErrorCode == admission.VoucherErrorInsufficientFunds {
+						pipeline.node.accounts.setCutoff(payerID, true)
+					}
 					logx.Warnf("[relaynode] waitSubmit 凭证暂不可结算，保留等待恢复 payer=%.16s seq=%d code=%s",
 						payerID, voucher.Body.Sequence, response.ErrorCode)
 					continue
 				}
+				pipeline.node.accounts.setCutoff(payerID, true)
 				pipeline.blockSession(sessionID, fmt.Errorf("relaynode: CA rejected durable voucher: %w", settleErr))
 				logx.Errorf("[relaynode] waitSubmit 凭证被 CA 拒绝并冻结通道 payer=%.16s seq=%d: %v",
 					payerID, voucher.Body.Sequence, settleErr)
@@ -1213,23 +1244,30 @@ func (pipeline *relayBillingPipeline) currentSettlementCertificates(
 	payerID := envelope.Voucher.Body.PayerNatID.String()
 	payerCert := envelope.PayerCert
 	if latest := pipeline.node.accounts.cert(payerID); settlementCertificateMatches(
-		latest, payerID, envelope.PayerPublicKey, admission.RoleServer, now,
+		latest, payerID, envelope.PayerPublicKey, envelope.PayerBillingPublicKey,
+		admission.RoleServer, now,
 	) {
 		payerCert = latest
 	}
-	if !settlementCertificateMatches(payerCert, payerID, envelope.PayerPublicKey, admission.RoleServer, now) {
+	if !settlementCertificateMatches(
+		payerCert, payerID, envelope.PayerPublicKey, envelope.PayerBillingPublicKey,
+		admission.RoleServer, now,
+	) {
 		return nil, nil, errors.New("payer certificate is unavailable or expired")
 	}
 
 	relayID := pipeline.relayID.String()
 	relayPublicKey := pipeline.node.pubKeyHex()
+	relayBillingPublicKey := pipeline.node.billingPublicKeyForWire()
 	relayCert := pipeline.relayCert
 	if config := pipeline.node.admissionConfig(); config != nil && settlementCertificateMatches(
-		config.SelfCert, relayID, relayPublicKey, admission.RoleRelay, now,
+		config.SelfCert, relayID, relayPublicKey, relayBillingPublicKey, admission.RoleRelay, now,
 	) {
 		relayCert = config.SelfCert
 	}
-	if !settlementCertificateMatches(relayCert, relayID, relayPublicKey, admission.RoleRelay, now) {
+	if !settlementCertificateMatches(
+		relayCert, relayID, relayPublicKey, relayBillingPublicKey, admission.RoleRelay, now,
+	) {
 		return nil, nil, errors.New("Relay certificate is unavailable or expired")
 	}
 	return payerCert, relayCert, nil
@@ -1239,12 +1277,33 @@ func settlementCertificateMatches(
 	certificate *admission.SignedCert,
 	nodeID string,
 	publicKey string,
+	billingPublicKey string,
 	role admission.Role,
 	now int64,
 ) bool {
-	return certificate != nil && certificate.Cert.SubjectNodeID == nodeID &&
-		certificate.Cert.SubjectPubKey == publicKey && certificate.Cert.Role == role &&
-		now >= certificate.Cert.NotBefore && now < certificate.Cert.NotAfter
+	if certificate == nil || certificate.Cert.SubjectNodeID != nodeID ||
+		certificate.Cert.SubjectPubKey != publicKey || certificate.Cert.Role != role ||
+		now < certificate.Cert.NotBefore || now >= certificate.Cert.NotAfter {
+		return false
+	}
+	_, expectedBillingPublicKey, err := certificateSigningPublicKey(certificate, publicKey)
+	return err == nil && expectedBillingPublicKey == billingPublicKey
+}
+
+func certificateSigningPublicKey(
+	certificate *admission.SignedCert,
+	identityPublicKey string,
+) (string, string, error) {
+	if certificate == nil || certificate.Cert.SubjectPubKey != identityPublicKey {
+		return "", "", errors.New("relaynode: certificate does not match node identity")
+	}
+	if err := admission.ValidateBillingBinding(certificate.Cert); err != nil {
+		return "", "", fmt.Errorf("relaynode: invalid certificate billing binding: %w", err)
+	}
+	if certificate.Cert.AuthorizationID == "" {
+		return identityPublicKey, "", nil
+	}
+	return certificate.Cert.BillingPubKey, certificate.Cert.BillingPubKey, nil
 }
 
 func (pipeline *relayBillingPipeline) sessionBlocked(sessionID billingvoucher.Identifier) bool {

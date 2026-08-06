@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
+
+	"bnfs_p2p/logx"
 )
 
 func main() {
@@ -24,7 +26,8 @@ func main() {
 	// 连接中继服务器
 	conn, err := net.Dial("tcp", "localhost:9000")
 	if err != nil {
-		log.Fatalf("Failed to connect to relay server: %v", err)
+		logx.Errorf("Failed to connect to relay server: %v", err)
+		os.Exit(1)
 	}
 	defer conn.Close()
 
@@ -33,22 +36,25 @@ func main() {
 	tempID := "ClientB_Temp"
 	_, err = conn.Write([]byte(fmt.Sprintf("REGISTER %s\n", tempID)))
 	if err != nil {
-		log.Fatalf("Failed to register: %v", err)
+		logx.Errorf("Failed to register: %v", err)
+		os.Exit(1)
 	}
 
 	reader := bufio.NewReader(conn)
 	response, _ := reader.ReadString('\n')
 	fmt.Print("Server response: ", response)
 
-	if response[:2] != "OK" {
-		log.Fatal("Registration failed")
+	if !strings.HasPrefix(response, "OK") {
+		logx.Errorf("Registration failed: response=%q", strings.TrimSpace(response))
+		os.Exit(1)
 	}
 
 	// 发送消息到指定的 NodeID
 	sendCmd := fmt.Sprintf("SEND %s %s\n", targetNodeID, message)
 	_, err = conn.Write([]byte(sendCmd))
 	if err != nil {
-		log.Fatalf("Failed to send message: %v", err)
+		logx.Errorf("Failed to send message: %v", err)
+		os.Exit(1)
 	}
 
 	fmt.Printf("Message sent to %s: %s\n", targetNodeID, message)

@@ -13,6 +13,7 @@ const privateRuntimeDir = path.resolve(process.env.PRIVATE_RUNTIME_DIR ?? path.j
 const composeProject = process.env.COMPOSE_PROJECT ?? "";
 const composeFile = path.resolve(process.env.COMPOSE_FILE ?? path.join(runDir, "runtime", "compose.json"));
 const caPort = integer(process.env.CA_PORT, 19100);
+const caWebPort = integer(process.env.CA_WEB_PORT, 18088);
 const reconnectGateURL = String(
   process.env.BNFS_RECONNECT_GATE_MONITOR_URL ?? process.env.BNFS_RECONNECT_GATE_URL ?? "",
 ).trim();
@@ -51,6 +52,12 @@ const expectedServices = [
   maliciousRandomNatServer,
   maliciousNatClient,
 ];
+const deploymentServiceCatalog = Object.freeze([
+  Object.freeze({ service: "ca-postgres", role: "database" }),
+  Object.freeze({ service: "ca", role: "ca-api" }),
+  Object.freeze({ service: "ca-web", role: "web" }),
+]);
+const deploymentServiceSet = new Set(deploymentServiceCatalog.map(({ service }) => service));
 const maliciousNodeCatalog = Object.freeze([
   Object.freeze({ service: "malicious-natserver", actor: "natserver" }),
   Object.freeze({ service: "malicious-relay", actor: "relay" }),
@@ -219,6 +226,14 @@ const billingContainerProbeCodes = new Set([
   "voucher_request_build_failed",
 ]);
 const publicRunOutcomes = new Set(["COMPLETED", "FAILED", "RESOURCE_LIMIT", "STOPPED"]);
+const activeRunPhases = new Set([
+  "LAUNCHING",
+  "BUILDING",
+  "STARTING_CLUSTER",
+  "CONFIGURING_PROFILE",
+  "VERIFYING_BILLING",
+  "RUNNING",
+]);
 const publicRunDetails = new Set([
   "billing_adversary_coverage_incomplete",
   "billing_adversary_exited",
@@ -329,6 +344,10 @@ const billingAdversaryErrorCodes = new Set([
   "adversary_already_running",
   "adversary_lock_failed",
   "billing_adversary_error",
+  "billing_fixture_file_invalid",
+  "billing_fixture_incomplete",
+  "billing_fixture_json_invalid",
+  "billing_fixture_path_invalid",
   "ca_credential_invalid",
   "ca_credential_path_invalid",
   "ca_credentials_incomplete",
@@ -349,8 +368,17 @@ const billingAdversaryEventCodes = new Set([
   "disconnect_fixture_not_isolated",
   "fee_and_legacy_api_rejection",
   "fifo_recovered_exactly_once",
+  "billing_fixture_invalid",
+  "billing_fixture_key_binding_invalid",
+  "billing_fixture_key_invalid",
+  "billing_fixture_not_isolated",
+  "billing_fixture_private_key_invalid",
   "fixed_policy_and_legacy_endpoints_rejected",
   "fixed_policy_rejected",
+  "fixture_authorized_balance_unavailable",
+  "fixture_identity_authorization_failed",
+  "fixture_identity_issue_failed",
+  "fixture_credit_failed",
   "fork_changed_balance",
   "idempotent_replay",
   "legacy_billing_endpoint_not_retired",
@@ -429,8 +457,19 @@ server.listen(port, host, () => {
   process.stdout.write(`BNFS stability dashboard listening on http://${host}:${port}/\n`);
 });
 
+let shuttingDown = false;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const forcedExit = setTimeout(() => process.exit(0), 2000);
+    forcedExit.unref();
+    server.close(() => {
+      clearTimeout(forcedExit);
+      process.exit(0);
+    });
+    server.closeIdleConnections?.();
+  });
 }
 
 async function statusSnapshot(forceRefresh = false) {
@@ -453,7 +492,7 @@ async function statusSnapshot(forceRefresh = false) {
 }
 
 async function buildStatus() {
-  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, rawClientTransfers, randomBatches, workers, workload, compose, containers, finalContainers, ca, serverPool, clientPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence, natIdentities, capacityTest, reconnectGate] = await Promise.all([
+  const [metadata, status, phase, guardStatus, resources, probes, largeProbes, rawClientTransfers, randomBatches, workers, workload, compose, containers, finalContainers, ca, serverPool, clientPool, failureWatcher, billingAdversary, billingProductionGate, mixedPath, ipFamilyPlan, ipFamilyEvidence, natIdentities, rawCapacityTest, reconnectGate] = await Promise.all([
     readEnv(path.join(runDir, "metadata.env")),
     readEnv(path.join(runDir, "status.env")),
     readText(path.join(runDir, "phase")),
@@ -506,15 +545,20 @@ async function buildStatus() {
   const containerMap = new Map(containers.map((item) => [item.service, item]));
   const nodes = expectedServices.map((service) => containerMap.get(service) ?? missingContainer(service));
   for (const item of containers) {
-    if (!expectedServices.includes(item.service)) nodes.push(item);
+    if (!expectedServices.includes(item.service) && !deploymentServiceSet.has(item.service)) nodes.push(item);
   }
 
+  const publicPhaseValue = publicPhase(phase);
+  const runState = publicRunState(publicPhaseValue, status, guardStatus);
+  const deployment = publicDeployment(containerMap);
+  const runTopologyActive = activeRunPhases.has(publicPhaseValue);
+  const capacityTest = runTopologyActive ? emptyCapacityTest() : rawCapacityTest;
   const nowEpoch = Math.floor(Date.now() / 1000);
   const deadlineEpoch = integer(metadata.deadline_epoch, 0);
   const durationSeconds = integer(metadata.duration_seconds, 0);
-  const remainingSeconds = deadlineEpoch > 0
+  const remainingSeconds = publicPhaseValue === "RUNNING" && deadlineEpoch > 0
     ? Math.max(0, deadlineEpoch - nowEpoch)
-    : durationSeconds;
+    : publicPhaseValue === "RUNNING" ? durationSeconds : 0;
   const core = nodes.filter((item) => expectedServiceSet.has(item.service)
     && (item.role === "ca" || item.role === "index" || item.role === "relay"));
   const nat = nodes.filter((item) => expectedServiceSet.has(item.service)
@@ -547,25 +591,26 @@ async function buildStatus() {
     compose,
   });
   const publicNodes = nodes.map((node) => publicRuntimeNode(node, nodeProfiles.get(node.service)));
-  const publicPhaseValue = publicPhase(phase);
   const maliciousRuntimeMap = publicRunOutcomes.has(publicPhaseValue)
     ? finalMaliciousRuntimeMap(finalContainers)
     : containerMap;
   const maliciousNodes = publicMaliciousNodes(maliciousRuntimeMap, billingAdversary.containerProbe);
-
   return {
     generatedAt: new Date().toISOString(),
     phase: publicPhaseValue,
     metadata: publicMetadata(metadata),
-    status: publicRunStatus(status),
+    status: { outcome: runState.outcome, detail: runState.detail },
+    runState,
+    deployment,
     timing: { durationSeconds, remainingSeconds },
     thresholds: {
       cpu: number(metadata.cpu_limit_pct, 55),
       memory: number(metadata.memory_limit_pct, 40),
       disk: number(metadata.disk_limit_pct, 40),
     },
-    resourceGuard: publicResourceGuard(guardStatus),
+    resourceGuard: runState.resourceGuard,
     resources: {
+      mode: runTopologyActive ? "LIVE" : "HISTORICAL",
       latest: publicResourceSample(resources.at(-1)),
       history: resources.map(publicResourceSample),
     },
@@ -591,12 +636,14 @@ async function buildStatus() {
     ipFamilyCoverage,
     ca,
     summary: {
+      scope: "TEST_TOPOLOGY",
+      active: runTopologyActive,
       coreExpected: core.length,
-      coreHealthy: core.filter(isHealthy).length,
+      coreHealthy: runTopologyActive ? core.filter(isHealthy).length : 0,
       natExpected: nat.length,
-      natRunning: nat.filter((item) => item.running).length,
+      natRunning: runTopologyActive ? nat.filter((item) => item.running).length : 0,
       totalExpected: expectedServices.length,
-      totalRunning: nodes.filter((item) => item.running).length,
+      totalRunning: runTopologyActive ? nodes.filter((item) => item.running).length : 0,
       totalRestarts: nodes.reduce((sum, item) => sum + (item.restartCount ?? 0), 0),
     },
     nodes: publicNodes,
@@ -1740,6 +1787,7 @@ async function probeCA() {
         statusCode: response.statusCode ?? 0,
         latencyMs: elapsedMs(started),
         responseBytes: bytes,
+        webPort: caWebPort,
       }));
     });
     request.on("timeout", () => request.destroy(new Error("timeout")));
@@ -1748,6 +1796,7 @@ async function probeCA() {
       statusCode: 0,
       latencyMs: elapsedMs(started),
       error: "probe_failed",
+      webPort: caWebPort,
     }));
   });
 }
@@ -3585,6 +3634,78 @@ function publicRunStatus(value) {
   return {
     outcome: publicEnum(value.outcome, publicRunOutcomes),
     detail: publicEnum(value.detail, publicRunDetails, "status_detail_redacted"),
+  };
+}
+
+function publicRunState(phase, status, guardStatus) {
+  const recordedStatus = publicRunStatus(status);
+  const resourceGuard = publicResourceGuard(guardStatus);
+  const remainingContainers = publicCleanupCount(status.remaining_containers);
+  const remainingNetworks = publicCleanupCount(status.remaining_networks);
+  const cleanupComplete = remainingContainers === 0 && remainingNetworks === 0;
+  const manuallyStopped = phase === "STOPPED" && cleanupComplete && (
+    resourceGuard === "STOPPED_BY_SIGNAL"
+    || recordedStatus.outcome === "STOPPED"
+    || recordedStatus.detail === "signal_requested"
+    || recordedStatus.detail === "signal_requested_during_profile"
+  );
+  const outcome = manuallyStopped
+    ? "STOPPED"
+    : recordedStatus.outcome || (publicRunOutcomes.has(phase) ? phase : "");
+  return {
+    phase,
+    outcome,
+    detail: manuallyStopped ? "signal_requested" : recordedStatus.detail,
+    manuallyStopped,
+    stopReason: manuallyStopped ? "MANUAL_SIGNAL" : "NONE",
+    resourceGuard,
+    cleanup: {
+      complete: cleanupComplete,
+      remainingContainers,
+      remainingNetworks,
+    },
+    recordedStatus,
+  };
+}
+
+function publicCleanupCount(value) {
+  const text = String(value ?? "");
+  if (!/^(?:0|[1-9][0-9]*)$/.test(text)) return null;
+  const count = Number(text);
+  return Number.isSafeInteger(count) ? count : null;
+}
+
+function publicDeployment(containerMap) {
+  const services = deploymentServiceCatalog.map(({ service, role }) => {
+    const runtime = containerMap.get(service) ?? missingContainer(service);
+    return {
+      service,
+      role,
+      state: publicRuntimeStatus(runtime.state),
+      running: runtime.running === true,
+      health: publicRuntimeStatus(runtime.health),
+      restartCount: Math.max(0, integer(runtime.restartCount, 0)),
+    };
+  });
+  const running = services.filter((service) => service.running).length;
+  const healthyCount = services.filter(isHealthy).length;
+  const workloadRunning = [...containerMap.values()].filter((container) => (
+    container.running && !deploymentServiceSet.has(container.service)
+  )).length;
+  const healthy = healthyCount === services.length;
+  const mode = workloadRunning > 0
+    ? "FULL_CLUSTER"
+    : healthy ? "CA_ONLY" : running === 0 ? "STOPPED" : "PARTIAL";
+  return {
+    mode,
+    status: healthy ? "HEALTHY" : running === 0 ? "STOPPED" : "DEGRADED",
+    healthy,
+    expected: services.length,
+    running,
+    healthyCount,
+    workloadRunning,
+    totalRestarts: services.reduce((sum, service) => sum + service.restartCount, 0),
+    services,
   };
 }
 

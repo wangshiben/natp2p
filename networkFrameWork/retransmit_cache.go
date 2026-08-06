@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"hash"
 	"hash/maphash"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -75,6 +76,7 @@ type retransmitCacheCounters struct {
 	evictions      atomic.Uint64
 	expired        atomic.Uint64
 	ackRemovals    atomic.Uint64
+	failClosed     atomic.Uint64
 	entries        atomic.Int64
 	lastLogUnix    atomic.Int64
 }
@@ -88,6 +90,7 @@ type retransmitCacheStats struct {
 	Evictions      uint64
 	Expired        uint64
 	AckRemovals    uint64
+	FailClosed     uint64
 	Entries        int64
 }
 
@@ -99,15 +102,22 @@ type globalRetransmitCache struct {
 	ackMu       sync.Mutex
 	ackProgress map[retransmitMessageKey]uint32
 	counters    retransmitCacheCounters
+	available   bool
 }
 
 func newGlobalRetransmitCache() *globalRetransmitCache {
+	return newGlobalRetransmitCacheWithEntropy(rand.Reader)
+}
+
+func newGlobalRetransmitCacheWithEntropy(entropy io.Reader) *globalRetransmitCache {
 	cache := &globalRetransmitCache{
 		shardSeed:   maphash.MakeSeed(),
 		ackProgress: make(map[retransmitMessageKey]uint32),
+		available:   true,
 	}
-	if _, err := rand.Read(cache.secret[:]); err != nil {
-		panic("networkFrameWork: 无法生成重传指纹密钥: " + err.Error())
+	if _, err := io.ReadFull(entropy, cache.secret[:]); err != nil {
+		cache.available = false
+		logx.Errorf("[billing-cache] retransmit fingerprint entropy unavailable; fail-closed accounting enabled: %v", err)
 	}
 	for index := range cache.shards {
 		cache.shards[index].entries = make(map[retransmitFrameKey]*retransmitCacheEntry)
@@ -115,14 +125,21 @@ func newGlobalRetransmitCache() *globalRetransmitCache {
 		cache.shards[index].nodeCounts = make(map[string]int)
 		cache.shards[index].connCounts = make(map[retransmitConnectionKey]int)
 	}
-	cache.hmacPool.New = func() any {
-		return hmac.New(sha256.New, cache.secret[:])
+	if cache.available {
+		cache.hmacPool.New = func() any {
+			return hmac.New(sha256.New, cache.secret[:])
+		}
 	}
 	return cache
 }
 
 func (c *globalRetransmitCache) recordFrame(nodeID string, frame *network.Frame) bool {
 	if c == nil || frame == nil || nodeID == "" || frame.ConnectionId == "" {
+		return true
+	}
+	if !c.available {
+		c.counters.failClosed.Add(1)
+		c.maybeLogStats()
 		return true
 	}
 	key := retransmitFrameKey{
@@ -272,6 +289,7 @@ func (c *globalRetransmitCache) snapshot() retransmitCacheStats {
 		Evictions:      c.counters.evictions.Load(),
 		Expired:        c.counters.expired.Load(),
 		AckRemovals:    c.counters.ackRemovals.Load(),
+		FailClosed:     c.counters.failClosed.Load(),
 		Entries:        c.counters.entries.Load(),
 	}
 }
@@ -374,7 +392,8 @@ func (c *globalRetransmitCache) maybeLogStats() {
 		return
 	}
 	stats := c.snapshot()
-	logx.Infof("[billing-cache] entries=%d hit=%d miss=%d mismatch=%d repeat_charged=%d quota_drop=%d eviction=%d expired=%d ack_removed=%d",
+	logx.Infof("[billing-cache] available=%t entries=%d hit=%d miss=%d mismatch=%d repeat_charged=%d fail_closed=%d quota_drop=%d eviction=%d expired=%d ack_removed=%d",
+		c.available,
 		stats.Entries, stats.Hits, stats.Misses, stats.Mismatches, stats.ChargedRepeats,
-		stats.QuotaDrops, stats.Evictions, stats.Expired, stats.AckRemovals)
+		stats.FailClosed, stats.QuotaDrops, stats.Evictions, stats.Expired, stats.AckRemovals)
 }

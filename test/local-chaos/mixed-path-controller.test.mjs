@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import {
+  buildSignedNodeAuthorization,
   createSerialHeartbeatPublisher,
   generateEphemeralServerIdentity,
   mixedPathNodes,
@@ -49,6 +51,54 @@ test("mixed-path NatServer identities rotate without exposing enrollment credent
   }
   assert.notEqual(first.nodeID, second.nodeID);
   assert.deepEqual(Object.keys(first).sort(), ["nodeID", "privateKey", "publicKey"]);
+});
+
+test("mixed-path NatServer rotates through a billing-bound double-signed authorization", () => {
+  const identity = generateEphemeralServerIdentity();
+  const billing = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const privateJWK = billing.privateKey.export({ format: "jwk" });
+  const billingPublicKey = Buffer.concat([
+    Buffer.from([4]),
+    Buffer.from(privateJWK.x, "base64url"),
+    Buffer.from(privateJWK.y, "base64url"),
+  ]);
+  const bundle = {
+    version: 1,
+    key_id: crypto.createHash("sha256").update(billingPublicKey).digest("hex"),
+    algorithm: "ECDSA_P256_SHA256",
+    private_key_jwk: privateJWK,
+    public_key_hex: billingPublicKey.toString("hex"),
+    registration_status: "active",
+  };
+  const request = buildSignedNodeAuthorization(identity, bundle, 1785811200);
+  const canonical = [
+    "CA-NODE-AUTHORIZATION-V1",
+    request.subject_pubkey,
+    request.role,
+    request.billing_key_id,
+    String(request.timestamp),
+    request.nonce,
+    String(request.ttl_seconds),
+  ].join("\n");
+  const identityPublicKey = crypto.createPublicKey({
+    key: {
+      kty: "EC",
+      crv: "P-256",
+      x: Buffer.from(identity.publicKey.slice(2, 66), "hex").toString("base64url"),
+      y: Buffer.from(identity.publicKey.slice(66), "hex").toString("base64url"),
+    },
+    format: "jwk",
+  });
+
+  assert.equal(request.role, "server");
+  assert.equal(request.billing_key_id, bundle.key_id);
+  assert.equal(request.timestamp, 1785811200);
+  assert.equal(crypto.verify(
+    "sha256", Buffer.from(canonical), identityPublicKey, Buffer.from(request.node_signature, "base64url"),
+  ), true);
+  assert.equal(crypto.verify(
+    "sha256", Buffer.from(canonical), billing.publicKey, Buffer.from(request.billing_signature, "base64url"),
+  ), true);
 });
 
 test("normal Relay attachments map only to real control partitions", () => {

@@ -32,6 +32,7 @@ const (
 var (
 	ErrRelayCandidatesExhausted = errors.New("relay candidates exhausted")
 	ErrResumeSlotOccupied       = errors.New("resume leg slot already occupied")
+	ErrRelayChangedDuringSend   = errors.New("relay changed during billable send")
 )
 
 // streamReconnectDialer 在某条协议 leg 失效后被 DualStream 用来重新建立一条同协议的底层流。
@@ -206,6 +207,7 @@ type DualStream struct {
 	reconnectPersistent map[streamTransport]bool
 	reconnectSurvival   atomic.Bool
 	initialDialSetup    atomic.Bool
+	relayGeneration     atomic.Uint64
 	legSignalMu         sync.Mutex
 	legSignal           chan struct{}
 	kcpSendQuality      kcpSendQualityPolicy
@@ -426,7 +428,15 @@ func (d *DualStream) sendMessage(
 	} else if sealedMessage != nil && sealedMessage.Header != nil && sealedMessage.Header.BillingSequence != 0 {
 		return errors.New("DualStream billing record requires E2E encryption")
 	}
+	billable := sealedMessage != nil && sealedMessage.Header != nil && sealedMessage.Header.BillingSequence != 0
+	relayGeneration := d.relayGeneration.Load()
+	relayChanged := func() bool {
+		return billable && d.relayGeneration.Load() != relayGeneration
+	}
 	for {
+		if relayChanged() {
+			return ErrRelayChangedDuringSend
+		}
 		legSignal := d.currentLegSignal()
 		primaryKind, primary, backupKind, backup := d.sendOrder()
 		for primary == nil && backup == nil && d.hasReconnectChance() {
@@ -436,6 +446,9 @@ func (d *DualStream) sendMessage(
 			case <-d.ctx.Done():
 				return errors.New("stream closed")
 			case <-legSignal:
+				if relayChanged() {
+					return ErrRelayChangedDuringSend
+				}
 				legSignal = d.currentLegSignal()
 				primaryKind, primary, backupKind, backup = d.sendOrder()
 			}
@@ -475,6 +488,9 @@ func (d *DualStream) sendMessage(
 				return primaryErr
 			}
 			return ctx.Err()
+		}
+		if relayChanged() {
+			return ErrRelayChangedDuringSend
 		}
 		if primaryErr != nil {
 			d.handleSendFailure("primary", primaryKind, primary, primaryErr)
@@ -753,6 +769,17 @@ func (d *DualStream) LatestReceiveTime() time.Time {
 		}
 	}
 	return latest
+}
+
+func (d *DualStream) isStale(maxSilence time.Duration) bool {
+	if maxSilence <= 0 {
+		return false
+	}
+	if d.hasUsableFamily(streamTransportTCP) || !d.hasUsableFamily(streamTransportKCP) {
+		return false
+	}
+	latest := d.LatestReceiveTime()
+	return !latest.IsZero() && time.Since(latest) >= maxSilence
 }
 
 func (d *DualStream) SetCryptoSuite(suite network.EncrypSuite) {
@@ -1250,6 +1277,7 @@ func (d *DualStream) watchRelayChanges(notifier RelayChangeNotifier) {
 				return
 			case <-signal:
 			}
+			d.relayGeneration.Add(1)
 
 			d.mu.RLock()
 			legs := make([]legEntry, 0, len(d.legs))

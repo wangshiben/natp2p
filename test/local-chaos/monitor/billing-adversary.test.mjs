@@ -19,6 +19,7 @@ import {
 } from "./billing-adversary-core.mjs";
 import { createBillingComponentProbe } from "./billing-component-probe.mjs";
 import { containerScenariosByActor } from "./billing-container-probe.mjs";
+import { openDurableWaitSubmit } from "./billing-adversary-outbox.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -173,6 +174,33 @@ test("backlog recovery requires exact authoritative balance changes", async () =
   assert.equal(event.passed, false);
   assert.equal(event.failureCode, "waitsubmit_balance_mismatch");
   assert.equal(event.stateChanged, false);
+});
+
+test("durable wait-submit preserves billing-bound voucher identities", async () => {
+  const payer = createQueueIdentity("server");
+  const relay = createQueueIdentity("relay");
+  const request = {
+    canonical_voucher: Buffer.from("billing-bound-voucher").toString("base64"),
+    payer_public_key: payer.identityPublicKey,
+    relay_public_key: relay.identityPublicKey,
+    payer_billing_public_key: payer.billingPublicKey,
+    relay_billing_public_key: relay.billingPublicKey,
+    payer_cert: payer.certificate,
+    relay_cert: relay.certificate,
+  };
+  const filename = path.join(temporaryDirectory, "billing-bound-waitsubmit.json");
+  let queue = await openDurableWaitSubmit(filename);
+  await queue.enqueue(request);
+  queue = await openDurableWaitSubmit(filename);
+  assert.deepEqual(queue.peek()?.request, request);
+
+  const incomplete = { ...request };
+  delete incomplete.relay_billing_public_key;
+  await assert.rejects(queue.enqueue(incomplete), /waitsubmit_request_invalid/);
+  await assert.rejects(queue.enqueue({
+    ...request,
+    payer_billing_public_key: relay.billingPublicKey,
+  }), /waitsubmit_request_invalid/);
 });
 
 test("one-shot sidecar publishes bounded redacted coverage", async () => {
@@ -426,6 +454,90 @@ test("probe target is restricted to loopback HTTP", () => {
   assert.throws(() => createAPIClient("http://user:password@127.0.0.1:9000"), /without credentials/);
 });
 
+test("billing-bound fixture authorizes nodes and probes user balances by authorization", async () => {
+  const billingFixture = {
+    payer: createBillingFixtureBundle("payer"),
+    relay: createBillingFixtureBundle("relay"),
+  };
+  const requests = [];
+  const authorized = new Map();
+  let balanceReads = 0;
+  const client = {
+    async get(pathname) {
+      const target = new URL(pathname, "http://fixture.invalid");
+      requests.push({ method: "GET", pathname: target.pathname, search: target.searchParams });
+      const nodeID = target.searchParams.get("node") ?? "";
+      const authorization = target.searchParams.get("authorization_id") ?? "";
+      if (authorized.get(nodeID) !== authorization) {
+        return { status: 401, body: { error: "invalid_node_authorization" } };
+      }
+      balanceReads += 1;
+      return {
+        status: 200,
+        body: {
+          balance: 64 * 1024 * 1024 * 1024 - balanceReads * 4096,
+          authorization_consumed_bytes: 0,
+          authorization_earned_bytes: 0,
+        },
+      };
+    },
+    async post(pathname, body) {
+      requests.push({ method: "POST", pathname, body });
+      if (pathname === "/v1/node/authorize") {
+        const bundle = body.role === "server" ? billingFixture.payer : billingFixture.relay;
+        const nodeID = crypto.createHash("sha256").update(String(body.subject_pubkey)).digest("hex");
+        const canonical = authorizationCanonicalForTest(body);
+        assert.equal(crypto.verify(
+          "sha256", Buffer.from(canonical), publicKeyFromHex(body.subject_pubkey),
+          Buffer.from(body.node_signature, "base64url"),
+        ), true);
+        assert.equal(crypto.verify(
+          "sha256", Buffer.from(canonical), crypto.createPublicKey({ key: bundle.private_key_jwk, format: "jwk" }),
+          Buffer.from(body.billing_signature, "base64url"),
+        ), true);
+        const authorizationID = nodeAuthorizationIDForTest(nodeID, bundle.key_id);
+        authorized.set(nodeID, authorizationID);
+        return {
+          status: 200,
+          body: {
+            node_id: nodeID,
+            authorization_id: authorizationID,
+            signed_cert: {
+              cert: {
+                subject_node_id: nodeID,
+                subject_pubkey: body.subject_pubkey,
+                role: body.role,
+                billing_key_id: bundle.key_id,
+                billing_public_key: bundle.public_key_hex,
+                authorization_id: authorizationID,
+              },
+              sig: "fixture",
+            },
+          },
+        };
+      }
+      if (pathname === "/v1/channel/voucher") {
+        assert.match(body.payer_billing_public_key, /^04[0-9a-f]{128}$/);
+        assert.match(body.relay_billing_public_key, /^04[0-9a-f]{128}$/);
+        return { status: 409, body: { error: "cumulative window exceeded" } };
+      }
+      return { status: 404, body: { error: "not_found" } };
+    },
+  };
+
+  const event = await runAttackScenario(client, "relay_window_overrun", "billing-bound", {
+    componentProbe: passingComponentProbe,
+    billingFixture,
+  });
+  assert.equal(event.passed, true, JSON.stringify(event));
+  assert.equal(event.defense, "one_mib_window_enforced");
+  assert.equal(requests.filter((request) => request.pathname === "/v1/node/authorize").length, 2);
+  assert.equal(requests.some((request) => request.pathname === "/issue" || request.pathname === "/credit"), false);
+  assert.ok(requests.filter((request) => request.method === "GET").every(
+    (request) => /^[0-9a-f]{64}$/.test(request.search.get("authorization_id") ?? ""),
+  ));
+});
+
 test("component helper faults are fail-closed", async () => {
   const scenario = "relay_usage_inflation";
   const fixtures = [
@@ -542,6 +654,83 @@ function createSyntheticClient(settleVoucher) {
       return { status: 404, body: { error: "not_found" } };
     },
   };
+}
+
+function createBillingFixtureBundle(label) {
+  const { privateKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const privateJWK = privateKey.export({ format: "jwk" });
+  const publicKey = Buffer.concat([
+    Buffer.from([4]),
+    Buffer.from(privateJWK.x, "base64url"),
+    Buffer.from(privateJWK.y, "base64url"),
+  ]);
+  return {
+    version: 1,
+    key_id: crypto.createHash("sha256").update(publicKey).digest("hex"),
+    label,
+    algorithm: "ECDSA_P256_SHA256",
+    private_key_jwk: privateJWK,
+    public_key_hex: publicKey.toString("hex"),
+    registration_status: "active",
+  };
+}
+
+function createQueueIdentity(role) {
+  const identity = createBillingFixtureBundle(`${role}-identity`);
+  const billing = createBillingFixtureBundle(`${role}-billing`);
+  const nodeID = crypto.createHash("sha256")
+    .update(Buffer.from(identity.public_key_hex, "hex"))
+    .digest("hex");
+  return {
+    identityPublicKey: identity.public_key_hex,
+    billingPublicKey: billing.public_key_hex,
+    certificate: {
+      cert: {
+        subject_node_id: nodeID,
+        subject_pubkey: identity.public_key_hex,
+        role,
+        not_before: 0,
+        not_after: 4102444800,
+        nonce: `${role}-queue-fixture`,
+        issuer: "queue-test",
+        billing_key_id: billing.key_id,
+        billing_public_key: billing.public_key_hex,
+        authorization_id: nodeAuthorizationIDForTest(nodeID, billing.key_id),
+      },
+      sig: "queue-fixture",
+    },
+  };
+}
+
+function publicKeyFromHex(value) {
+  const encoded = Buffer.from(value, "hex");
+  return crypto.createPublicKey({
+    key: {
+      kty: "EC",
+      crv: "P-256",
+      x: encoded.subarray(1, 33).toString("base64url"),
+      y: encoded.subarray(33, 65).toString("base64url"),
+    },
+    format: "jwk",
+  });
+}
+
+function authorizationCanonicalForTest(request) {
+  return [
+    "CA-NODE-AUTHORIZATION-V1",
+    request.subject_pubkey,
+    request.role,
+    request.billing_key_id,
+    String(request.timestamp),
+    request.nonce,
+    String(request.ttl_seconds),
+  ].join("\n");
+}
+
+function nodeAuthorizationIDForTest(nodeID, billingKeyID) {
+  return crypto.createHash("sha256")
+    .update(`CA-NODE-AUTHORIZATION-ID-V1\0${nodeID}\0${billingKeyID}`)
+    .digest("hex");
 }
 
 async function writeExecutable(name, source) {

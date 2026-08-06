@@ -188,6 +188,74 @@ func TestEndpointMuxSnapshotReportsBothQueueClasses(t *testing.T) {
 	}
 }
 
+func endpointMuxBillableFrame(t *testing.T, messageID uint64, sequence uint32, total uint32) *network.Frame {
+	t.Helper()
+	message := makeTestMessage(64)
+	message.Header.BillingSessionID[0] = 1
+	message.Header.BillingSequence = 1
+	message.Header.BillingBytes = uint64(len(message.Payload))
+	wire, err := message.ParseToBytes()
+	if err != nil {
+		t.Fatalf("encode billable message: %v", err)
+	}
+	payload := []byte("continuation")
+	if sequence == 0 {
+		payload = wire
+	}
+	return &network.Frame{
+		MessageId: messageID, SeqId: sequence, TotalFrames: total,
+		FrameType: network.FrameTypeData, ConnectionId: message.Header.ConnectionId,
+		Payload: payload,
+	}
+}
+
+func TestEndpointMuxRejectsOldBillingGenerationAfterRelayChange(t *testing.T) {
+	dual := newDualStream("peer", "billing-generation")
+	t.Cleanup(func() { _ = dual.Close() })
+	mux := &EndpointFrameMux{
+		dual:               dual,
+		billingGenerations: make(map[muxFrameKey]*muxBillingGenerationRoute),
+	}
+	first := endpointMuxBillableFrame(t, 41, 0, 2)
+	if err := mux.trackOutboundBillingGeneration(first, time.Now()); err != nil {
+		t.Fatalf("track first billable frame: %v", err)
+	}
+	dual.relayGeneration.Add(1)
+	if !mux.outboundBillingGenerationStale(first, time.Now()) {
+		t.Fatal("queued billable frame from the old Relay generation was not marked stale")
+	}
+	continuation := endpointMuxBillableFrame(t, first.MessageId, 1, first.TotalFrames)
+	continuation.ConnectionId = first.ConnectionId
+	if err := mux.trackOutboundBillingGeneration(continuation, time.Now()); !errors.Is(err, ErrRelayChangedDuringSend) {
+		t.Fatalf("old-generation continuation error=%v, want %v", err, ErrRelayChangedDuringSend)
+	}
+}
+
+func TestEndpointMuxBillingGenerationIsReleasedByFullAck(t *testing.T) {
+	dual := newDualStream("peer", "billing-generation-ack")
+	t.Cleanup(func() { _ = dual.Close() })
+	mux := &EndpointFrameMux{
+		dual:               dual,
+		billingGenerations: make(map[muxFrameKey]*muxBillingGenerationRoute),
+	}
+	frame := endpointMuxBillableFrame(t, 42, 0, 1)
+	if err := mux.trackOutboundBillingGeneration(frame, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := network.BuildAckFrame(frame.MessageId, frame.TotalFrames, network.FullAckRange(frame.TotalFrames))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack.ConnectionId = frame.ConnectionId
+	mux.mu.Lock()
+	mux.observeBillingGenerationAckLocked(ack, time.Now())
+	remaining := len(mux.billingGenerations)
+	mux.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("fully acknowledged billing generation retained %d routes", remaining)
+	}
+}
+
 func TestEndpointMuxDataQueueCapacityMatchesCarrierWindow(t *testing.T) {
 	if endpointMuxDataQueueCapacity != 64 {
 		t.Fatalf("data queue capacity=%d, want 64 frames (two frames per carrier slot)", endpointMuxDataQueueCapacity)
@@ -256,6 +324,42 @@ func TestCallerDeadlineDoesNotPoisonVirtualMuxStream(t *testing.T) {
 	case <-conn.closeCh:
 		t.Fatal("caller deadline closed virtual mux connection")
 	default:
+	}
+}
+
+func TestRelayGenerationWriteErrorDoesNotPoisonVirtualMuxStream(t *testing.T) {
+	connection := newMuxConnWithContext("relay-generation", func(context.Context, *network.Frame) error {
+		return ErrRelayChangedDuringSend
+	})
+	stream := newTcpStream("peer", "relay-generation", connection)
+	stream.writeTimeout = 0
+	stream.SetCryptoSuite(&countingE2ESuite{})
+	t.Cleanup(func() { _ = stream.Close() })
+
+	message := makeTestMessage(64)
+	message.Header.BillingSessionID[0] = 1
+	message.Header.BillingSequence = 1
+	message.Header.BillingBytes = uint64(len(message.Payload))
+	if err := stream.SendMessage(context.Background(), message); !errors.Is(err, ErrRelayChangedDuringSend) {
+		t.Fatalf("billable send error=%v, want %v", err, ErrRelayChangedDuringSend)
+	}
+	if fatal := stream.fatal(); fatal != nil {
+		t.Fatalf("Relay generation change poisoned virtual stream: %v", fatal)
+	}
+	select {
+	case <-connection.closeCh:
+		t.Fatal("Relay generation change closed virtual mux connection")
+	default:
+	}
+
+	connection.writeFn = func(context.Context, *network.Frame) error { return nil }
+	ack, err := network.BuildAckFrame(1, 1, network.FullAckRange(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack.ConnectionId = connection.connId
+	if err := stream.HandleFrame(context.Background(), ack); err != nil {
+		t.Fatalf("virtual stream was not reusable after Relay generation change: %v", err)
 	}
 }
 

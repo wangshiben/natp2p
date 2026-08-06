@@ -10,7 +10,15 @@ From the repository root:
 bash scripts/local-deploy-test.sh
 ```
 
-The default command builds the current source, creates the complete topology, runs all three scenarios, writes evidence under `test/local-chaos/.runtime/`, and returns non-zero when any scenario fails.
+The default command builds the current source, creates the complete topology, runs the five baseline scenarios, writes evidence under `test/local-chaos/.runtime/`, and returns non-zero when any scenario fails. The first three are the mandatory network-failure scenarios; scenarios four and five cover concurrent and multi-Relay Client/Server services.
+
+The ten-minute random Relay chaos scenario is opt-in so the baseline regression remains fast. It repeatedly chooses `relay01` or `relay02` in randomized pairs, independently selects a 100–200 MiB file, stops the selected service carrier while that file is transferring through the surviving carrier, verifies SHA-256 plus existing and new sessions, restarts the failed Relay, and verifies carrier re-registration plus a recovered-Relay session:
+
+```bash
+bash scripts/local-deploy-test.sh --scenario 6
+```
+
+`BNFS_RANDOM_RELAY_CHAOS_SECONDS` may shorten development runs to 60 seconds or extend them up to one hour. The acceptance run defaults to 600 seconds. Transfers are capped at 2 MiB/s by default so the Relay is stopped while the large file remains active; `BNFS_RANDOM_RELAY_CHAOS_RATE` can override that cap. Per-cycle selections, requested and actual sizes, throughput, outage durations, transfer integrity and session checks are stored under `test/local-chaos/.runtime/06_random_relay_chaos/`.
 
 Development-only options:
 
@@ -88,20 +96,25 @@ bash scripts/local-chaos-stability.sh wait --interval-seconds 30
 acceptance. A valid 12-hour round must reach `RUNNING`, retain its recorded
 `duration_seconds=43200`, and later pass `wait`.
 
-Use `--max-inflight N` to cap the global number of heavy transfer attempts;
-the default is two. All six NatClient workers remain active, and each file
-transfer shares a 5 MiB/s aggregate workload budget by default. Use
-`--workload-limit-mibps N` to change that budget, or zero to disable it. The
-runner divides the budget evenly across the in-flight slots; the default two
-slots therefore receive 2 MiB/s each. A single in-flight slot receives the full
-5 MiB/s budget. Lower concurrency values trade aggregate
-coverage for additional CPU headroom under the 55% resource limit. The total
-budget and effective per-transfer ceiling are recorded in `metadata.env` and
-`workload.env` for later audit.
+Use `--max-inflight N` to cap concurrent random batches; coordinated selection
+currently requires one batch at a time. Every stream has an independent
+5 MiB/s ceiling by default; a four-Client batch may therefore carry up to
+20 MiB/s in aggregate. Use `--workload-limit-mibps N` to lower the per-stream
+ceiling, or zero to disable it. Client count never divides this ceiling.
+Multi-Client handshakes start 30
+seconds apart so their fixed Noise/encryption/billing setup cost does not form
+a simultaneous CPU spike. Before every handshake, the mixed adversary path must
+also remain `RUNNING` for three consecutive one-second samples, with a 45-second
+timeout, so Relay migration setup cannot overlap the handshake initialization;
+ongoing transfers still experience adversary events. Even four minimum-size
+streams overlap for at least 110 seconds. A 200 MiB four-Client batch still fits
+the 900-second attempt deadline. The total budget, start stagger, migration
+quiet window and all four effective ceilings are recorded in `workload.env` and
+shown on the Dashboard.
 
-The live dashboard listens on `127.0.0.1:8911` by default; open
-`http://127.0.0.1:8911/` locally. Remote access must be enabled explicitly with
-`--dashboard-host 0.0.0.0` and protected by the surrounding network policy. It shows
+The live dashboard listens on `0.0.0.0:8911` by default; open
+`http://127.0.0.1:8911/` locally or use a reachable host address. External access
+must still be protected by host firewall and FRP policy. It shows
 the phase and countdown, CA reachability, every container's health/start time
 and restart count, end-to-end probes, CPU/memory/disk history, the complete
 CA/Index/Relay/NAT topology, the current business path, and a 19 x 7
@@ -112,7 +125,11 @@ Compose network membership, while the two active business NATs additionally
 use cached runtime iptables rules. It does not claim an active per-pair probe.
 The API and page also report the six random Client worker lanes as `alive` or
 `stopped`. Worker PID, process start-time, and process-group values remain
-private evidence and are never exposed by `/api/status`.
+private evidence and are never exposed by `/api/status`. NatServer listener cards
+separately report persistent carrier health, active/max sessions, Accept queue
+depth, cumulative accepts and rejects. Every active service session adds a live
+`NatClient -> Relay -> NatServer` path to the topology, keyed by its sanitized
+`connectionID`.
 
 The Dashboard runs in an independent process session. If the soak reaches
 `COMPLETED`, `FAILED`, or `RESOURCE_LIMIT`, the runner stops the workload and
@@ -131,18 +148,27 @@ bash scripts/local-chaos-stability.sh wait
 bash scripts/local-chaos-stability.sh stop
 ```
 
+The controller samples all core container states with one project lookup and
+one batched inspect call. A container identity/start-time/restart change remains
+an immediate failure. Health-only degradation must persist for at least three
+samples and 15 seconds before terminating the run, preventing a single Docker
+API scheduling hiccup from masquerading as a node outage. Every degraded,
+recovered, and terminal sample is retained in `core-health-events.tsv`, while
+`core-health-latest.tsv` identifies the exact service, state, and health value.
+
 The default resource guard forcibly ends only the soak Compose project when
 project CPU exceeds 55% of host capacity, project memory exceeds 40% of host
 memory, or the Docker/evidence filesystem exceeds 40% usage. Evidence and the
-19 private NAT identities used by this isolated workload are kept under
+21 private NAT identities used by this isolated workload are kept under
 `test/local-chaos/.soak/runs/<run-id>/` and are ignored by Git.
 
-Every random worker runs in its own process group. Its PID, process start time,
-PGID, and per-run token are stored only in the private run directory. If the
-supervisor is killed, the independent resource guard closes that registry,
-validates every live group before sending `TERM`/`KILL`, and cleans the Compose
-project. An identity mismatch is never signalled; it instead leaves explicit
-`FAILED` evidence and a non-zero guard result so the round cannot be accepted.
+The random batch scheduler and its current Client children run in one process
+group. Its PID, process start time, PGID, and per-run token are stored only in the
+private run directory. If the supervisor is killed, the independent resource
+guard closes that registry, validates the live group before sending
+`TERM`/`KILL`, and cleans the Compose project. An identity mismatch is never
+signalled; it instead leaves explicit `FAILED` evidence and a non-zero guard
+result so the round cannot be accepted.
 
 For the requested first-hour operator audit, run the dependency-free checker
 after the detached round reaches `RUNNING`. Its default 21 samples cover the
@@ -157,64 +183,71 @@ Each steady-state transfer independently selects an integer payload size from
 100 through 200 MiB. The evidence and dashboard retain the requested size,
 actual byte count, curl transfer seconds, MiB/s, SHA-256 result, and final
 pass/fail status. Checksum computation is excluded from the bandwidth timing.
-With the defaults, two transfers may run concurrently at up to 2 MiB/s each,
-keeping aggregate application payload at or below 5 MiB/s. Scenario setup may
-still apply a lower temporary limit when fault injection requires a long-lived
-in-flight transfer.
+One batch is active at a time. Every selected Client retains its own 5 MiB/s
+application ceiling, so a four-Client batch may reach 20 MiB/s in aggregate.
+The 30-second handshake stagger and mixed-path quiet window constrain setup CPU
+without silently throttling an active stream below its configured ceiling.
+Scenario setup may still apply a lower temporary limit when fault injection
+requires a long-lived transfer.
 
 ### Random global workload
 
-The stability workload starts one independent worker lane for each of
-`natclient01` through `natclient06`. Before each transfer, a lane filters the
-13 NatServers to those hosted by its entry Relay or by a direct control
-neighbor, then randomly selects from that one-hop-reachable subset. The lanes
-therefore retain different candidate pools where the control topology is
-partitioned; their combined successful records, rather than each individual
-lane, provide global coverage of all 13 Servers.
+The stability workload owns one coordinated batch scheduler. Step 0 uniformly
+selects one target from the 14-member Server pool: `natserver01` through
+`natserver13` plus the independently identified
+`malicious-random-natserver`. Only after fixing that target does the scheduler
+draw a uniform integer in `[0,99]`: values `0..59` select multi-Client mode
+(60 percent), while `60..99` select one Client. Multi-Client mode then uniformly
+selects a size from 2 through 4 and samples that many unique, one-hop-reachable
+entries from the seven-member Client pool: `natclient01` through `natclient06`
+plus `malicious-natclient`. Both malicious actors are real P2P workload nodes,
+not Dashboard-only decorations. An unadmitted draft with too few reachable
+Clients is discarded and restarts at step 0 after a bounded pause.
 
-The six lanes run concurrently with randomized initial delay and cooldown, but
-the global `--max-inflight` gate limits how many lanes may concurrently perform
-the Client handshake and transfer a file. Waiting for this gate is deadline-
-aware. Each lane owns a separate process group whose leader PID, start time, and
-PGID must agree before it is tracked. The duration boundary stops admission of
-new attempts; every already-admitted attempt retains one absolute deadline
-shared by Client readiness, checksum lookup, payload curl and Server re-arm.
-Each step receives only the remaining budget. The runner derives its drain
-timeout from that attempt SLA plus the verified process-group stop grace rather
-than using an unrelated shorter timeout. A payload deadline records curl-style
-`rc=28` evidence with elapsed time instead of leaving the initial `rc=125`
-crash-recovery placeholder. If a worker still exceeds the derived drain bound,
-the runner sends `TERM` and then
-`KILL` to the verified whole group, including a blocked `docker compose exec`
-child, converts its durable pending placeholder to `rc=28` with measured elapsed
-time, and then reconciles that record. Terminating a run uses the
-same group cleanup and releases every slot.
-Each lane independently samples its one-hop-reachable Server subset with
-replacement across transfers. When
-several lanes select the same Server they first queue on its per-Server lock,
-because one `tunserver` process serves tunnel sessions sequentially rather than
-concurrently. Only the lane holding that Server lock may consume a global slot,
-so same-target contention cannot occupy several slots. After an established
-Client stops, that lane retains the lock until the Relay records a relative
-two-leg registration generation and the Server reports three consecutive fresh
-billing-ready snapshots. Normal reuse never cold-restarts `tunserver`; a missing
-re-arm fails the worker closed. The selection is retained rather than silently
-replaced with an unlocked Server. Consequently this workload exercises random
-target contention but does not claim that one NatServer serves multiple tunnel
-sessions simultaneously.
+Every admitted member targets the exact Server fixed by step 0 and uses that
+Server's persistent carrier concurrently. Client and Server ingress address
+families may differ because each endpoint terminates its own IPv4, IPv6 or
+dual-stack leg at a Relay; one-hop Relay reachability remains mandatory. Every
+member has a separate `connectionID`, Noise handshake, transfer file, checksum,
+and result. `random-batches.tsv` records the step-0 Server, both pool-integrity
+flags, Client set, malicious-node participation, same-Server target pairs and
+final batch result. Evidence containing multiple target Servers in one batch is
+rejected, and the Dashboard renders the selected Server explicitly.
 
-### Per-client transfer records
+The scheduler and all of its current batch children share one verified process
+group, start time and private token. The duration boundary stops admission of new
+batches; every admitted transfer retains one absolute deadline shared by Client
+readiness, checksum lookup, payload curl and Server re-arm. A timeout is recorded
+as real `rc=28` evidence rather than leaving the crash placeholder. Stopping a
+run validates and terminates the whole group, reconciles pending records, and
+releases every transfer slot. After all members using a Server stop, each waits
+for three fresh idle ServiceListener snapshots and three billing-ready snapshots.
+The persistent carrier is reused and is never expected to re-register after a
+Client disconnects.
+
+### Per-client and per-server transfer records
 
 `transfers.tsv` in the run evidence directory is the append-only source for
 the Dashboard and `/api/status` `clientTransfers` object. The Dashboard always
-renders a card for each of the six NatClients. Each card shows its latest ten
+renders a card for each of the six normal NatClients and the malicious NatClient.
+Each card shows its latest ten
 completed attempts in newest-first order, including:
 
 - the runtime-detected ingress Relay;
 - the selected target NatServer;
+- the Client and Server IP type plus configured `KCP/UDP + TCP` failover stack;
 - the actual transferred byte count;
 - the average transfer bandwidth in MiB/s;
 - the SHA-256 verification result.
+
+The same API also publishes a 14-Server `byServer` timeline. It aggregates all
+append-only records instead of only the latest Client card window, so two or
+more NatClients that select one NatServer at different times remain visible as
+a many-to-one history. Each Server entry includes its last transfer time, latest
+Client and ingress Relay, cumulative success/failure counts, distinct Client
+count, IP type, and network stack. This historical view does not imply that the
+Clients were simultaneous; live concurrency remains sourced exclusively from
+the ServiceListener session snapshots.
 
 The ingress Relay is resolved from the Client network namespace's established
 TCP connection to port `9000`; it is not inferred from the selected Server's
@@ -232,7 +265,7 @@ Server pool without inventing `relay02 -> index -> relay01 -> leaf` reachability
 At normal duration completion, the run is accepted only if every NatClient has
 at least one successful transfer with a correct SHA-256 result in every control
 partition reachable from its entry Relay, and the successful global records
-cover all 13 NatServers. Fault profile 2 additionally requires every successful
+cover all 14 NatServers, including the malicious random target. Fault profile 2 additionally requires every successful
 `natclient04` record to show the runtime-detected `relay02` ingress and every
 other Client success to show `relay01`; configured table values alone do not
 satisfy this gate.
@@ -241,7 +274,7 @@ Smoke mode does not claim the 12-hour coverage result. It still requires one
 successful SHA-256 transfer from every Client lane, rejects every non-one-hop
 route, enforces the scenario-specific runtime ingress, and requires collective
 coverage of every control partition present in the Server pool. Only full mode
-requires each Client's reachable-partition coverage and global 13/13 Server
+requires each Client's reachable-partition coverage and global 14/14 Server
 coverage; the default 12-hour command always remains in that mode.
 
 ### Live failure watcher
@@ -343,6 +376,11 @@ or FAIL-returning helper is fail-closed and reaches the existing `enforce`
 failure path. No production identity, credential, NodeID, address, key, run
 directory, executable path, command, container ID, PID, or process start time is
 copied to its snapshot or the Dashboard API.
+
+After initial 9/9 coverage, the two container actors run at 60-second intervals
+with the Relay actor offset by 30 seconds. This preserves continuous random
+malicious behavior while avoiding synchronized NatServer/Relay migrations and
+their CPU spikes during multi-Client handshakes.
 
 Before the sidecar can report healthy both layers execute all nine required scenarios:
 Relay usage inflation, voucher replay, fee-policy override, a sequence exceeding
@@ -469,6 +507,8 @@ remain visible.
 | Relay | 7 |
 | NatServer | 13 |
 | NatClient | 6 |
+| Malicious random NatServer | 1 |
+| Malicious random NatClient | 1 |
 
 Control topology:
 
@@ -491,9 +531,12 @@ Each Relay also owns an isolated access network `10.201.N.0/24`. NatServer conta
 The generated ranges are isolated from host and production networks. Host-specific
 Flannel, Kubernetes, Docker, LAN, and other infrastructure ranges are intentionally
 omitted from this repository; deployment checks select non-overlapping ranges at
-runtime.
+runtime. The local deployment and stability launchers automatically select unused
+Docker `/16` pools. Direct generator callers can set
+`BNFS_CHAOS_CONTROL_NETWORK_SECOND_OCTET` and
+`BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET` explicitly.
 
-## Mandatory scenarios
+## Default scenarios
 
 ### 1. Partition and bridge Relay
 
@@ -528,6 +571,15 @@ UDP/9000 for both NAT nodes while leaving TCP untouched and requires:
 - source and destination SHA-256 hashes to match.
 
 This precondition prevents a TCP-primary connection from being mislabeled as a KCP-to-TCP failover success.
+
+### 4. Concurrent service sessions and Dashboard
+
+Two independent NatClients dial the same NatServer through Relay01. The scenario
+requires unique `connectionID` values, two simultaneous 2 MiB transfers with
+matching SHA-256 values, a connected NatServer carrier with two active sessions,
+and two distinct `NatClient -> Relay01 -> NatServer` paths in `/api/status`. It
+also checks that the Dashboard page contains the persistent-listener and concurrent
+service-session panel.
 
 ## Build and security
 

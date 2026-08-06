@@ -1,5 +1,7 @@
 package admission
 
+import "fmt"
+
 // CA/indexServer Web 服务的 HTTP 线格式。
 //
 // 端点约定（见 DESIGN §5 决策 A）：
@@ -37,6 +39,33 @@ type IssueResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+// NodeAuthorizationRequest 由节点身份私钥和用户扣费私钥对同一正文分别签名。
+// CA 据此同时验证节点持有者与付款授权者，再签发绑定两类身份的证书。
+type NodeAuthorizationRequest struct {
+	SubjectPubKey    string `json:"subject_pubkey"`
+	Role             Role   `json:"role"`
+	BillingKeyID     string `json:"billing_key_id"`
+	Timestamp        int64  `json:"timestamp"`
+	Nonce            string `json:"nonce"`
+	TTLSeconds       int64  `json:"ttl_seconds,omitempty"`
+	NodeSignature    string `json:"node_signature"`
+	BillingSignature string `json:"billing_signature"`
+}
+
+type NodeAuthorizationResponse struct {
+	AuthorizationID string      `json:"authorization_id,omitempty"`
+	NodeID          string      `json:"node_id,omitempty"`
+	SignedCert      *SignedCert `json:"signed_cert,omitempty"`
+	Replayed        bool        `json:"replayed,omitempty"`
+	Error           string      `json:"error,omitempty"`
+}
+
+func NodeAuthorizationCanonical(request NodeAuthorizationRequest) string {
+	return fmt.Sprintf("CA-NODE-AUTHORIZATION-V1\n%s\n%s\n%s\n%d\n%s\n%d",
+		request.SubjectPubKey, request.Role, request.BillingKeyID,
+		request.Timestamp, request.Nonce, request.TTLSeconds)
+}
+
 // SettleRequest 是 relay 周期性上报某 serverNode 上行用量、并请求余额裁决的请求。
 //
 // 计费模型（见 DESIGN §4）：relay 本地按节点累计上行净荷，每隔 N 个时间片把【自上次上报以来的
@@ -64,11 +93,13 @@ type SettleResponse struct {
 // VoucherSettleRequest submits one canonical, mutually signed cumulative usage
 // voucher. []byte is represented as standard base64 by encoding/json.
 type VoucherSettleRequest struct {
-	CanonicalVoucher []byte      `json:"canonical_voucher"`
-	PayerPublicKey   string      `json:"payer_public_key"`
-	RelayPublicKey   string      `json:"relay_public_key"`
-	PayerCert        *SignedCert `json:"payer_cert"`
-	RelayCert        *SignedCert `json:"relay_cert"`
+	CanonicalVoucher   []byte      `json:"canonical_voucher"`
+	PayerPublicKey     string      `json:"payer_public_key"`
+	RelayPublicKey     string      `json:"relay_public_key"`
+	PayerBillingPubKey string      `json:"payer_billing_public_key,omitempty"`
+	RelayBillingPubKey string      `json:"relay_billing_public_key,omitempty"`
+	PayerCert          *SignedCert `json:"payer_cert"`
+	RelayCert          *SignedCert `json:"relay_cert"`
 }
 
 // VoucherSettleResponse reports the authoritative accounting decision. Delta
@@ -88,6 +119,11 @@ type VoucherSettleResponse struct {
 	Retryable   bool   `json:"retryable,omitempty"`
 	Error       string `json:"error,omitempty"`
 }
+
+const (
+	VoucherErrorInsufficientFunds      = "insufficient_funds"
+	VoucherErrorTemporarilyUnavailable = "temporarily_unavailable"
+)
 
 // ReserveRequest 是 relay 在【建立一条业务连接时】向 CA 请求「连接保证金」双扣的请求。
 //
@@ -139,6 +175,5 @@ const (
 	PathBalance       = "/balance"
 	PathReserve       = "/reserve"
 	PathVoucherSettle = "/v1/channel/voucher"
+	PathAuthorizeNode = "/v1/node/authorize"
 )
-
-const VoucherErrorInsufficientFunds = "insufficient_funds"

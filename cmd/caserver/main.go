@@ -24,7 +24,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,6 +35,7 @@ import (
 
 	"bnfs_p2p/admission"
 	"bnfs_p2p/billingvoucher"
+	"bnfs_p2p/logx"
 )
 
 func main() {
@@ -55,23 +55,27 @@ func main() {
 		admission.RoleClient: *clientEnrollmentTokenFile,
 	}, *adminTokenFile)
 	if err != nil {
-		log.Fatalf("[caserver] 加载管理凭据失败: %v", err)
+		logx.Errorf("[caserver] 加载管理凭据失败: %v", err)
+		os.Exit(1)
 	}
 
 	priv, err := loadOrCreateKey(*keyFile)
 	if err != nil {
-		log.Fatalf("[caserver] 加载/生成签发密钥失败: %v", err)
+		logx.Errorf("[caserver] 加载/生成签发密钥失败: %v", err)
+		os.Exit(1)
 	}
 	pubPEM, err := admission.MarshalCAPublicKeyPEM(&priv.PublicKey)
 	if err != nil {
-		log.Fatalf("[caserver] 编码公钥失败: %v", err)
+		logx.Errorf("[caserver] 编码公钥失败: %v", err)
+		os.Exit(1)
 	}
-	log.Printf("[caserver] CA 就绪 issuer=%s listen=%s key=%s", *issuer, *listen, *keyFile)
-	log.Printf("[caserver] CA 公钥 PEM:\n%s", pubPEM)
+	logx.Infof("[caserver] CA 就绪 issuer=%s listen=%s key=%s", *issuer, *listen, *keyFile)
+	logx.Infof("[caserver] CA 公钥 PEM:\n%s", pubPEM)
 
 	ledger := newLedger(*ledgerFile)
 	if ledger.loadErr != nil {
-		log.Fatalf("[caserver] 加载计费账本失败: %v", ledger.loadErr)
+		logx.Errorf("[caserver] 加载计费账本失败: %v", ledger.loadErr)
+		os.Exit(1)
 	}
 
 	srv := &http.Server{
@@ -80,8 +84,8 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("[caserver] 服务退出: %v", err)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logx.Errorf("[caserver] 服务循环已停止，未执行强制退出: %v", err)
 	}
 }
 
@@ -119,11 +123,11 @@ func newCAHandler(priv *ecdsa.PrivateKey, pubPEM, issuer string, defaultTTL int6
 		}
 		sc, err := issue(priv, req, issuer, defaultTTL)
 		if err != nil {
-			log.Printf("[caserver] /issue 拒绝: %v", err)
+			logx.Warnf("[caserver] /issue 拒绝: %v", err)
 			writeJSON(w, http.StatusBadRequest, admission.IssueResponse{Error: err.Error()})
 			return
 		}
-		log.Printf("[caserver] 已签发: nodeID=%.16s role=%s ttl<=%ds", sc.Cert.SubjectNodeID, sc.Cert.Role, defaultTTL)
+		logx.Infof("[caserver] 已签发: nodeID=%.16s role=%s ttl<=%ds", sc.Cert.SubjectNodeID, sc.Cert.Role, defaultTTL)
 		writeJSON(w, http.StatusOK, admission.IssueResponse{SignedCert: sc})
 	})
 	mux.HandleFunc(admission.PathCredit, func(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +153,7 @@ func newCAHandler(priv *ecdsa.PrivateKey, pubPEM, issuer string, defaultTTL int6
 			writeJSON(w, http.StatusInternalServerError, admission.CreditResponse{Error: err.Error()})
 			return
 		}
-		log.Printf("[caserver] 充值: nodeID=%.16s +%dB 余额=%dB", req.NodeID, req.AddBytes, bal)
+		logx.Infof("[caserver] 充值: nodeID=%.16s +%dB 余额=%dB", req.NodeID, req.AddBytes, bal)
 		writeJSON(w, http.StatusOK, admission.CreditResponse{Balance: bal})
 	})
 	mux.HandleFunc(admission.PathVoucherSettle, func(w http.ResponseWriter, r *http.Request) {
@@ -392,7 +396,7 @@ func loadOrCreateKey(path string) (*ecdsa.PrivateKey, error) {
 	if err := os.WriteFile(path, []byte(pemStr), 0o600); err != nil {
 		return nil, err
 	}
-	log.Printf("[caserver] 已生成新签发密钥并持久化: %s", path)
+	logx.Infof("[caserver] 已生成新签发密钥并持久化: %s", path)
 	return priv, nil
 }
 
@@ -541,9 +545,9 @@ func newLedger(path string) *ledger {
 		}
 	}
 	if migrated {
-		log.Printf("[caserver] 已加载并迁移旧版账本为 v%d: %s", ledgerFormatVersion, path)
+		logx.Infof("[caserver] 已加载并迁移旧版账本为 v%d: %s", ledgerFormatVersion, path)
 	} else {
-		log.Printf("[caserver] 已加载账本: %s (%d 个账户, %d 个通道, 重放 %d 笔 WAL)", path, len(l.balances), len(l.channels), replayed)
+		logx.Infof("[caserver] 已加载账本: %s (%d 个账户, %d 个通道, 重放 %d 笔 WAL)", path, len(l.balances), len(l.channels), replayed)
 	}
 	return l
 }
@@ -1003,7 +1007,7 @@ func (l *ledger) settleVoucher(validated validatedVoucher) (admission.VoucherSet
 	}
 	response, status := l.commitDecisionLocked(transaction, validated, channelKey, response, http.StatusOK, "settled")
 	if status == http.StatusOK && (body.Sequence == 1 || body.Sequence%1024 == 0 || payerBalance <= 0) {
-		log.Printf("[caserver] 双签结算: voucher=%.16s payer=%.16s relay=%.16s delta=%d relay_credit=%d balance=%d",
+		logx.Infof("[caserver] 双签结算: voucher=%.16s payer=%.16s relay=%.16s delta=%d relay_credit=%d balance=%d",
 			voucherID, payerID, relayID, grossDelta, relayDelta, payerBalance)
 	}
 	return response, status
@@ -1160,12 +1164,12 @@ func (l *ledger) commitTransactionLocked(transaction ledgerWALTransaction) error
 	snapshot := l.stateLocked()
 	if err := l.persistStateLocked(snapshot); err != nil {
 		l.loadErr = fmt.Errorf("账本 WAL 压缩快照失败: %w", err)
-		log.Printf("[caserver] %v；当前事务已由 WAL 持久化，后续写入 fail-closed", l.loadErr)
+		logx.Errorf("[caserver] %v；当前事务已由 WAL 持久化，后续写入 fail-closed", l.loadErr)
 		return nil
 	}
 	if err := resetLedgerWAL(l.path); err != nil {
 		l.loadErr = fmt.Errorf("账本 WAL 压缩后重置失败: %w", err)
-		log.Printf("[caserver] %v；当前事务已进入快照，后续写入 fail-closed", l.loadErr)
+		logx.Errorf("[caserver] %v；当前事务已进入快照，后续写入 fail-closed", l.loadErr)
 		return nil
 	}
 	l.walTransactions = 0
@@ -1249,7 +1253,7 @@ func (l *ledger) creditChecked(nodeID string, add int64) (int64, error) {
 func (l *ledger) credit(nodeID string, add int64) int64 {
 	balance, err := l.creditChecked(nodeID, add)
 	if err != nil {
-		log.Printf("[caserver] 充值失败: %v", err)
+		logx.Errorf("[caserver] 充值失败: %v", err)
 	}
 	return balance
 }
@@ -1267,7 +1271,7 @@ func (l *ledger) debit(nodeID string, used int64) int64 {
 	}
 	transaction := ledgerWALTransaction{BalanceSet: map[string]int64{nodeID: balance}}
 	if err := l.commitTransactionLocked(transaction); err != nil {
-		log.Printf("[caserver] 扣款持久化失败: %v", err)
+		logx.Errorf("[caserver] 扣款持久化失败: %v", err)
 		return l.balances[nodeID]
 	}
 	return balance
@@ -1285,7 +1289,7 @@ func (l *ledger) reserve(clientID string, clientFee int64, serverID string, serv
 	balances[serverID] = serverCurrent - serverFee
 	transaction := ledgerWALTransaction{BalanceSet: balances}
 	if err := l.commitTransactionLocked(transaction); err != nil {
-		log.Printf("[caserver] 保证金持久化失败: %v", err)
+		logx.Errorf("[caserver] 保证金持久化失败: %v", err)
 		return false, clientCurrent, serverCurrent
 	}
 	return true, l.balances[clientID], l.balances[serverID]

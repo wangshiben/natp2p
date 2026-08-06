@@ -17,7 +17,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -71,11 +70,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	logx.SetLevel(logx.LevelInfo)
-
 	privKey, err := loadKey(*keyFile)
 	if err != nil {
-		log.Fatalf("加载私钥失败: %v", err)
+		logx.Errorf("加载私钥失败: %v", err)
+		os.Exit(1)
 	}
 
 	bootstrapAddr := *indexAddr
@@ -84,13 +82,15 @@ func main() {
 	}
 	node, err := natnode.NewNATNode(privKey, bootstrapAddr)
 	if err != nil {
-		log.Fatalf("创建节点失败: %v", err)
+		logx.Errorf("创建节点失败: %v", err)
+		os.Exit(1)
 	}
 	defer node.Close()
 
 	// tunnel client = client 角色：申请 client 证书并注入。-ca 为空则不启用。
 	if err := admissioncli.SetupNat(node, *caURL, admissioncli.RoleClient()); err != nil {
-		log.Fatalf("申请 indexSign 失败: %v", err)
+		logx.Errorf("申请 indexSign 失败: %v", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -112,7 +112,7 @@ func main() {
 	// A Listen loop is needed so the relay can route the return path.
 	go func() {
 		if err := node.Listen(ctx, entryRelay); err != nil {
-			log.Printf("Listen 退出: %v", err)
+			logx.Warnf("Listen 退出: %v", err)
 		}
 	}()
 
@@ -128,9 +128,10 @@ func main() {
 			break
 		}
 		if attempt >= 12 {
-			log.Fatalf("连接目标失败（已重试 %d 次）: %v", attempt, err)
+			logx.Errorf("连接目标失败（已重试 %d 次）: %v", attempt, err)
+			os.Exit(1)
 		}
-		log.Printf("第 %d 次连接失败，3 秒后重试: %v", attempt, err)
+		logx.Warnf("第 %d 次连接失败，3 秒后重试: %v", attempt, err)
 		select {
 		case <-ctx.Done():
 			return
@@ -144,7 +145,8 @@ func main() {
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
-		log.Fatalf("监听 %s 失败: %v", *listen, err)
+		logx.Errorf("监听 %s 失败: %v", *listen, err)
+		os.Exit(1)
 	}
 	defer ln.Close()
 	shutdownSignals := make(chan os.Signal, 1)
@@ -164,10 +166,10 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-sess.Context().Done():
-				log.Println("隧道已断开，退出。")
+				logx.Infof("隧道已断开，退出。")
 				return
 			default:
-				log.Printf("accept 错误: %v", err)
+				logx.Warnf("accept 错误: %v", err)
 				continue
 			}
 		}
@@ -184,7 +186,7 @@ func shutdownTunnel(signals <-chan os.Signal, session closableTunnelSession, lis
 	select {
 	case <-signals:
 		if err := session.Close(); err != nil {
-			log.Printf("发送隧道关闭通知失败: %v", err)
+			logx.Warnf("发送隧道关闭通知失败: %v", err)
 		}
 	case <-session.Context().Done():
 	}
@@ -198,7 +200,7 @@ func handleLocal(sess *mux.Session, local net.Conn) {
 
 	stream, err := sess.OpenStream()
 	if err != nil {
-		log.Printf("打开子流失败: %v", err)
+		logx.Warnf("打开子流失败: %v", err)
 		return
 	}
 	defer stream.Close()

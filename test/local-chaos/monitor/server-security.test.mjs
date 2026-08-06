@@ -515,6 +515,100 @@ test("Dashboard exposes only whitelisted malicious node runtime and activity", a
   }
 });
 
+test("Dashboard separates a manually stopped run from a healthy CA-only deployment", async () => {
+  const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-ca-only-"));
+  const fakeBin = path.join(runDir, "bin");
+  const inspectFixture = path.join(runDir, "docker-inspect.json");
+  try {
+    await fs.writeFile(path.join(runDir, "phase"), "STOPPED\n");
+    await fs.writeFile(path.join(runDir, "status.env"), [
+      "outcome=FAILED",
+      "detail=resource_guard_identity_invalid",
+      "finished_epoch=1785812909",
+      "remaining_containers=0",
+      "remaining_networks=0",
+      "",
+    ].join("\n"));
+    await fs.writeFile(path.join(runDir, "resource-guard.status"), "STOPPED_BY_SIGNAL timestamp=2026-08-04T11:08:20+08:00\n");
+    await fs.writeFile(path.join(runDir, "metadata.env"), "duration_seconds=43200\ndeadline_epoch=1999999999\n");
+    await fs.writeFile(inspectFixture, JSON.stringify([
+      inspectedContainer("ca-postgres", {
+        id: "a".repeat(64), name: "ca-postgres", image: "postgres:16",
+        running: true, status: "running", health: "healthy", restartCount: 0, ip: "10.0.0.2",
+      }),
+      inspectedContainer("ca", {
+        id: "b".repeat(64), name: "ca", image: "ca:test",
+        running: true, status: "running", health: "healthy", restartCount: 1, ip: "10.0.0.3",
+      }),
+      inspectedContainer("ca-web", {
+        id: "c".repeat(64), name: "ca-web", image: "ca-web:test",
+        running: true, status: "running", health: "healthy", restartCount: 0, ip: "10.0.0.4",
+      }),
+    ]));
+    await fs.mkdir(fakeBin, { recursive: true });
+    await fs.writeFile(path.join(fakeBin, "docker"), [
+      "#!/bin/sh",
+      "case \"$1\" in",
+      "  ps) printf '%s\\n' ca-postgres-id ca-id ca-web-id ;;",
+      "  inspect) /bin/cat \"$DASHBOARD_DOCKER_INSPECT_FIXTURE\" ;;",
+      "  *) exit 2 ;;",
+      "esac",
+      "",
+    ].join("\n"), { mode: 0o700 });
+
+    await withDashboard(runDir, async (port) => {
+      const response = await dashboardFetch(`http://127.0.0.1:${port}/api/status`);
+      assert.equal(response.status, 200);
+      const status = await response.json();
+      assert.deepEqual(status.status, { outcome: "STOPPED", detail: "signal_requested" });
+      assert.equal(status.runState.phase, "STOPPED");
+      assert.equal(status.runState.manuallyStopped, true);
+      assert.equal(status.runState.stopReason, "MANUAL_SIGNAL");
+      assert.deepEqual(status.runState.cleanup, {
+        complete: true,
+        remainingContainers: 0,
+        remainingNetworks: 0,
+      });
+      assert.deepEqual(status.runState.recordedStatus, {
+        outcome: "FAILED",
+        detail: "resource_guard_identity_invalid",
+      });
+      assert.equal(status.timing.remainingSeconds, 0);
+      assert.equal(status.resources.mode, "HISTORICAL");
+      assert.equal(status.deployment.mode, "CA_ONLY");
+      assert.equal(status.deployment.status, "HEALTHY");
+      assert.equal(status.deployment.healthy, true);
+      assert.equal(status.deployment.running, 3);
+      assert.equal(status.deployment.healthyCount, 3);
+      assert.equal(status.deployment.workloadRunning, 0);
+      assert.equal(status.deployment.totalRestarts, 1);
+      assert.deepEqual(status.deployment.services.map((service) => service.service), [
+        "ca-postgres", "ca", "ca-web",
+      ]);
+      assert.equal(status.summary.scope, "TEST_TOPOLOGY");
+      assert.equal(status.summary.active, false);
+      assert.equal(status.summary.coreHealthy, 0);
+      assert.equal(status.summary.natRunning, 0);
+      assert.equal(status.summary.totalRunning, 0);
+      assert.equal(status.nodes.some((node) => node.service === "ca-postgres" || node.service === "ca-web"), false);
+
+      const page = await dashboardFetch(`http://127.0.0.1:${port}/`);
+      const html = await page.text();
+      assert.equal(html.includes('id="deploymentPanel"'), true);
+      assert.equal(html.includes('id="deploymentNodes"'), true);
+      assert.equal(html.includes("冷切换后无压测业务节点残留"), true);
+    }, {
+      composeProject: "dashboard-ca-only-test",
+      env: {
+        DASHBOARD_DOCKER_INSPECT_FIXTURE: inspectFixture,
+        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      },
+    });
+  } finally {
+    await fs.rm(runDir, { recursive: true, force: true });
+  }
+});
+
 for (const terminalPhase of ["COMPLETED", "FAILED", "RESOURCE_LIMIT", "STOPPED"]) test(`Dashboard force-refreshes ${terminalPhase} malicious nodes from pre-cleanup evidence`, async () => {
   const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-dashboard-terminal-malicious-"));
   const secretPath = "/private/final/container/state";
@@ -1834,6 +1928,14 @@ test("Dashboard publishes the public Relay capacity result", async () => {
       assert.equal(status.capacityTest.resources.relay.restarts, 0);
       assert.equal(status.capacityTest.resources.trends.tenMinutes.windowSeconds, 0);
       assert.equal(status.capacityTest.resources.trends.tenMinutes.localRSSDeltaMiB, 0);
+
+      await fs.writeFile(path.join(runDir, "phase"), "RUNNING\n");
+      const activeResponse = await dashboardFetch(`http://127.0.0.1:${port}/api/status?fresh=1`);
+      assert.equal(activeResponse.status, 200);
+      const activeStatus = await activeResponse.json();
+      assert.equal(activeStatus.phase, "RUNNING");
+      assert.equal(activeStatus.capacityTest.available, false);
+      assert.equal(activeStatus.resources.mode, "LIVE");
     }, { env: { CAPACITY_RUN_POINTER: capacityPointer } });
   } finally {
     await fs.rm(runDir, { recursive: true, force: true });

@@ -5,16 +5,80 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
+	"bnfs_p2p/admission"
 	"bnfs_p2p/billingvoucher"
 )
 
 var testLimits = Limits{MaxItems: 64, MaxBytes: 1 << 20}
+
+func TestQueuePersistsIndependentPayerBillingIdentity(t *testing.T) {
+	payerIdentity, _ := ecdh.P256().GenerateKey(rand.Reader)
+	payerBillingKey, _ := ecdh.P256().GenerateKey(rand.Reader)
+	relayIdentity, _ := ecdh.P256().GenerateKey(rand.Reader)
+	relayBillingKey, _ := ecdh.P256().GenerateKey(rand.Reader)
+	payerID, _ := billingvoucher.NodeIDFromPublicKey(payerIdentity.PublicKey())
+	relayID, _ := billingvoucher.NodeIDFromPublicKey(relayIdentity.PublicKey())
+	body := billingvoucher.VoucherBody{
+		Version: billingvoucher.CurrentVersion, SessionID: identifier(90, "billing-session"),
+		PayerNatID: payerID, PayeeRelayID: relayID, Direction: billingvoucher.DirectionPayerOutbound,
+		Sequence: 1, CumulativeUniqueBytes: 1024,
+		LastRecordID: identifier(90, "billing-record"), LastRecordSequence: 1,
+		RecordSetDigest: digest(90, "billing-records"), PolicyDigest: billingvoucher.CurrentPolicyDigest(),
+		AuthorizedThroughBytes: billingvoucher.MaxBillableBytes,
+	}
+	payerSignature, _ := billingvoucher.SignPayerBilling(body, payerBillingKey)
+	relaySignature, _ := billingvoucher.SignRelayBilling(body, relayBillingKey)
+	voucher, err := billingvoucher.NewMutualVoucher(body, payerSignature, relaySignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payerPublicKey := hex.EncodeToString(payerIdentity.PublicKey().Bytes())
+	payerBillingPublicKey := hex.EncodeToString(payerBillingKey.PublicKey().Bytes())
+	billingKeyID, _ := admission.BillingKeyIDFromPublicKeyHex(payerBillingPublicKey)
+	certificate := &admission.SignedCert{Cert: admission.Cert{
+		SubjectNodeID: payerID.String(), SubjectPubKey: payerPublicKey, Role: admission.RoleServer,
+		NotBefore: time.Now().Add(-time.Minute).Unix(), NotAfter: time.Now().Add(time.Hour).Unix(), Nonce: "01",
+		AuthorizationID: admission.NodeAuthorizationID(payerID.String(), billingKeyID),
+		BillingKeyID:    billingKeyID, BillingPubKey: payerBillingPublicKey,
+	}, Sig: "00"}
+	envelope := Envelope{
+		Voucher: voucher, PayerPublicKey: payerPublicKey,
+		PayerBillingPublicKey: payerBillingPublicKey, PayerCert: certificate,
+	}
+	path := filepath.Join(t.TempDir(), "billing-envelope.queue")
+	queue, err := Open(path, testLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.EnqueueEnvelope(envelope); err != nil {
+		t.Fatalf("enqueue independent billing identity: %v", err)
+	}
+	if err := queue.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := Open(path, testLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	items, err := recovered.SnapshotEnvelopes()
+	if err != nil || len(items) != 1 || items[0].PayerBillingPublicKey != payerBillingPublicKey {
+		t.Fatalf("recovered billing identity = %+v, err=%v", items, err)
+	}
+	if err := items[0].Voucher.VerifyBillingSignatures(
+		payerBillingKey.PublicKey(), relayBillingKey.PublicKey(),
+	); err != nil {
+		t.Fatalf("recovered billing voucher signatures: %v", err)
+	}
+}
 
 func TestQueuePersistsEveryGrowthAndRecoversFIFO(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "wait-submit.queue")

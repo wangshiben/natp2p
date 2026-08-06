@@ -77,6 +77,11 @@ import (
 //   - 否则: index 模式默认 error(尽量静音注册/登记/转发/桥接等监控信息, 只留报错+堆栈),
 //     其余模式默认 info。
 func applyLogLevel(explicit string, isIndex bool) {
+	if strings.TrimSpace(explicit) == "" {
+		if _, configured := os.LookupEnv("BNFS_LOG_LEVEL"); configured {
+			return
+		}
+	}
 	switch strings.ToLower(explicit) {
 	case "debug":
 		logx.SetLevel(logx.LevelDebug)
@@ -131,7 +136,7 @@ func main() {
 	case "interactive":
 		runInteractive()
 	default:
-		fmt.Printf("未知模式: %s\n\n", *mode)
+		logx.Errorf("未知模式: %s", *mode)
 		printUsage()
 		os.Exit(1)
 	}
@@ -189,16 +194,16 @@ func loadKey(path string) (*ecdh.PrivateKey, error) {
 func runRelay(listen, public, peer, index, keyFile, caURL, admissionMode, billingQueue string) {
 	privKey, err := loadKey(keyFile)
 	if err != nil {
-		fmt.Printf("加载私钥失败: %v\n", err)
+		logx.Errorf("加载私钥失败: %v", err)
 		os.Exit(1)
 	}
 	rn, err := relaynode.NewRelayNode(privKey, listen, public)
 	if err != nil {
-		fmt.Printf("创建 relay 节点失败: %v\n", err)
+		logx.Errorf("创建 relay 节点失败: %v", err)
 		os.Exit(1)
 	}
 	if err := rn.SetBillingQueuePath(billingQueue); err != nil {
-		fmt.Printf("配置 waitSubmit 持久文件失败: %v\n", err)
+		logx.Errorf("配置 waitSubmit 持久文件失败: %v", err)
 		os.Exit(1)
 	}
 	fmt.Printf("RelayNode ID: %s\n", rn.ID())
@@ -207,7 +212,7 @@ func runRelay(listen, public, peer, index, keyFile, caURL, admissionMode, billin
 	// 网络准入 + 计费（-ca 给了才启用）：拉 CA 公钥 + 申请 relay 证书 + SetAdmission。
 	// 必须在 Start/ConnectPeer 之前。
 	if err := admissioncli.SetupRelay(rn, caURL, admissionMode); err != nil {
-		fmt.Printf("启用网络准入失败: %v\n", err)
+		logx.Errorf("启用网络准入失败: %v", err)
 		os.Exit(1)
 	}
 
@@ -267,7 +272,7 @@ func runRelay(listen, public, peer, index, keyFile, caURL, admissionMode, billin
 func runListen(relayAddr, index, keyFile, caURL string) {
 	privKey, err := loadKey(keyFile)
 	if err != nil {
-		fmt.Printf("加载私钥失败: %v\n", err)
+		logx.Errorf("加载私钥失败: %v", err)
 		os.Exit(1)
 	}
 	bootstrapAddr := relayAddr
@@ -276,14 +281,14 @@ func runListen(relayAddr, index, keyFile, caURL string) {
 	}
 	node, err := natnode.NewNATNode(privKey, bootstrapAddr)
 	if err != nil {
-		fmt.Printf("创建节点失败: %v\n", err)
+		logx.Errorf("创建节点失败: %v", err)
 		os.Exit(1)
 	}
 	defer node.Close()
 
 	// listen = server 角色：申请 server 证书并注入（-ca 给了才做）。
 	if err := admissioncli.SetupNat(node, caURL, admissioncli.RoleServer()); err != nil {
-		fmt.Printf("申请 indexSign 失败: %v\n", err)
+		logx.Errorf("申请 indexSign 失败: %v", err)
 		os.Exit(1)
 	}
 
@@ -302,7 +307,7 @@ func runListen(relayAddr, index, keyFile, caURL string) {
 	if index != "" {
 		entry, err := node.Bootstrap(ctx, index)
 		if err != nil {
-			fmt.Printf("bootstrap 失败: %v\n", err)
+			logx.Errorf("bootstrap 失败: %v", err)
 			os.Exit(1)
 		}
 		entryRelay = entry
@@ -346,12 +351,12 @@ func echoLoop(ctx context.Context, conn p2pnode.Connection) {
 // index 非空时先经 index bootstrap 就近选定入口 relay; 否则直连 relayAddr。
 func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile string, connectTimeoutSec int, caURL string) {
 	if len(target) != 64 {
-		fmt.Printf("无效的 target NodeID 长度: %d (应为64位hex)\n", len(target))
+		logx.Errorf("无效的 target NodeID 长度: %d (应为64位hex)", len(target))
 		os.Exit(1)
 	}
 	privKey, err := loadKey(keyFile)
 	if err != nil {
-		fmt.Printf("加载私钥失败: %v\n", err)
+		logx.Errorf("加载私钥失败: %v", err)
 		os.Exit(1)
 	}
 	bootstrapAddr := relayAddr
@@ -360,14 +365,14 @@ func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile 
 	}
 	node, err := natnode.NewNATNode(privKey, bootstrapAddr)
 	if err != nil {
-		fmt.Printf("创建节点失败: %v\n", err)
+		logx.Errorf("创建节点失败: %v", err)
 		os.Exit(1)
 	}
 	defer node.Close()
 
 	// connect = client 角色：申请 client 证书并注入（-ca 给了才做）。
 	if err := admissioncli.SetupNat(node, caURL, admissioncli.RoleClient()); err != nil {
-		fmt.Printf("申请 indexSign 失败: %v\n", err)
+		logx.Errorf("申请 indexSign 失败: %v", err)
 		os.Exit(1)
 	}
 
@@ -380,7 +385,7 @@ func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile 
 	if index != "" {
 		entry, err := node.Bootstrap(ctx, index)
 		if err != nil {
-			fmt.Printf("bootstrap 失败: %v\n", err)
+			logx.Errorf("bootstrap 失败: %v", err)
 			os.Exit(1)
 		}
 		entryRelay = entry
@@ -396,7 +401,7 @@ func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile 
 	defer connCancel()
 	conn, err := node.Connect(connCtx, p2pnode.NodeID(target))
 	if err != nil {
-		fmt.Printf("连接失败: %v\n", err)
+		logx.Errorf("连接失败: %v", err)
 		os.Exit(1)
 	}
 	fmt.Printf("已连接到 %s, 开始 %d 轮通信\n", target, rounds)
@@ -421,6 +426,7 @@ func runConnect(relayAddr, index, target string, rounds int, msgPrefix, keyFile 
 	}
 	fmt.Printf("通信完成: 成功 %d/%d 轮\n", ok, rounds)
 	if ok != rounds {
+		logx.Errorf("通信未完整完成: succeeded=%d expected=%d", ok, rounds)
 		os.Exit(1)
 	}
 }

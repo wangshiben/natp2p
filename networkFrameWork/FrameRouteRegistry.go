@@ -346,8 +346,8 @@ func canBatchRelayFrames(first, next *network.Frame) bool {
 //
 // 找不到目标 client（还没连上 / 已断开）就丢弃该帧。写失败则退出 pump。
 // hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
-func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string, onClientFailure func(string, FrameRelayEndpoint)) {
-	hookState := newForwardHookState(hookConfig, nodeID)
+func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup func(string) FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string, onClientFailure func(string, FrameRelayEndpoint), registrationSessionID ...string) {
+	hookState := newForwardHookState(hookConfig, nodeID, registrationSessionID...)
 	batch := relayFrameWriteBatch{
 		source:    make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
 		forwarded: make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
@@ -364,8 +364,8 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 				connectionID = entry.pair.clientKey.connectionID
 			}
 			if hookConfig != nil {
-				hookConfig.ensureRetransmitCache().forgetConnection(nodeID, connectionID)
-				hookConfig.forgetHeldConnection(nodeID, connectionID)
+				hookConfig.ensureRetransmitCache().forgetConnection(hookState.holdbackScopeID, connectionID)
+				hookState.resetHeldConnection(connectionID)
 			}
 			if onClientFailure != nil {
 				onClientFailure(connectionID, entry.dest)
@@ -403,8 +403,8 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 		destination := lookup(connectionID)
 		routes.purgeConnection(connectionID)
 		if hookConfig != nil {
-			hookConfig.ensureRetransmitCache().forgetConnection(nodeID, connectionID)
-			hookConfig.forgetHeldConnection(nodeID, connectionID)
+			hookConfig.ensureRetransmitCache().forgetConnection(hookState.holdbackScopeID, connectionID)
+			hookState.forgetHeldConnection(connectionID)
 		}
 		if destination == nil {
 			return
@@ -520,8 +520,8 @@ func pumpRelayToClients(ctx context.Context, relay FrameRelayEndpoint, lookup fu
 //
 // 写失败则退出 pump。
 // hookConfig 可选的转发 hook 配置，为 nil 则不启用 hook。
-func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string) {
-	hookState := newForwardHookState(hookConfig, nodeID)
+func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay FrameRelayEndpoint, routes *frameRouteRegistry, hookConfig *ForwardHookConfig, nodeID string, registrationSessionID ...string) {
+	hookState := newForwardHookState(hookConfig, nodeID, registrationSessionID...)
 	batch := relayFrameWriteBatch{
 		source:    make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
 		forwarded: make([]*network.Frame, 0, defaultRelayBatchMaxFrames),
@@ -542,7 +542,7 @@ func pumpClientToRelay(ctx context.Context, client FrameRelayEndpoint, relay Fra
 			if source.FrameType == network.FrameTypeAck && hookConfig != nil {
 				if ranges, err := network.DecodeAckRanges(source.Payload); err == nil && len(ranges) > 0 {
 					hookConfig.ensureRetransmitCache().acknowledge(
-						nodeID, client.ConnectionId(), entry.dstID, source.TotalFrames, ranges,
+						hookState.holdbackScopeID, client.ConnectionId(), entry.dstID, source.TotalFrames, ranges,
 					)
 				}
 			}

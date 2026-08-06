@@ -157,20 +157,26 @@ parse_billing_queue_inspection() {
 }
 
 billing_production_gate_inspect_live() {
-  local relay=$1 payer_id=${2:-} relay_id=${3:-} encoded
-  encoded=$(dc exec -T "$relay" /opt/bnfs/billingqueue-inspect \
-    -path /artifacts/.private/wait-submit.queue -payer-id "$payer_id" -relay-id "$relay_id" \
-    -relay-key /artifacts/.private/identity.key 2>/dev/null) || return 1
-  parse_billing_queue_inspection "$encoded"
-}
-
-billing_production_gate_inspect_host() {
-  local run_dir=$1 relay=$2 payer_id=${3:-} relay_id=${4:-} inspector encoded
+  local run_dir=$1 payer=$2 relay=$3 payer_id=${4:-} relay_id=${5:-} inspector encoded
   inspector=$run_dir/build-runtime/build/billingqueue-inspect
   [[ -x $inspector ]] || return 1
   encoded=$("$inspector" -path "$PRIVATE_RUNTIME_DIR/$relay/wait-submit.queue" \
     -payer-id "$payer_id" -relay-id "$relay_id" \
-    -relay-key "$PRIVATE_RUNTIME_DIR/$relay/identity.key" 2>/dev/null) || return 1
+    -relay-key "$PRIVATE_RUNTIME_DIR/$relay/identity.key" \
+    -payer-billing-key "$PRIVATE_RUNTIME_DIR/$payer/billing-private.key" \
+    -relay-billing-key "$PRIVATE_RUNTIME_DIR/$relay/billing-private.key" 2>/dev/null) || return 1
+  parse_billing_queue_inspection "$encoded"
+}
+
+billing_production_gate_inspect_host() {
+  local run_dir=$1 payer=$2 relay=$3 payer_id=${4:-} relay_id=${5:-} inspector encoded
+  inspector=$run_dir/build-runtime/build/billingqueue-inspect
+  [[ -x $inspector ]] || return 1
+  encoded=$("$inspector" -path "$PRIVATE_RUNTIME_DIR/$relay/wait-submit.queue" \
+    -payer-id "$payer_id" -relay-id "$relay_id" \
+    -relay-key "$PRIVATE_RUNTIME_DIR/$relay/identity.key" \
+    -payer-billing-key "$PRIVATE_RUNTIME_DIR/$payer/billing-private.key" \
+    -relay-billing-key "$PRIVATE_RUNTIME_DIR/$relay/billing-private.key" 2>/dev/null) || return 1
   parse_billing_queue_inspection "$encoded"
 }
 
@@ -200,20 +206,23 @@ billing_production_gate_resolve_relay() {
 }
 
 billing_production_gate_read_balance() {
-  local node_id=$1 response balance
+  local node_id=$1 response balance ca_port=${BNFS_CHAOS_CA_HOST_PORT:-19100}
   [[ $node_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
-  response=$(dc exec -T ca curl -fsS --connect-timeout 2 --max-time 5 \
-    "http://127.0.0.1:9100/balance?node=$node_id" 2>/dev/null) || return 1
+  response=$(curl -fsS --connect-timeout 2 --max-time 5 \
+    "http://127.0.0.1:$ca_port/balance?node=$node_id" 2>/dev/null) || return 1
   balance=$(sed -n 's/.*"balance":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' <<< "$response")
   [[ $balance =~ ^-?[0-9]+$ ]] || return 1
   printf '%s\n' "$balance"
 }
 
 billing_production_gate_read_accounting() {
-  local relay_id=$1 payer_id=$2
+  local relay_id=$1 payer_id=$2 relay=$3 payer=$4 ca_port=${BNFS_CHAOS_CA_HOST_PORT:-19100}
   [[ $relay_id =~ ^[[:xdigit:]]{64}$ && $payer_id =~ ^[[:xdigit:]]{64}$ ]] || return 1
-  node "$ROOT_DIR/test/local-chaos/ca-ledger-inspect.mjs" \
-    "$PRIVATE_RUNTIME_DIR/ca/ledger.json" "$relay_id" "$payer_id" 2>/dev/null
+  CA_BASE_URL="http://127.0.0.1:$ca_port" \
+    CA_ADMIN_TOKEN_FILE="$PRIVATE_RUNTIME_DIR/ca/admin.token" \
+    CA_BILLING_BOOTSTRAP_FILE="$PRIVATE_RUNTIME_DIR/ca/billing-key-bootstrap.json" \
+    node "$ROOT_DIR/test/local-chaos/ca-web-accounting.mjs" \
+      "$relay_id" "$payer_id" "$relay" "$payer" 2>/dev/null
 }
 
 billing_production_gate_read_nat_observation() {
@@ -363,13 +372,13 @@ billing_production_gate_pause_ca() {
 }
 
 billing_production_gate_resume_ca() {
-  local deadline
+  local deadline ca_port=${BNFS_CHAOS_CA_HOST_PORT:-19100}
   dc unpause ca >/dev/null 2>&1 || true
   wait_service_health ca 45 || return 1
   deadline=$((SECONDS + 15))
   while (( SECONDS < deadline )); do
-    if dc exec -T ca curl -fsS --connect-timeout 1 --max-time 2 \
-      http://127.0.0.1:9100/pubkey >/dev/null 2>&1; then
+    if curl -fsS --connect-timeout 1 --max-time 2 \
+      "http://127.0.0.1:$ca_port/pubkey" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.25
@@ -544,11 +553,14 @@ billing_production_gate_start_relay() {
 
 run_billing_production_gate() (
 	local run_dir=$1 server=natserver06 client=natclient01 relay=$REAL_BILLING_GATE_RELAY listen_port=18101
-  local payer_id relay_id payer_before relay_before payer_after relay_after payer_debit=0 relay_credit=0
+  local payer_id relay_id payer_debit=0 relay_credit=0
   local ca_before relay_income_before ca_after relay_income_after ca_credit=0 relay_income_credit=0 global_ca_credit=0
   local channel_count_before=0 channel_gross_before=0 channel_relay_before=0 channel_ca_before=0
   local channel_count_after=0 channel_gross_after=0 channel_relay_after=0 channel_ca_after=0
   local channel_gross_credit=0 channel_relay_credit=0
+  local payer_consumed_before=0 payer_consumed_after=0 payer_account_before=0 payer_account_after=0
+  local relay_account_before=0 relay_account_after=0 same_user_before=false same_user_after=false
+  local payer_account_delta=0 relay_account_delta=0 expected_account_delta=0
   local expected_relay_credit expected_ca_credit accounting ca_sequence transfer_bytes=0 amount_verified=false
 	local schema depth payload incomplete channel_depth authorized session_count inspection deadline
   local before_depth=0 before_payload=0 before_channel_depth=0 authorized_billable_bytes=0 authorized_sessions=0
@@ -630,7 +642,8 @@ run_billing_production_gate() (
     return 1
   fi
 
-  inspection=$(billing_production_gate_inspect_live "$relay" "$payer_id" "$relay_id" 2>/dev/null) || {
+  inspection=$(billing_production_gate_inspect_live \
+    "$run_dir" "$server" "$relay" "$payer_id" "$relay_id" 2>/dev/null) || {
     billing_production_gate_fail "$run_dir" billing_production_gate_inspector_unavailable
     return 1
   }
@@ -693,24 +706,20 @@ run_billing_production_gate() (
     billing_production_gate_fail "$run_dir" billing_production_gate_channel_not_fresh
     return 1
   fi
-  payer_before=$(billing_production_gate_read_balance "$payer_id" 2>/dev/null) || {
-    billing_production_gate_fail "$run_dir" billing_production_gate_balance_read_failed
-    return 1
-  }
-  relay_before=$(billing_production_gate_read_balance "$relay_id" 2>/dev/null) || {
-    billing_production_gate_fail "$run_dir" billing_production_gate_balance_read_failed
-    return 1
-  }
-  accounting=$(billing_production_gate_read_accounting "$relay_id" "$payer_id" 2>/dev/null) || {
+  accounting=$(billing_production_gate_read_accounting \
+    "$relay_id" "$payer_id" "$relay" "$server" 2>/dev/null) || {
     billing_production_gate_fail "$run_dir" billing_production_gate_accounting_read_failed
     return 1
   }
   IFS=$'\t' read -r ca_before relay_income_before ca_sequence channel_count_before \
-    channel_gross_before channel_relay_before channel_ca_before <<< "$accounting"
+    channel_gross_before channel_relay_before channel_ca_before payer_consumed_before \
+    payer_account_before relay_account_before same_user_before <<< "$accounting"
   if [[ ! $ca_before =~ ^[0-9]+$ || ! $relay_income_before =~ ^[0-9]+$ \
     || ! $ca_sequence =~ ^[0-9]+$ || ! $channel_count_before =~ ^[0-9]+$ \
     || ! $channel_gross_before =~ ^[0-9]+$ || ! $channel_relay_before =~ ^[0-9]+$ \
-    || ! $channel_ca_before =~ ^[0-9]+$ ]]; then
+    || ! $channel_ca_before =~ ^[0-9]+$ || ! $payer_consumed_before =~ ^[0-9]+$ \
+    || ! $payer_account_before =~ ^[0-9]+$ || ! $relay_account_before =~ ^[0-9]+$ \
+    || ! $same_user_before =~ ^(true|false)$ ]]; then
     billing_production_gate_fail "$run_dir" billing_production_gate_accounting_read_failed
     return 1
   fi
@@ -760,7 +769,8 @@ run_billing_production_gate() (
   inspection=
   observation_invalid=0
   while (( SECONDS < deadline )); do
-    inspection=$(billing_production_gate_inspect_live "$relay" "$payer_id" "$relay_id" 2>/dev/null || true)
+    inspection=$(billing_production_gate_inspect_live \
+      "$run_dir" "$server" "$relay" "$payer_id" "$relay_id" 2>/dev/null || true)
     IFS=$'\t' read -r schema depth payload incomplete channel_depth authorized session_count <<< "$inspection"
     nat_observation=$(billing_production_gate_read_nat_observation "$server" 2>/dev/null) || {
       observation_invalid=1
@@ -861,7 +871,8 @@ run_billing_production_gate() (
     return 1
   fi
   relay_stopped=1
-  inspection=$(billing_production_gate_inspect_host "$run_dir" "$relay" "$payer_id" "$relay_id" 2>/dev/null) || {
+  inspection=$(billing_production_gate_inspect_host \
+    "$run_dir" "$server" "$relay" "$payer_id" "$relay_id" 2>/dev/null) || {
     fail_with_current_billing_evidence billing_production_gate_crash_inspection_failed
     return 1
   }
@@ -893,7 +904,8 @@ run_billing_production_gate() (
 
   deadline=$((SECONDS + REAL_BILLING_GATE_RECOVERY_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
-    inspection=$(billing_production_gate_inspect_host "$run_dir" "$relay" "$payer_id" "$relay_id" 2>/dev/null || true)
+    inspection=$(billing_production_gate_inspect_host \
+      "$run_dir" "$server" "$relay" "$payer_id" "$relay_id" 2>/dev/null || true)
     IFS=$'\t' read -r schema depth payload incomplete channel_depth authorized session_count <<< "$inspection"
     if [[ $schema == billingqueue-wal/v3 && $depth == 0 && $payload == 0 && $incomplete == false \
       && $channel_depth == 0 && $authorized == 0 && $session_count == 0 ]]; then
@@ -910,39 +922,48 @@ run_billing_production_gate() (
     return 1
   fi
 
-  payer_after=$(billing_production_gate_read_balance "$payer_id" 2>/dev/null) || {
-    fail_with_current_billing_evidence billing_production_gate_balance_read_failed "$after_restart_depth" 0
-    return 1
-  }
-  relay_after=$(billing_production_gate_read_balance "$relay_id" 2>/dev/null) || {
-    fail_with_current_billing_evidence billing_production_gate_balance_read_failed "$after_restart_depth" 0
-    return 1
-  }
-  accounting=$(billing_production_gate_read_accounting "$relay_id" "$payer_id" 2>/dev/null) || {
+  accounting=$(billing_production_gate_read_accounting \
+    "$relay_id" "$payer_id" "$relay" "$server" 2>/dev/null) || {
     fail_with_current_billing_evidence billing_production_gate_accounting_read_failed "$after_restart_depth" 0
     return 1
   }
   IFS=$'\t' read -r ca_after relay_income_after ca_sequence channel_count_after \
-    channel_gross_after channel_relay_after channel_ca_after <<< "$accounting"
+    channel_gross_after channel_relay_after channel_ca_after payer_consumed_after \
+    payer_account_after relay_account_after same_user_after <<< "$accounting"
   if [[ ! $ca_after =~ ^[0-9]+$ || ! $relay_income_after =~ ^[0-9]+$ \
     || ! $ca_sequence =~ ^[0-9]+$ || ! $channel_count_after =~ ^[0-9]+$ \
     || ! $channel_gross_after =~ ^[0-9]+$ || ! $channel_relay_after =~ ^[0-9]+$ \
-    || ! $channel_ca_after =~ ^[0-9]+$ ]]; then
+    || ! $channel_ca_after =~ ^[0-9]+$ || ! $payer_consumed_after =~ ^[0-9]+$ \
+    || ! $payer_account_after =~ ^[0-9]+$ || ! $relay_account_after =~ ^[0-9]+$ \
+    || ! $same_user_after =~ ^(true|false)$ || $same_user_after != "$same_user_before" ]]; then
     fail_with_current_billing_evidence billing_production_gate_accounting_read_failed "$after_restart_depth" 0
     return 1
   fi
-  payer_debit=$((payer_before - payer_after))
-  relay_credit=$((relay_after - relay_before))
+  payer_debit=$((payer_consumed_after - payer_consumed_before))
+  relay_credit=$((relay_income_after - relay_income_before))
   global_ca_credit=$((ca_after - ca_before))
   relay_income_credit=$((relay_income_after - relay_income_before))
   channel_gross_credit=$((channel_gross_after - channel_gross_before))
   channel_relay_credit=$((channel_relay_after - channel_relay_before))
   ca_credit=$((channel_ca_after - channel_ca_before))
+  payer_account_delta=$((payer_account_after - payer_account_before))
+  relay_account_delta=$((relay_account_after - relay_account_before))
   if (( payer_debit < 0 || relay_credit < 0 || global_ca_credit < 0 || relay_income_credit < 0 \
     || channel_gross_credit < 0 || channel_relay_credit < 0 || ca_credit < 0 )); then
     billing_production_gate_fail "$run_dir" billing_production_gate_balance_delta_invalid \
       "$before_depth" "$after_restart_depth" 0 "$payer_debit" "$relay_credit" "$transfer_bytes" "$ca_credit" false \
       "$observed_billable_bytes" "$authorized_billable_bytes" "$unsettled_tail_bytes"
+    return 1
+  fi
+  if [[ $same_user_after == true ]]; then
+    expected_account_delta=$((relay_credit - payer_debit))
+    if (( payer_account_before != relay_account_before || payer_account_after != relay_account_after \
+      || payer_account_delta != expected_account_delta )); then
+      fail_with_current_billing_evidence billing_production_gate_balance_delta_invalid "$after_restart_depth" 0
+      return 1
+    fi
+  elif (( payer_account_delta != -payer_debit || relay_account_delta != relay_credit )); then
+    fail_with_current_billing_evidence billing_production_gate_balance_delta_invalid "$after_restart_depth" 0
     return 1
   fi
   if (( channel_count_after != 1 || authorized_sessions != 1 \
@@ -1022,7 +1043,8 @@ run_billing_production_gate() (
 
   deadline=$((SECONDS + REAL_BILLING_GATE_RECOVERY_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
-    inspection=$(billing_production_gate_inspect_host "$run_dir" "$relay" "$payer_id" "$relay_id" 2>/dev/null || true)
+    inspection=$(billing_production_gate_inspect_host \
+      "$run_dir" "$server" "$relay" "$payer_id" "$relay_id" 2>/dev/null || true)
     IFS=$'\t' read -r schema depth payload incomplete channel_depth authorized session_count <<< "$inspection"
     if [[ $schema == billingqueue-wal/v3 && $depth == 0 && $payload == 0 && $incomplete == false \
       && $channel_depth == 0 && $authorized == 0 && $session_count == 0 ]]; then

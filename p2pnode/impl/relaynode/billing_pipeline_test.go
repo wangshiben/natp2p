@@ -63,6 +63,16 @@ func (server *voucherDecisionServer) ServeHTTP(writer http.ResponseWriter, reque
 	response := admission.VoucherSettleResponse{VoucherID: voucherID.String()}
 	status := http.StatusOK
 	switch mode {
+	case "temporary-once":
+		if call == 1 {
+			response.Error = "CA transaction temporarily unavailable"
+			response.ErrorCode = admission.VoucherErrorTemporarilyUnavailable
+			response.Retryable = true
+			status = http.StatusServiceUnavailable
+		} else {
+			response.Allow = true
+			response.Delta = int64(voucher.Body.CumulativeUniqueBytes)
+		}
 	case "retryable":
 		if funded {
 			response.Allow = true
@@ -94,6 +104,34 @@ func (server *voucherDecisionServer) ServeHTTP(writer http.ResponseWriter, reque
 	}
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(response)
+}
+
+func TestSubmitPendingRetriesTemporaryCAFailureWithoutCutoff(t *testing.T) {
+	decisionServer := newVoucherDecisionServer()
+	httpServer := httptest.NewServer(decisionServer)
+	defer httpServer.Close()
+	pipeline := newSubmitTestPipeline(t, httpServer.URL)
+
+	temporary := enqueueSubmitTestVoucher(t, pipeline, 41)
+	decisionServer.modes[temporary.payerID.String()] = "temporary-once"
+	pipeline.submitPending()
+	if pipeline.queue.Len() != 1 {
+		t.Fatalf("temporary CA failure removed durable voucher: waitSubmit=%d", pipeline.queue.Len())
+	}
+	if pipeline.node.accounts.isCutoff(temporary.payerID.String()) {
+		t.Fatal("temporary CA failure cut off a funded payer")
+	}
+	if pipeline.sessionBlocked(temporary.sessionID) {
+		t.Fatal("temporary CA failure permanently blocked the billing session")
+	}
+
+	pipeline.submitPending()
+	if pipeline.queue.Len() != 0 {
+		t.Fatal("durable voucher was not settled after CA recovery")
+	}
+	if decisionServer.callCount(temporary.payerID.String()) != 2 {
+		t.Fatal("temporary voucher was not retried exactly once")
+	}
 }
 
 func (server *voucherDecisionServer) setFunded(payerID string, funded bool) {
@@ -293,6 +331,29 @@ func TestObserveRecordRejectsCutoffBeforeAcceptingMoreUsage(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("cutoff payer usage was accepted")
+	}
+}
+
+func TestObserveRecordDefersImmediatelyWhenBillingControlIsUnavailable(t *testing.T) {
+	pipeline := newSubmitTestPipeline(t, "http://127.0.0.1:1")
+	enqueued := enqueueSubmitTestVoucher(t, pipeline, 22)
+	started := time.Now()
+	err := pipeline.observeRecord(context.Background(), submitTestRecord(enqueued, 2, 100, 23))
+	if !errors.Is(err, networkFrameWork.ErrBillableRecordRetryable) {
+		t.Fatalf("missing billing control error = %v, want retryable", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("missing billing control took %v, want immediate deferral", elapsed)
+	}
+	session := pipeline.sessions[enqueued.sessionID]
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.nextRecordSequence != 2 || session.cumulative != billingvoucher.CumulativeWindowBytes {
+		t.Fatalf("retryable control failure changed session: next=%d cumulative=%d",
+			session.nextRecordSequence, session.cumulative)
+	}
+	if got := pipeline.node.AccountUplinkBytes(enqueued.payerID.String()); got != 0 {
+		t.Fatalf("retryable control failure accounted %d bytes, want 0", got)
 	}
 }
 
@@ -737,9 +798,115 @@ func TestBillingControlRequiresCertificateKeyPossessionBeforeInstall(t *testing.
 	}
 }
 
+func TestIssueVoucherUsesIndependentBillingKeys(t *testing.T) {
+	pipeline := newSubmitTestPipeline(t, "http://127.0.0.1:1")
+	relayBillingKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.node.SetBillingPrivateKey(relayBillingKey); err != nil {
+		t.Fatal(err)
+	}
+	pipeline.relayCert = submitTestBoundCertificate(
+		pipeline.node.privKey.PublicKey(), relayBillingKey.PublicKey(), admission.RoleRelay,
+	)
+
+	payerIdentityKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payerBillingKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payerID, _ := billingvoucher.NodeIDFromPublicKey(payerIdentityKey.PublicKey())
+	payerCertificate := submitTestBoundCertificate(
+		payerIdentityKey.PublicKey(), payerBillingKey.PublicKey(), admission.RoleServer,
+	)
+	pipeline.node.mu.Lock()
+	pipeline.node.admission = &AdmissionConfig{
+		Mode: AdmissionEnforce, SelfCert: pipeline.relayCert, Verifier: billingControlTestVerifier{},
+	}
+	pipeline.node.mu.Unlock()
+	pipeline.node.accounts.putCert(payerID.String(), payerCertificate)
+
+	sessionID := billingvoucher.Identifier{92, 1}
+	session := newRelayBillingSession(payerID, sessionID)
+	snapshot := relayBillingSnapshot{
+		cumulative: 1024, lastRecord: billingvoucher.Identifier{92, 2},
+		lastRecordSequence: 1, recordSet: billingvoucher.Digest{92, 3},
+	}
+	voucher, err := pipeline.issueVoucherWithClaim(
+		context.Background(), session, snapshot,
+		func(_ context.Context, claim billingcontrol.Message) (billingcontrol.Message, error) {
+			body, parseErr := billingvoucher.ParseCanonicalBody(claim.Body)
+			if parseErr != nil {
+				return billingcontrol.Message{}, parseErr
+			}
+			if claim.RelayPublicKey != pipeline.node.pubKeyHex() ||
+				claim.RelayBillingPublicKey != crypoto.GetPubKeyStr(relayBillingKey.PublicKey()) ||
+				claim.RelayCert != pipeline.relayCert {
+				t.Fatal("billing claim did not carry the separately bound Relay identity")
+			}
+			if verifyErr := billingvoucher.VerifyRelayBillingSignature(
+				body, claim.RelaySignature, relayBillingKey.PublicKey(),
+			); verifyErr != nil {
+				t.Fatalf("verify independent Relay billing signature: %v", verifyErr)
+			}
+			if verifyErr := billingvoucher.VerifyRelaySignature(
+				body, claim.RelaySignature, pipeline.node.privKey.PublicKey(),
+			); verifyErr == nil {
+				t.Fatal("independent Relay billing signature also verified as the node identity")
+			}
+			payerSignature, signErr := billingvoucher.SignPayerBilling(body, payerBillingKey)
+			if signErr != nil {
+				return billingcontrol.Message{}, signErr
+			}
+			cosigned, voucherErr := billingvoucher.NewMutualVoucher(body, payerSignature, claim.RelaySignature)
+			if voucherErr != nil {
+				return billingcontrol.Message{}, voucherErr
+			}
+			encoded, encodeErr := cosigned.CanonicalBytes()
+			if encodeErr != nil {
+				return billingcontrol.Message{}, encodeErr
+			}
+			return billingcontrol.Message{
+				Type: billingcontrol.TypeCosigned, Voucher: encoded,
+				PayerPublicKey:        crypoto.GetPubKeyStr(payerIdentityKey.PublicKey()),
+				PayerBillingPublicKey: crypoto.GetPubKeyStr(payerBillingKey.PublicKey()),
+				PayerCert:             payerCertificate,
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("issue voucher with independent billing keys: %v", err)
+	}
+	if err := voucher.VerifyBillingSignatures(
+		payerBillingKey.PublicKey(), relayBillingKey.PublicKey(),
+	); err != nil {
+		t.Fatalf("verify issued billing voucher: %v", err)
+	}
+	envelopes, err := pipeline.queue.SnapshotEnvelopes()
+	if err != nil || len(envelopes) != 1 ||
+		envelopes[0].PayerBillingPublicKey != crypoto.GetPubKeyStr(payerBillingKey.PublicKey()) {
+		t.Fatalf("durable independent payer identity = %+v, err=%v", envelopes, err)
+	}
+}
+
 func TestInstallRecoveredVoucherPersistsBeforeAdvancingSession(t *testing.T) {
 	pipeline := newSubmitTestPipeline(t, "http://127.0.0.1:1")
+	relayBillingKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.node.SetBillingPrivateKey(relayBillingKey); err != nil {
+		t.Fatal(err)
+	}
 	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payerBillingKey, err := crypoto.MakeKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -767,15 +934,19 @@ func TestInstallRecoveredVoucherPersistsBeforeAdvancingSession(t *testing.T) {
 		RecordSetDigest: billingvoucher.Digest{93, 5},
 		PolicyDigest:    billingvoucher.CurrentPolicyDigest(), AuthorizedThroughBytes: billingvoucher.MaxBillableBytes,
 	}
-	payerSignature, _ := billingvoucher.SignPayer(body, payerKey)
-	relaySignature, _ := billingvoucher.SignRelay(body, pipeline.node.privKey)
+	payerSignature, _ := billingvoucher.SignPayerBilling(body, payerBillingKey)
+	relaySignature, _ := billingvoucher.SignRelayBilling(body, relayBillingKey)
 	voucher, err := billingvoucher.NewMutualVoucher(body, payerSignature, relaySignature)
 	if err != nil {
 		t.Fatal(err)
 	}
-	certificate := submitTestCertificate(payerKey.PublicKey(), admission.RoleServer)
+	certificate := submitTestBoundCertificate(
+		payerKey.PublicKey(), payerBillingKey.PublicKey(), admission.RoleServer,
+	)
 	if err := pipeline.installRecoveredVoucher(
-		session, advertised, voucher, crypoto.GetPubKeyStr(payerKey.PublicKey()), certificate,
+		session, advertised, voucher, crypoto.GetPubKeyStr(payerKey.PublicKey()),
+		crypoto.GetPubKeyStr(payerBillingKey.PublicKey()),
+		crypoto.GetPubKeyStr(payerBillingKey.PublicKey()), certificate,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1027,5 +1198,23 @@ func submitTestCertificate(publicKey *ecdh.PublicKey, role admission.Role) *admi
 		SubjectNodeID: admission.NodeIDFromPubKeyHex(publicKeyHex), SubjectPubKey: publicKeyHex,
 		Role: role, NotBefore: time.Now().Add(-time.Minute).Unix(), NotAfter: time.Now().Add(time.Hour).Unix(),
 		Nonce: "01", Issuer: "submit-test",
+	}, Sig: "00"}
+}
+
+func submitTestBoundCertificate(
+	identityPublicKey *ecdh.PublicKey,
+	billingPublicKey *ecdh.PublicKey,
+	role admission.Role,
+) *admission.SignedCert {
+	identityPublicKeyHex := crypoto.GetPubKeyStr(identityPublicKey)
+	billingPublicKeyHex := crypoto.GetPubKeyStr(billingPublicKey)
+	billingKeyID, _ := admission.BillingKeyIDFromPublicKeyHex(billingPublicKeyHex)
+	nodeID := admission.NodeIDFromPubKeyHex(identityPublicKeyHex)
+	return &admission.SignedCert{Cert: admission.Cert{
+		SubjectNodeID: nodeID, SubjectPubKey: identityPublicKeyHex,
+		Role: role, NotBefore: time.Now().Add(-time.Minute).Unix(), NotAfter: time.Now().Add(time.Hour).Unix(),
+		Nonce: "01", Issuer: "submit-test",
+		AuthorizationID: admission.NodeAuthorizationID(nodeID, billingKeyID),
+		BillingKeyID:    billingKeyID, BillingPubKey: billingPublicKeyHex,
 	}, Sig: "00"}
 }

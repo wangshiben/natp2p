@@ -624,11 +624,16 @@ func (listener *ServiceListener) clearPending(connectionID string, carrier *serv
 
 func (listener *ServiceListener) billingRelay(carrier *serviceCarrier) string {
 	listener.mu.Lock()
-	defer listener.mu.Unlock()
+	exact := carrier.exact
+	relayAddress := carrier.addr
 	if carrier.entry != nil && carrier.entry.addr != "" {
-		return carrier.entry.addr
+		relayAddress = carrier.entry.addr
 	}
-	return carrier.addr
+	listener.mu.Unlock()
+	if !exact {
+		return listener.node.currentBillingRelay(relayAddress)
+	}
+	return relayAddress
 }
 
 func (listener *ServiceListener) releaseSessionSlot() {

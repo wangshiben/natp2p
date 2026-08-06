@@ -72,9 +72,10 @@ type Queue struct {
 // Envelope contains every payer-controlled artifact required to submit a
 // durable voucher after both the Relay and NAT have restarted.
 type Envelope struct {
-	Voucher        billingvoucher.MutualVoucher
-	PayerPublicKey string
-	PayerCert      *admission.SignedCert
+	Voucher               billingvoucher.MutualVoucher
+	PayerPublicKey        string
+	PayerBillingPublicKey string
+	PayerCert             *admission.SignedCert
 }
 
 type entry struct {
@@ -92,9 +93,10 @@ type channelKey struct {
 }
 
 type diskEnvelope struct {
-	CanonicalVoucher []byte                `json:"canonical_voucher"`
-	PayerPublicKey   string                `json:"payer_public_key,omitempty"`
-	PayerCert        *admission.SignedCert `json:"payer_cert,omitempty"`
+	CanonicalVoucher      []byte                `json:"canonical_voucher"`
+	PayerPublicKey        string                `json:"payer_public_key,omitempty"`
+	PayerBillingPublicKey string                `json:"payer_billing_public_key,omitempty"`
+	PayerCert             *admission.SignedCert `json:"payer_cert,omitempty"`
 }
 
 type replayEntry struct {
@@ -862,15 +864,17 @@ func encodeEnvelope(envelope Envelope, requireSettlementIdentity bool) ([]byte, 
 	}
 	canonicalEnvelope := Envelope{
 		Voucher: voucher, PayerPublicKey: envelope.PayerPublicKey,
-		PayerCert: cloneCertificate(envelope.PayerCert),
+		PayerBillingPublicKey: envelope.PayerBillingPublicKey,
+		PayerCert:             cloneCertificate(envelope.PayerCert),
 	}
 	if err := validateSettlementIdentity(canonicalEnvelope, requireSettlementIdentity); err != nil {
 		return nil, Envelope{}, err
 	}
 	disk := diskEnvelope{
-		CanonicalVoucher: voucherBytes,
-		PayerPublicKey:   canonicalEnvelope.PayerPublicKey,
-		PayerCert:        cloneCertificate(canonicalEnvelope.PayerCert),
+		CanonicalVoucher:      voucherBytes,
+		PayerPublicKey:        canonicalEnvelope.PayerPublicKey,
+		PayerBillingPublicKey: canonicalEnvelope.PayerBillingPublicKey,
+		PayerCert:             cloneCertificate(canonicalEnvelope.PayerCert),
 	}
 	payload, err := json.Marshal(disk)
 	if err != nil {
@@ -901,7 +905,8 @@ func decodeEnvelope(encoded []byte) (Envelope, error) {
 	}
 	envelope := Envelope{
 		Voucher: voucher, PayerPublicKey: disk.PayerPublicKey,
-		PayerCert: cloneCertificate(disk.PayerCert),
+		PayerBillingPublicKey: disk.PayerBillingPublicKey,
+		PayerCert:             cloneCertificate(disk.PayerCert),
 	}
 	if err := validateSettlementIdentity(envelope, false); err != nil {
 		return Envelope{}, err
@@ -914,7 +919,7 @@ func decodeEnvelope(encoded []byte) (Envelope, error) {
 }
 
 func validateSettlementIdentity(envelope Envelope, required bool) error {
-	if envelope.PayerPublicKey == "" && envelope.PayerCert == nil && !required {
+	if envelope.PayerPublicKey == "" && envelope.PayerBillingPublicKey == "" && envelope.PayerCert == nil && !required {
 		return nil
 	}
 	if envelope.PayerPublicKey == "" || envelope.PayerCert == nil {
@@ -934,13 +939,34 @@ func validateSettlementIdentity(envelope Envelope, required bool) error {
 		envelope.PayerCert.Cert.Role != admission.RoleServer {
 		return errors.New("billingqueue: payer settlement identity does not match voucher")
 	}
+	if err := admission.ValidateBillingBinding(envelope.PayerCert.Cert); err != nil {
+		return fmt.Errorf("billingqueue: payer certificate billing binding is invalid: %w", err)
+	}
+	if envelope.PayerCert.Cert.AuthorizationID == "" {
+		if envelope.PayerBillingPublicKey != "" {
+			return errors.New("billingqueue: legacy payer certificate cannot use an independent billing key")
+		}
+		return nil
+	}
+	if envelope.PayerBillingPublicKey == "" ||
+		envelope.PayerBillingPublicKey != envelope.PayerCert.Cert.BillingPubKey {
+		return errors.New("billingqueue: payer billing public key does not match certificate")
+	}
+	billingPublicKeyBytes, err := hex.DecodeString(envelope.PayerBillingPublicKey)
+	if err != nil || hex.EncodeToString(billingPublicKeyBytes) != envelope.PayerBillingPublicKey {
+		return errors.New("billingqueue: payer billing public key is not canonical hex")
+	}
+	if _, err := ecdh.P256().NewPublicKey(billingPublicKeyBytes); err != nil {
+		return errors.New("billingqueue: payer billing public key is invalid")
+	}
 	return nil
 }
 
 func cloneEnvelope(envelope Envelope) Envelope {
 	return Envelope{
 		Voucher: cloneVoucher(envelope.Voucher), PayerPublicKey: envelope.PayerPublicKey,
-		PayerCert: cloneCertificate(envelope.PayerCert),
+		PayerBillingPublicKey: envelope.PayerBillingPublicKey,
+		PayerCert:             cloneCertificate(envelope.PayerCert),
 	}
 }
 

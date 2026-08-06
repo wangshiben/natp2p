@@ -6,13 +6,13 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	mathrand "math/rand"
 	"net"
 	"net/http"
@@ -28,6 +28,7 @@ import (
 
 	"bnfs_p2p/admission"
 	"bnfs_p2p/billingvoucher"
+	"bnfs_p2p/logx"
 )
 
 const (
@@ -57,31 +58,35 @@ var scenariosByRole = map[string][]string{
 }
 
 type configuration struct {
-	role         string
-	listen       string
-	caURL        string
-	peerURL      string
-	stateDir     string
-	seed         string
-	interval     time.Duration
-	attackOffset time.Duration
-	runOnce      bool
-	httpClient   *http.Client
+	role           string
+	listen         string
+	caURL          string
+	peerURL        string
+	stateDir       string
+	billingKeyFile string
+	seed           string
+	interval       time.Duration
+	attackOffset   time.Duration
+	runOnce        bool
+	httpClient     *http.Client
 }
 
 type attackerNode struct {
-	config    configuration
-	private   *ecdh.PrivateKey
-	identity  identityWire
-	caClient  *admission.CAClient
-	http      *http.Client
-	statusMu  sync.Mutex
-	fixtureMu sync.Mutex
-	snapshot  statusSnapshot
-	random    *mathrand.Rand
-	server    *http.Server
-	ready     chan struct{}
-	readyOnce sync.Once
+	config           configuration
+	private          *ecdh.PrivateKey
+	billingPrivate   *ecdh.PrivateKey
+	billingPublicHex string
+	billingKeyID     string
+	identity         identityWire
+	caClient         *admission.CAClient
+	http             *http.Client
+	statusMu         sync.Mutex
+	fixtureMu        sync.Mutex
+	snapshot         statusSnapshot
+	random           *mathrand.Rand
+	server           *http.Server
+	ready            chan struct{}
+	readyOnce        sync.Once
 }
 
 type enrollmentRequest struct {
@@ -89,6 +94,23 @@ type enrollmentRequest struct {
 	Role          admission.Role `json:"role"`
 	PublicKey     string         `json:"publicKey"`
 	NodeID        string         `json:"nodeID"`
+}
+
+type billingPrivateKeyJWK struct {
+	KeyType string `json:"kty"`
+	Curve   string `json:"crv"`
+	X       string `json:"x"`
+	Y       string `json:"y"`
+	D       string `json:"d"`
+}
+
+type billingPrivateKeyBundle struct {
+	Version            int                  `json:"version"`
+	KeyID              string               `json:"key_id"`
+	Algorithm          string               `json:"algorithm"`
+	PrivateKeyJWK      billingPrivateKeyJWK `json:"private_key_jwk"`
+	PublicKeyHex       string               `json:"public_key_hex"`
+	RegistrationStatus string               `json:"registration_status"`
 }
 
 type identityWire struct {
@@ -154,6 +176,13 @@ type voucherHTTPResponse struct {
 	Body   admission.VoucherSettleResponse
 }
 
+type balanceSnapshot struct {
+	Balance                    int64
+	AuthorizationConsumedBytes int64
+	AuthorizationEarnedBytes   int64
+	AuthorizationScoped        bool
+}
+
 type coverageCounter struct {
 	Executed   int `json:"executed"`
 	Contained  int `json:"contained"`
@@ -203,18 +232,20 @@ type statusSnapshot struct {
 func main() {
 	config, err := parseConfiguration()
 	if err != nil {
-		log.Fatalf("billing adversary configuration: %v", err)
+		logx.Errorf("billing adversary configuration: %v", err)
+		os.Exit(1)
 	}
 	runContext, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 
 	node, err := newAttackerNode(config)
 	if err != nil {
-		log.Fatalf("billing adversary startup: %v", err)
+		logx.Errorf("billing adversary startup: %v", err)
+		os.Exit(1)
 	}
 	if err := node.run(runContext); err != nil && !errors.Is(err, context.Canceled) {
 		node.fail("container_probe_runtime_failed")
-		log.Fatalf("billing adversary runtime: %v", err)
+		logx.Errorf("billing adversary stopped after isolated runtime failure: %v", err)
 	}
 }
 
@@ -224,6 +255,7 @@ func parseConfiguration() (configuration, error) {
 	caURL := flag.String("ca", "http://ca:9100", "CA base URL")
 	peerURL := flag.String("peer", "", "peer adversary base URL")
 	stateDir := flag.String("state-dir", "/state", "private persistent state directory")
+	billingKeyFile := flag.String("billing-key", os.Getenv("BNFS_BILLING_KEY_FILE"), "CA Web billing private key bundle")
 	seed := flag.String("seed", "bnfs-container-adversary-v1", "deterministic scheduling seed")
 	interval := flag.Duration("interval", 15*time.Second, "random attack interval")
 	attackOffset := flag.Duration("attack-offset", 0, "delay before the first random attack")
@@ -233,14 +265,15 @@ func parseConfiguration() (configuration, error) {
 	config := configuration{
 		role: *role, listen: *listen, caURL: strings.TrimRight(*caURL, "/"),
 		peerURL: strings.TrimRight(*peerURL, "/"), stateDir: *stateDir,
-		seed: *seed, interval: *interval, attackOffset: *attackOffset, runOnce: *runOnce,
+		billingKeyFile: strings.TrimSpace(*billingKeyFile),
+		seed:           *seed, interval: *interval, attackOffset: *attackOffset, runOnce: *runOnce,
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 	}
 	if _, ok := scenariosByRole[config.role]; !ok {
 		return configuration{}, errors.New("role must be natserver or relay")
 	}
-	if config.listen == "" || config.peerURL == "" || config.caURL == "" || config.seed == "" {
-		return configuration{}, errors.New("listen, peer, CA and seed are required")
+	if config.listen == "" || config.peerURL == "" || config.caURL == "" || config.seed == "" || config.billingKeyFile == "" {
+		return configuration{}, errors.New("listen, peer, CA, seed and billing key are required")
 	}
 	if err := validateAttackSchedule(config.interval, config.attackOffset); err != nil {
 		return configuration{}, err
@@ -253,6 +286,9 @@ func parseConfiguration() (configuration, error) {
 	}
 	if config.stateDir == "" || filepath.Clean(config.stateDir) == string(filepath.Separator) {
 		return configuration{}, errors.New("invalid state directory")
+	}
+	if filepath.Clean(config.billingKeyFile) == string(filepath.Separator) {
+		return configuration{}, errors.New("invalid billing key file")
 	}
 	return config, nil
 }
@@ -283,6 +319,10 @@ func newAttackerNode(config configuration) (*attackerNode, error) {
 	if err != nil {
 		return nil, err
 	}
+	billingPrivateKey, billingPublicHex, billingKeyID, err := loadBillingPrivateKey(config.billingKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load billing private key: %w", err)
+	}
 	nodeID, err := billingvoucher.NodeIDFromPublicKey(privateKey.PublicKey())
 	if err != nil {
 		return nil, err
@@ -312,12 +352,10 @@ func newAttackerNode(config configuration) (*attackerNode, error) {
 		coverage[scenario] = coverageCounter{}
 	}
 	node := &attackerNode{
-		config:   config,
-		private:  privateKey,
-		caClient: admission.NewCAClient(config.caURL),
-		http:     config.httpClient,
-		random:   mathrand.New(mathrand.NewSource(seedValue)),
-		ready:    make(chan struct{}),
+		config: config, private: privateKey,
+		billingPrivate: billingPrivateKey, billingPublicHex: billingPublicHex, billingKeyID: billingKeyID,
+		caClient: admission.NewCAClient(config.caURL), http: config.httpClient,
+		random: mathrand.New(mathrand.NewSource(seedValue)), ready: make(chan struct{}),
 		snapshot: statusSnapshot{
 			SchemaVersion: schemaVersion,
 			Status:        "STARTING",
@@ -358,7 +396,7 @@ func (node *attackerNode) run(context context.Context) error {
 
 	for _, scenario := range deterministicInitialOrder(scenariosByRole[node.config.role], node.random) {
 		if err := node.execute(context, scenario); err != nil {
-			return err
+			logx.Warnf("billing adversary initial scenario status persistence failed scenario=%s error=%v", scenario, err)
 		}
 	}
 	if node.config.runOnce {
@@ -386,12 +424,13 @@ func (node *attackerNode) run(context context.Context) error {
 			return context.Err()
 		case <-heartbeatTicker.C:
 			if err := node.publish(); err != nil {
-				return err
+				logx.Warnf("billing adversary heartbeat persistence failed: %v", err)
 			}
 		case <-attackTimer.C:
 			scenarios := scenariosByRole[node.config.role]
-			if err := node.execute(context, scenarios[node.random.Intn(len(scenarios))]); err != nil {
-				return err
+			scenario := scenarios[node.random.Intn(len(scenarios))]
+			if err := node.execute(context, scenario); err != nil {
+				logx.Warnf("billing adversary scenario status persistence failed scenario=%s error=%v", scenario, err)
 			}
 			attackTimer.Reset(node.config.interval)
 		}
@@ -422,7 +461,7 @@ func (node *attackerNode) startServer() error {
 	}
 	go func() {
 		if err := node.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("peer protocol server failed: %v", err)
+			logx.Errorf("peer protocol server failed: %v", err)
 		}
 	}()
 	return nil
@@ -457,20 +496,16 @@ func (node *attackerNode) waitForProvisioning(context context.Context) (identity
 				}
 				if err := node.caClient.Verify(&certificate, admission.VerifyOptions{
 					ExpectNodeID: nodeID.String(), ExpectRole: role,
-				}); err == nil && certificate.Cert.SubjectPubKey == hex.EncodeToString(node.private.PublicKey().Bytes()) {
+				}); err == nil && certificate.Cert.SubjectPubKey == hex.EncodeToString(node.private.PublicKey().Bytes()) &&
+					certificate.Cert.BillingKeyID == node.billingKeyID && certificate.Cert.BillingPubKey == node.billingPublicHex &&
+					certificate.Cert.AuthorizationID == admission.NodeAuthorizationID(nodeID.String(), node.billingKeyID) {
 					identity := identityWire{
 						Role:      role,
 						PublicKey: certificate.Cert.SubjectPubKey,
 						NodeID:    nodeID.String(),
 						Cert:      certificate,
 					}
-					if node.config.role != "natserver" {
-						return identity, nil
-					}
-					balance, _, balanceErr := node.balance(context, identity.NodeID)
-					if balanceErr == nil && balance >= defaultCreditBytes {
-						return identity, nil
-					}
+					return identity, nil
 				}
 			}
 		}
@@ -550,7 +585,7 @@ func (node *attackerNode) runRelayScenario(context context.Context, scenario, no
 	case "relay_window_overrun":
 		candidate := fixtureBody(nonce, peer.nodeIdentifier(), node.identity.nodeIdentifier(), 1, billingvoucher.CumulativeWindowBytes+1, billingvoucher.Identifier{}, "overrun")
 		valid := fixtureBody(nonce+"-signature", peer.nodeIdentifier(), node.identity.nodeIdentifier(), 1, billingvoucher.CumulativeWindowBytes, billingvoucher.Identifier{}, "valid")
-		relaySignature, err := billingvoucher.SignRelay(valid, node.private)
+		relaySignature, err := node.signRelay(valid)
 		if err != nil {
 			return failedEvent("relay_signature_fixture_failed")
 		}
@@ -574,11 +609,11 @@ func (node *attackerNode) runRelayScenario(context context.Context, scenario, no
 }
 
 func (node *attackerNode) expectNatRefusal(context context.Context, scenario, nonce string, body billingvoucher.VoucherBody, payer identityWire, defense string) statusEvent {
-	relaySignature, err := billingvoucher.SignRelay(body, node.private)
+	relaySignature, err := node.signRelay(body)
 	if err != nil {
 		return failedEvent("relay_attack_signature_failed")
 	}
-	before, _, err := node.balance(context, payer.NodeID)
+	before, _, err := node.balance(context, payer)
 	if err != nil {
 		return failedEvent("payer_balance_unavailable")
 	}
@@ -588,13 +623,13 @@ func (node *attackerNode) expectNatRefusal(context context.Context, scenario, no
 	if err != nil {
 		return failedEvent("nat_sign_protocol_unavailable")
 	}
-	after, _, err := node.balance(context, payer.NodeID)
+	after, _, err := node.balance(context, payer)
 	if err != nil {
 		return failedEvent("payer_balance_unavailable")
 	}
-	delta := before - after
-	if status != http.StatusConflict || response.ErrorCode == "" || delta != 0 {
-		return statusEvent{Passed: false, FailureCode: "malicious_relay_claim_not_contained", RequestCount: 1, HTTPStatuses: []int{status}, BalanceDelta: delta, StateChanged: delta != 0}
+	delta, stateChanged := balanceDifference(before, after)
+	if status != http.StatusConflict || response.ErrorCode == "" || stateChanged {
+		return statusEvent{Passed: false, FailureCode: "malicious_relay_claim_not_contained", RequestCount: 1, HTTPStatuses: []int{status}, BalanceDelta: delta, StateChanged: stateChanged}
 	}
 	return containedEvent(defense, 1, []int{status}, "malicious-relay->malicious-natserver")
 }
@@ -621,7 +656,7 @@ func (node *attackerNode) runReplay(context context.Context, scenario, nonce str
 		event.HTTPStatuses = append([]int{signStatus}, baselineStatuses...)
 		return event
 	}
-	before, _, err := node.balance(context, payer.NodeID)
+	before, _, err := node.balance(context, payer)
 	if err != nil {
 		return failedEvent("payer_balance_unavailable")
 	}
@@ -632,15 +667,15 @@ func (node *attackerNode) runReplay(context context.Context, scenario, nonce str
 		event.HTTPStatuses = append([]int{signStatus}, baselineStatuses...)
 		return event
 	}
-	after, _, err := node.balance(context, payer.NodeID)
+	after, _, err := node.balance(context, payer)
 	if err != nil {
 		return failedEvent("payer_balance_unavailable")
 	}
-	delta := before - after
+	delta, stateChanged := balanceDifference(before, after)
 	statuses := append([]int{signStatus}, baselineStatuses...)
 	statuses = append(statuses, replay.Status)
-	if replay.Status != http.StatusOK || replay.Body.Delta != 0 || !replay.Body.Replayed || delta != 0 {
-		return statusEvent{Passed: false, FailureCode: "duplicate_deduction_detected", RequestCount: 2 + baselineRequests, HTTPStatuses: statuses, BalanceDelta: delta, StateChanged: delta != 0}
+	if replay.Status != http.StatusOK || replay.Body.Delta != 0 || !replay.Body.Replayed || stateChanged {
+		return statusEvent{Passed: false, FailureCode: "duplicate_deduction_detected", RequestCount: 2 + baselineRequests, HTTPStatuses: statuses, BalanceDelta: delta, StateChanged: stateChanged}
 	}
 	return containedEvent("ca_idempotent_replay", 2+baselineRequests, statuses, "malicious-relay->malicious-natserver->ca")
 }
@@ -696,7 +731,7 @@ func (node *attackerNode) runTamper(context context.Context, scenario, nonce str
 	tampered := voucher.Body
 	tampered.LastRecordID[0] ^= 1
 	tampered.RecordSetDigest[0] ^= 1
-	relaySignature, err := billingvoucher.SignRelay(tampered, node.private)
+	relaySignature, err := node.signRelay(tampered)
 	if err != nil {
 		return failedEvent("tampered_relay_signature_failed")
 	}
@@ -708,7 +743,7 @@ func (node *attackerNode) runTamper(context context.Context, scenario, nonce str
 	if err != nil {
 		return failedEvent("voucher_request_build_failed")
 	}
-	before, _, err := node.balance(context, payer.NodeID)
+	before, _, err := node.balance(context, payer)
 	if err != nil {
 		return failedEvent("payer_balance_unavailable")
 	}
@@ -716,20 +751,20 @@ func (node *attackerNode) runTamper(context context.Context, scenario, nonce str
 	if err != nil {
 		return failedEvent("tampered_voucher_request_failed")
 	}
-	after, _, err := node.balance(context, payer.NodeID)
+	after, _, err := node.balance(context, payer)
 	if err != nil {
 		return failedEvent("payer_balance_unavailable")
 	}
-	delta := before - after
+	delta, stateChanged := balanceDifference(before, after)
 	statuses := []int{signStatus, response.Status}
-	if response.Status < 400 || response.Status >= 500 || delta != 0 {
-		return statusEvent{Passed: false, FailureCode: "tampered_voucher_accepted", RequestCount: 2, HTTPStatuses: statuses, BalanceDelta: delta, StateChanged: delta != 0}
+	if response.Status < 400 || response.Status >= 500 || stateChanged {
+		return statusEvent{Passed: false, FailureCode: "tampered_voucher_accepted", RequestCount: 2, HTTPStatuses: statuses, BalanceDelta: delta, StateChanged: stateChanged}
 	}
 	return containedEvent("ca_rejected_tampered_double_signature", 2, statuses, "malicious-relay->malicious-natserver->ca")
 }
 
 func (node *attackerNode) requestMutualVoucher(context context.Context, scenario, nonce string, body billingvoucher.VoucherBody, payer identityWire) (billingvoucher.MutualVoucher, int, error) {
-	relaySignature, err := billingvoucher.SignRelay(body, node.private)
+	relaySignature, err := node.signRelay(body)
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, 0, err
 	}
@@ -743,7 +778,11 @@ func (node *attackerNode) requestMutualVoucher(context context.Context, scenario
 	if err != nil {
 		return billingvoucher.MutualVoucher{}, status, err
 	}
-	if err := voucher.Verify(payer.public(), node.private.PublicKey()); err != nil {
+	payerBillingKey, err := billingPublicKey(payer)
+	if err != nil {
+		return billingvoucher.MutualVoucher{}, status, err
+	}
+	if err := voucher.VerifyBillingSignatures(payerBillingKey, node.billingPublicKey()); err != nil {
 		return billingvoucher.MutualVoucher{}, status, err
 	}
 	return voucher, status, nil
@@ -777,7 +816,7 @@ func (node *attackerNode) runNatChainAttack(context context.Context, scenario, n
 		baselineBytes = 768 << 10
 	}
 	baselineBody := fixtureBody(nonce, node.identity.nodeIdentifier(), relay.nodeIdentifier(), 1, baselineBytes, billingvoucher.Identifier{}, "baseline")
-	payerSignature, err := billingvoucher.SignPayer(baselineBody, node.private)
+	payerSignature, err := node.signPayer(baselineBody)
 	if err != nil {
 		return failedEvent("nat_baseline_signature_failed")
 	}
@@ -802,7 +841,7 @@ func (node *attackerNode) runNatChainAttack(context context.Context, scenario, n
 	} else {
 		candidateBody = fixtureBody(nonce, node.identity.nodeIdentifier(), relay.nodeIdentifier(), 1, 640<<10, billingvoucher.Identifier{}, "fork")
 	}
-	candidateSignature, err := billingvoucher.SignPayer(candidateBody, node.private)
+	candidateSignature, err := node.signPayer(candidateBody)
 	if err != nil {
 		return failedEvent("nat_candidate_signature_failed")
 	}
@@ -955,7 +994,8 @@ func (node *attackerNode) handleNatSign(writer http.ResponseWriter, request *htt
 		writeJSON(writer, http.StatusForbidden, signResponse{ErrorCode: "relay_identity_invalid"})
 		return
 	}
-	if err := billingvoucher.VerifyRelaySignature(input.Body, input.RelaySignature, input.RelayIdentity.public()); err != nil {
+	relayBillingKey, err := billingPublicKey(input.RelayIdentity)
+	if err != nil || billingvoucher.VerifyRelayBillingSignature(input.Body, input.RelaySignature, relayBillingKey) != nil {
 		writeJSON(writer, http.StatusForbidden, signResponse{ErrorCode: "relay_signature_invalid"})
 		return
 	}
@@ -968,7 +1008,7 @@ func (node *attackerNode) handleNatSign(writer http.ResponseWriter, request *htt
 		writeJSON(writer, http.StatusConflict, signResponse{ErrorCode: "nat_meter_mismatch"})
 		return
 	}
-	signature, err := billingvoucher.SignPayer(input.Body, node.private)
+	signature, err := node.signPayer(input.Body)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, signResponse{ErrorCode: "payer_signature_failed"})
 		return
@@ -990,7 +1030,7 @@ func (node *attackerNode) handleRelayBaseline(writer http.ResponseWriter, reques
 		writeJSON(writer, http.StatusForbidden, baselineResponse{ErrorCode: "payer_proposal_invalid"})
 		return
 	}
-	relaySignature, err := billingvoucher.SignRelay(proposal.Body, node.private)
+	relaySignature, err := node.signRelay(proposal.Body)
 	if err != nil {
 		writeJSON(writer, http.StatusConflict, baselineResponse{ErrorCode: "relay_signature_refused"})
 		return
@@ -1049,7 +1089,8 @@ func (node *attackerNode) handleRelayEvaluate(writer http.ResponseWriter, reques
 		writeJSON(writer, http.StatusBadRequest, peerResult{Passed: false, FailureCode: "baseline_invalid"})
 		return
 	}
-	if err := baseline.Verify(input.Candidate.PayerIdentity.public(), node.private.PublicKey()); err != nil {
+	payerBillingKey, billingErr := billingPublicKey(input.Candidate.PayerIdentity)
+	if billingErr != nil || baseline.VerifyBillingSignatures(payerBillingKey, node.billingPublicKey()) != nil {
 		writeJSON(writer, http.StatusForbidden, peerResult{Passed: false, FailureCode: "baseline_signature_invalid"})
 		return
 	}
@@ -1057,12 +1098,12 @@ func (node *attackerNode) handleRelayEvaluate(writer http.ResponseWriter, reques
 		writeJSON(writer, http.StatusForbidden, peerResult{Passed: false, FailureCode: "candidate_identity_invalid"})
 		return
 	}
-	before, _, err := node.balance(request.Context(), input.Candidate.PayerIdentity.NodeID)
+	before, _, err := node.balance(request.Context(), input.Candidate.PayerIdentity)
 	if err != nil {
 		writeJSON(writer, http.StatusBadGateway, peerResult{Passed: false, FailureCode: "payer_balance_unavailable"})
 		return
 	}
-	relaySignature, err := billingvoucher.SignRelay(input.Candidate.Body, node.private)
+	relaySignature, err := node.signRelay(input.Candidate.Body)
 	if err != nil {
 		writeJSON(writer, http.StatusOK, peerResult{Passed: true, Defense: "relay_rejected_invalid_nat_candidate", RequestCount: 1})
 		return
@@ -1073,14 +1114,14 @@ func (node *attackerNode) handleRelayEvaluate(writer http.ResponseWriter, reques
 		return
 	}
 	chainErr := billingvoucher.ValidateSuccessor(baseline, candidate)
-	after, _, balanceErr := node.balance(request.Context(), input.Candidate.PayerIdentity.NodeID)
+	after, _, balanceErr := node.balance(request.Context(), input.Candidate.PayerIdentity)
 	if balanceErr != nil {
 		writeJSON(writer, http.StatusBadGateway, peerResult{Passed: false, FailureCode: "payer_balance_unavailable"})
 		return
 	}
-	delta := before - after
-	if chainErr == nil || delta != 0 {
-		writeJSON(writer, http.StatusOK, peerResult{Passed: false, FailureCode: "malicious_nat_chain_accepted", RequestCount: 1, BalanceDelta: delta, StateChanged: delta != 0})
+	delta, stateChanged := balanceDifference(before, after)
+	if chainErr == nil || stateChanged {
+		writeJSON(writer, http.StatusOK, peerResult{Passed: false, FailureCode: "malicious_nat_chain_accepted", RequestCount: 1, BalanceDelta: delta, StateChanged: stateChanged})
 		return
 	}
 	defense := "relay_rejected_stale_nat_watermark"
@@ -1106,12 +1147,12 @@ func (node *attackerNode) handleRelayRefusal(writer http.ResponseWriter, request
 		return
 	}
 	body := fixtureBody(input.Nonce, payer.nodeIdentifier(), node.identity.nodeIdentifier(), 1, 512<<10, billingvoucher.Identifier{}, "main")
-	relaySignature, err := billingvoucher.SignRelay(body, node.private)
+	relaySignature, err := node.signRelay(body)
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, peerResult{Passed: false, FailureCode: "relay_signature_failed"})
 		return
 	}
-	before, _, err := node.balance(request.Context(), payer.NodeID)
+	before, _, err := node.balance(request.Context(), payer)
 	if err != nil {
 		writeJSON(writer, http.StatusBadGateway, peerResult{Passed: false, FailureCode: "payer_balance_unavailable"})
 		return
@@ -1125,14 +1166,14 @@ func (node *attackerNode) handleRelayRefusal(writer http.ResponseWriter, request
 		writeJSON(writer, http.StatusBadGateway, peerResult{Passed: false, FailureCode: "nat_refusal_protocol_unavailable"})
 		return
 	}
-	after, _, err := node.balance(request.Context(), payer.NodeID)
+	after, _, err := node.balance(request.Context(), payer)
 	if err != nil {
 		writeJSON(writer, http.StatusBadGateway, peerResult{Passed: false, FailureCode: "payer_balance_unavailable"})
 		return
 	}
-	delta := before - after
-	if status != http.StatusConflict || response.ErrorCode != "nat_signature_refused" || delta != 0 {
-		writeJSON(writer, http.StatusOK, peerResult{Passed: false, FailureCode: "nat_refusal_bypassed", RequestCount: 1, HTTPStatuses: []int{status}, BalanceDelta: delta, StateChanged: delta != 0})
+	delta, stateChanged := balanceDifference(before, after)
+	if status != http.StatusConflict || response.ErrorCode != "nat_signature_refused" || stateChanged {
+		writeJSON(writer, http.StatusOK, peerResult{Passed: false, FailureCode: "nat_refusal_bypassed", RequestCount: 1, HTTPStatuses: []int{status}, BalanceDelta: delta, StateChanged: stateChanged})
 		return
 	}
 	writeJSON(writer, http.StatusOK, peerResult{Passed: true, Defense: "relay_never_submitted_unsigned_bill", RequestCount: 1, HTTPStatuses: []int{status}})
@@ -1148,7 +1189,11 @@ func (node *attackerNode) verifyPayerProposal(proposal payerProposal) error {
 	if err := node.verifyPeerIdentity(proposal.PayerIdentity, admission.RoleServer, proposal.Body.PayerNatID); err != nil {
 		return err
 	}
-	return billingvoucher.VerifyPayerSignature(proposal.Body, proposal.PayerSignature, proposal.PayerIdentity.public())
+	billingKey, err := billingPublicKey(proposal.PayerIdentity)
+	if err != nil {
+		return err
+	}
+	return billingvoucher.VerifyPayerBillingSignature(proposal.Body, proposal.PayerSignature, billingKey)
 }
 
 func (node *attackerNode) verifyPeerIdentity(identity identityWire, role admission.Role, expected billingvoucher.Identifier) error {
@@ -1195,11 +1240,13 @@ func (node *attackerNode) voucherRequest(voucher billingvoucher.MutualVoucher, p
 		return admission.VoucherSettleRequest{}, err
 	}
 	return admission.VoucherSettleRequest{
-		CanonicalVoucher: canonical,
-		PayerPublicKey:   payer.PublicKey,
-		RelayPublicKey:   relay.PublicKey,
-		PayerCert:        &payer.Cert,
-		RelayCert:        &relay.Cert,
+		CanonicalVoucher:   canonical,
+		PayerPublicKey:     payer.PublicKey,
+		RelayPublicKey:     relay.PublicKey,
+		PayerBillingPubKey: payer.Cert.Cert.BillingPubKey,
+		RelayBillingPubKey: relay.Cert.Cert.BillingPubKey,
+		PayerCert:          &payer.Cert,
+		RelayCert:          &relay.Cert,
 	}, nil
 }
 
@@ -1209,26 +1256,55 @@ func (node *attackerNode) submitVoucher(context context.Context, request admissi
 	return voucherHTTPResponse{Status: status, Body: response}, err
 }
 
-func (node *attackerNode) balance(context context.Context, nodeID string) (int64, int, error) {
-	request, err := http.NewRequestWithContext(context, http.MethodGet, node.config.caURL+admission.PathBalance+"?node="+url.QueryEscape(nodeID), nil)
+func (node *attackerNode) balance(context context.Context, identity identityWire) (balanceSnapshot, int, error) {
+	query := "?node=" + url.QueryEscape(identity.NodeID)
+	authorizationID := identity.Cert.Cert.AuthorizationID
+	if authorizationID != "" {
+		query += "&authorization_id=" + url.QueryEscape(authorizationID)
+	}
+	request, err := http.NewRequestWithContext(context, http.MethodGet, node.config.caURL+admission.PathBalance+query, nil)
 	if err != nil {
-		return 0, 0, err
+		return balanceSnapshot{}, 0, err
 	}
 	response, err := node.http.Do(request)
 	if err != nil {
-		return 0, 0, err
+		return balanceSnapshot{}, 0, err
 	}
 	defer response.Body.Close()
 	var body struct {
-		Balance int64 `json:"balance"`
+		Balance                    int64  `json:"balance"`
+		AuthorizationConsumedBytes *int64 `json:"authorization_consumed_bytes"`
+		AuthorizationEarnedBytes   *int64 `json:"authorization_earned_bytes"`
 	}
 	if err := decodeResponse(response.Body, &body); err != nil {
-		return 0, response.StatusCode, err
+		return balanceSnapshot{}, response.StatusCode, err
 	}
 	if response.StatusCode != http.StatusOK {
-		return 0, response.StatusCode, errors.New("balance request rejected")
+		return balanceSnapshot{}, response.StatusCode, errors.New("balance request rejected")
 	}
-	return body.Balance, response.StatusCode, nil
+	if (body.AuthorizationConsumedBytes == nil) != (body.AuthorizationEarnedBytes == nil) {
+		return balanceSnapshot{}, response.StatusCode, errors.New("incomplete authorization balance response")
+	}
+	snapshot := balanceSnapshot{Balance: body.Balance}
+	if body.AuthorizationConsumedBytes != nil {
+		if authorizationID == "" || *body.AuthorizationConsumedBytes < 0 || *body.AuthorizationEarnedBytes < 0 {
+			return balanceSnapshot{}, response.StatusCode, errors.New("invalid authorization balance response")
+		}
+		snapshot.AuthorizationConsumedBytes = *body.AuthorizationConsumedBytes
+		snapshot.AuthorizationEarnedBytes = *body.AuthorizationEarnedBytes
+		snapshot.AuthorizationScoped = true
+	}
+	return snapshot, response.StatusCode, nil
+}
+
+func balanceDifference(before, after balanceSnapshot) (int64, bool) {
+	if before.AuthorizationScoped && after.AuthorizationScoped {
+		consumed := after.AuthorizationConsumedBytes - before.AuthorizationConsumedBytes
+		earned := after.AuthorizationEarnedBytes - before.AuthorizationEarnedBytes
+		return consumed - earned, consumed != 0 || earned != 0
+	}
+	delta := before.Balance - after.Balance
+	return delta, delta != 0
 }
 
 func (node *attackerNode) postPeer(context context.Context, path string, input, output any) (int, error) {
@@ -1356,6 +1432,46 @@ func (identity identityWire) public() *ecdh.PublicKey {
 	return public
 }
 
+func (node *attackerNode) billingPublicKey() *ecdh.PublicKey {
+	if node.billingPublicHex == "" && node.private != nil {
+		return node.private.PublicKey()
+	}
+	public, _ := admission.ParseIdentityPublicKey(node.billingPublicHex)
+	return public
+}
+
+func (node *attackerNode) signPayer(body billingvoucher.VoucherBody) ([]byte, error) {
+	if node.billingPrivate != nil {
+		return billingvoucher.SignPayerBilling(body, node.billingPrivate)
+	}
+	return billingvoucher.SignPayer(body, node.private)
+}
+
+func (node *attackerNode) signRelay(body billingvoucher.VoucherBody) ([]byte, error) {
+	if node.billingPrivate != nil {
+		return billingvoucher.SignRelayBilling(body, node.billingPrivate)
+	}
+	return billingvoucher.SignRelay(body, node.private)
+}
+
+func billingPublicKey(identity identityWire) (*ecdh.PublicKey, error) {
+	if identity.Cert.Cert.BillingPubKey == "" || identity.Cert.Cert.BillingKeyID == "" {
+		if public := identity.public(); public != nil {
+			return public, nil
+		}
+		return nil, errors.New("identity does not contain a billing binding")
+	}
+	public, err := admission.ParseIdentityPublicKey(identity.Cert.Cert.BillingPubKey)
+	if err != nil {
+		return nil, err
+	}
+	keyID, err := admission.BillingKeyIDFromPublicKeyHex(identity.Cert.Cert.BillingPubKey)
+	if err != nil || keyID != identity.Cert.Cert.BillingKeyID {
+		return nil, errors.New("identity billing key binding is invalid")
+	}
+	return public, nil
+}
+
 func (identity identityWire) nodeIdentifier() billingvoucher.Identifier {
 	identifier, _ := billingvoucher.ParseIdentifierHex(identity.NodeID)
 	return identifier
@@ -1405,6 +1521,57 @@ func loadOrCreateIdentity(path string) (*ecdh.PrivateKey, error) {
 		return nil, err
 	}
 	return privateKey, nil
+}
+
+func loadBillingPrivateKey(filename string) (*ecdh.PrivateKey, string, string, error) {
+	if filename == "" {
+		return nil, "", "", errors.New("billing key file is required")
+	}
+	info, err := os.Lstat(filename)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() <= 0 || info.Size() > 64<<10 {
+		return nil, "", "", errors.New("billing key file must be a regular file of at most 64 KiB")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, "", "", errors.New("billing key file permissions must be 0600 or stricter")
+	}
+	encoded, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, "", "", err
+	}
+	var bundle billingPrivateKeyBundle
+	if err := json.Unmarshal(encoded, &bundle); err != nil {
+		return nil, "", "", err
+	}
+	if bundle.Version != 1 || bundle.Algorithm != "ECDSA_P256_SHA256" || bundle.RegistrationStatus != "active" ||
+		bundle.PrivateKeyJWK.KeyType != "EC" || bundle.PrivateKeyJWK.Curve != "P-256" {
+		return nil, "", "", errors.New("billing key bundle format or registration status is invalid")
+	}
+	privateScalar, err := base64.RawURLEncoding.DecodeString(bundle.PrivateKeyJWK.D)
+	if err != nil || len(privateScalar) != 32 {
+		return nil, "", "", errors.New("billing key JWK d is invalid")
+	}
+	privateKey, err := ecdh.P256().NewPrivateKey(privateScalar)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("billing key scalar is invalid: %w", err)
+	}
+	publicHex := hex.EncodeToString(privateKey.PublicKey().Bytes())
+	if publicHex != strings.ToLower(bundle.PublicKeyHex) {
+		return nil, "", "", errors.New("billing key public key does not match private key")
+	}
+	x, xErr := base64.RawURLEncoding.DecodeString(bundle.PrivateKeyJWK.X)
+	y, yErr := base64.RawURLEncoding.DecodeString(bundle.PrivateKeyJWK.Y)
+	if xErr != nil || yErr != nil || len(x) != 32 || len(y) != 32 ||
+		hex.EncodeToString(append(append([]byte{4}, x...), y...)) != publicHex {
+		return nil, "", "", errors.New("billing key JWK public coordinates do not match")
+	}
+	keyID, err := admission.BillingKeyIDFromPublicKeyHex(publicHex)
+	if err != nil || keyID != strings.ToLower(bundle.KeyID) {
+		return nil, "", "", errors.New("billing key ID does not match public key")
+	}
+	return privateKey, publicHex, keyID, nil
 }
 
 func decodeRequest(request *http.Request, output any) error {

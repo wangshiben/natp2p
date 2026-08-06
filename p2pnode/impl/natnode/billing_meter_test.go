@@ -2,18 +2,117 @@ package natnode
 
 import (
 	"context"
+	"crypto/ecdh"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
+	"bnfs_p2p/admission"
 	"bnfs_p2p/billingvoucher"
 	"bnfs_p2p/crypoto"
 	"bnfs_p2p/network"
 	"bnfs_p2p/p2pnode"
 )
+
+func TestBillingCosignUsesCertificateBoundIndependentKeys(t *testing.T) {
+	payerIdentity, _ := crypoto.MakeKeyPair()
+	payerBillingKey, _ := crypoto.MakeKeyPair()
+	relayIdentity, _ := crypoto.MakeKeyPair()
+	relayBillingKey, _ := crypoto.MakeKeyPair()
+	caKey, err := admission.GenerateCAKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPublicKey, _ := admission.MarshalCAPublicKeyPEM(&caKey.PublicKey)
+	verifier := admission.NewCAClient("")
+	if err := verifier.SetPubKeyPEM(caPublicKey); err != nil {
+		t.Fatal(err)
+	}
+	boundCertificate := func(identity, billing *ecdh.PrivateKey, role admission.Role) *admission.SignedCert {
+		identityPublicKey := hex.EncodeToString(identity.PublicKey().Bytes())
+		billingPublicKey := hex.EncodeToString(billing.PublicKey().Bytes())
+		billingKeyID, keyErr := admission.BillingKeyIDFromPublicKeyHex(billingPublicKey)
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		certificate, signErr := admission.Sign(caKey, admission.Cert{
+			SubjectNodeID: admission.NodeIDFromPubKeyHex(identityPublicKey), SubjectPubKey: identityPublicKey,
+			Role: role, NotBefore: time.Now().Add(-time.Minute).Unix(), NotAfter: time.Now().Add(time.Hour).Unix(),
+			Nonce: "independent-billing-test", AuthorizationID: admission.NodeAuthorizationID(
+				admission.NodeIDFromPubKeyHex(identityPublicKey), billingKeyID,
+			), BillingKeyID: billingKeyID, BillingPubKey: billingPublicKey,
+		})
+		if signErr != nil {
+			t.Fatal(signErr)
+		}
+		return certificate
+	}
+
+	meter, err := newNatBillingMeter(payerIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := meter.setBillingPrivateKey(payerBillingKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := meter.setCertificateVerifier(verifier); err != nil {
+		t.Fatal(err)
+	}
+	if err := meter.enable(boundCertificate(payerIdentity, payerBillingKey, admission.RoleServer)); err != nil {
+		t.Fatal(err)
+	}
+	relayCertificate := boundCertificate(relayIdentity, relayBillingKey, admission.RoleRelay)
+	relayPublicKey := hex.EncodeToString(relayIdentity.PublicKey().Bytes())
+	relayBillingPublicKey := hex.EncodeToString(relayBillingKey.PublicKey().Bytes())
+	sessionID := billingvoucher.Identifier{201, 1}
+	if _, err := meter.activateRelaySession("relay-independent:9000", sessionID.String(), relayPublicKey); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := natBillingSnapshot{
+		cumulative: 1024, lastRecord: billingvoucher.Identifier{201, 2},
+		lastRecordSequence: 1, recordSet: billingvoucher.Digest{201, 3},
+	}
+	meter.mu.Lock()
+	session := meter.sessions[sessionID]
+	session.cumulative = snapshot.cumulative
+	session.lastRecord = snapshot.lastRecord
+	session.recordSet = snapshot.recordSet
+	session.nextAssigned = 2
+	session.nextAdvance = 2
+	session.snapshots[snapshot.cumulative] = snapshot
+	appendNatClaimableSnapshot(session, snapshot)
+	meter.mu.Unlock()
+
+	relayID, _ := billingvoucher.NodeIDFromPublicKey(relayIdentity.PublicKey())
+	body := billingvoucher.VoucherBody{
+		Version: billingvoucher.CurrentVersion, SessionID: sessionID,
+		PayerNatID: meter.payerID, PayeeRelayID: relayID,
+		Direction: billingvoucher.DirectionPayerOutbound, Sequence: 1,
+		CumulativeUniqueBytes: snapshot.cumulative, LastRecordID: snapshot.lastRecord,
+		LastRecordSequence: snapshot.lastRecordSequence, RecordSetDigest: snapshot.recordSet,
+		PolicyDigest: billingvoucher.CurrentPolicyDigest(), AuthorizedThroughBytes: billingvoucher.MaxBillableBytes,
+	}
+	relaySignature, err := billingvoucher.SignRelayBilling(body, relayBillingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyBytes, _ := body.CanonicalBytes()
+	voucher, err := meter.cosign(
+		bodyBytes, relaySignature, relayPublicKey, relayBillingPublicKey, relayCertificate,
+	)
+	if err != nil {
+		t.Fatalf("cosign with independent billing keys: %v", err)
+	}
+	if err := voucher.VerifyBillingSignatures(
+		payerBillingKey.PublicKey(), relayBillingKey.PublicKey(),
+	); err != nil {
+		t.Fatalf("verify independent billing voucher: %v", err)
+	}
+}
 
 func TestBillingSessionColdRestartRequestsSafeRotation(t *testing.T) {
 	payerKey, err := crypoto.MakeKeyPair()
@@ -1284,7 +1383,7 @@ func TestBillingRotationSettlementAllowsFreshSessionWithoutSequenceReuse(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := meter.cosign(bodyBytes, relaySignature, relayPublicKey); err != nil {
+	if _, err := meter.cosign(bodyBytes, relaySignature, relayPublicKey, "", nil); err != nil {
 		t.Fatalf("cosign final rotation settlement: %v", err)
 	}
 
@@ -1544,7 +1643,7 @@ func TestReconcileReturnsLastCosignedVoucherInsteadOfRollingItBack(t *testing.T)
 	}
 	relaySignature, _ := billingvoucher.SignRelay(body, relayKey)
 	bodyBytes, _ := body.CanonicalBytes()
-	expected, err := meter.cosign(bodyBytes, relaySignature, relayPublicKey)
+	expected, err := meter.cosign(bodyBytes, relaySignature, relayPublicKey, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1613,13 +1712,13 @@ func TestBillingCosignChecksLastRecordSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	bodyBytes, _ := body.CanonicalBytes()
-	if _, err := meter.cosign(bodyBytes, relaySignature, crypoto.GetPubKeyStr(relayKey.PublicKey())); err == nil {
+	if _, err := meter.cosign(bodyBytes, relaySignature, crypoto.GetPubKeyStr(relayKey.PublicKey()), "", nil); err == nil {
 		t.Fatal("Relay claim with a forged LastRecordSequence was cosigned")
 	}
 	body.LastRecordSequence = 7
 	relaySignature, _ = billingvoucher.SignRelay(body, relayKey)
 	bodyBytes, _ = body.CanonicalBytes()
-	if _, err := meter.cosign(bodyBytes, relaySignature, crypoto.GetPubKeyStr(relayKey.PublicKey())); err != nil {
+	if _, err := meter.cosign(bodyBytes, relaySignature, crypoto.GetPubKeyStr(relayKey.PublicKey()), "", nil); err != nil {
 		t.Fatalf("matching LastRecordSequence should cosign: %v", err)
 	}
 }
@@ -1666,7 +1765,7 @@ func TestBillingCosignPrunesSnapshotsAtSignedWatermark(t *testing.T) {
 	}
 	firstSignature, _ := billingvoucher.SignRelay(firstBody, relayKey)
 	firstBytes, _ := firstBody.CanonicalBytes()
-	firstVoucher, err := meter.cosign(firstBytes, firstSignature, crypoto.GetPubKeyStr(relayKey.PublicKey()))
+	firstVoucher, err := meter.cosign(firstBytes, firstSignature, crypoto.GetPubKeyStr(relayKey.PublicKey()), "", nil)
 	if err != nil {
 		t.Fatalf("cosign first watermark: %v", err)
 	}
@@ -1677,7 +1776,7 @@ func TestBillingCosignPrunesSnapshotsAtSignedWatermark(t *testing.T) {
 		t.Fatal("last signed watermark snapshot was not retained")
 	}
 	delete(session.snapshots, 50)
-	replayed, err := meter.cosign(firstBytes, firstSignature, crypoto.GetPubKeyStr(relayKey.PublicKey()))
+	replayed, err := meter.cosign(firstBytes, firstSignature, crypoto.GetPubKeyStr(relayKey.PublicKey()), "", nil)
 	if err != nil {
 		t.Fatalf("same-sequence retry should use channel.last: %v", err)
 	}
@@ -1699,7 +1798,7 @@ func TestBillingCosignPrunesSnapshotsAtSignedWatermark(t *testing.T) {
 	}
 	secondSignature, _ := billingvoucher.SignRelay(secondBody, relayKey)
 	secondBytes, _ := secondBody.CanonicalBytes()
-	if _, err := meter.cosign(secondBytes, secondSignature, crypoto.GetPubKeyStr(relayKey.PublicKey())); err != nil {
+	if _, err := meter.cosign(secondBytes, secondSignature, crypoto.GetPubKeyStr(relayKey.PublicKey()), "", nil); err != nil {
 		t.Fatalf("cosign second watermark: %v", err)
 	}
 	if len(session.snapshots) != 1 {

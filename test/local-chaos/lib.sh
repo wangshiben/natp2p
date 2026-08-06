@@ -27,15 +27,51 @@ log_step() {
 topology_reset() {
   log_step "重建 1 Index + 7 Relay + 19 正常 NAT + 可选恶意测试节点拓扑"
   dc down --remove-orphans --timeout 3 >/dev/null 2>&1 || true
+  local service container_id health compose_services
+  local -a health_services=(index relay01 relay02 relay03 relay04 relay05 relay06 relay07)
+  if ! compose_services=$(dc config --services 2> "$RUNTIME_DIR/compose-config.log"); then
+    log_step "读取 Compose 服务清单失败，原始输出: $RUNTIME_DIR/compose-config.log"
+    tail -n 160 "$RUNTIME_DIR/compose-config.log" >&2 || true
+    return 1
+  fi
+  if grep -Fxq ca <<< "$compose_services"; then
+    log_step "先启动 CA Web，登记三组 Mock 用户扣费密钥，再启动网络节点"
+    if ! dc up -d --remove-orphans ca-postgres ca ca-web > "$RUNTIME_DIR/ca-up.log" 2>&1; then
+      log_step "CA Web 启动失败，原始输出: $RUNTIME_DIR/ca-up.log"
+      tail -n 160 "$RUNTIME_DIR/ca-up.log" >&2 || true
+      return 1
+    fi
+    if ! wait_services_healthy ca-postgres ca ca-web; then return 1; fi
+    if ! PRIVATE_RUNTIME_DIR="$RUNTIME_DIR/.private" \
+      CA_BASE_URL="http://127.0.0.1:${BNFS_CHAOS_CA_HOST_PORT:-19100}" \
+      CA_ADMIN_TOKEN_FILE="$RUNTIME_DIR/.private/ca/admin.token" \
+      node "$ROOT_DIR/test/local-chaos/bootstrap-billing-keys.mjs" \
+      > "$RUNTIME_DIR/billing-key-bootstrap.log" 2>&1; then
+      log_step "扣费密钥登记失败，原始输出: $RUNTIME_DIR/billing-key-bootstrap.log"
+      tail -n 160 "$RUNTIME_DIR/billing-key-bootstrap.log" >&2 || true
+      return 1
+    fi
+  fi
   if ! dc up -d --remove-orphans > "$RUNTIME_DIR/topology-up.log" 2>&1; then
     log_step "Compose 拓扑启动失败，原始输出: $RUNTIME_DIR/topology-up.log"
     tail -n 160 "$RUNTIME_DIR/topology-up.log" >&2 || true
     return 1
   fi
 
-  local service container_id health deadline
-  deadline=$((SECONDS + 45))
-  for service in index relay01 relay02 relay03 relay04 relay05 relay06 relay07; do
+  if ! wait_services_healthy "${health_services[@]}"; then return 1; fi
+
+  for service in relay01 relay02 relay03 relay04 relay05 relay06 relay07; do
+    if ! wait_compose_log "$service" '已注册到 index:' 35; then
+      log_step "$service 控制链路未就绪"
+      dc logs --no-color "$service" >&2 || true
+      return 1
+    fi
+  done
+}
+
+wait_services_healthy() {
+  local service container_id health deadline=$((SECONDS + 75))
+  for service in "$@"; do
     while true; do
       container_id=$(dc ps -q "$service")
       health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
@@ -49,14 +85,6 @@ topology_reset() {
       fi
       sleep 1
     done
-  done
-
-  for service in relay01 relay02 relay03 relay04 relay05 relay06 relay07; do
-    if ! wait_compose_log "$service" '已注册到 index:' 35; then
-      log_step "$service 控制链路未就绪"
-      dc logs --no-color "$service" >&2 || true
-      return 1
-    fi
   done
 }
 
@@ -108,6 +136,28 @@ wait_file_exists() {
   return 1
 }
 
+credit_local_test_node() {
+  local node_id=$1 target=${BNFS_CHAOS_AUTO_CREDIT_BYTES:-0}
+  local ca_port=${BNFS_CHAOS_CA_HOST_PORT:-19100}
+  local token_file=$RUNTIME_DIR/.private/ca/admin.token
+  local balance_response balance add_bytes payload credit_response credited_balance token
+  [[ $target =~ ^[1-9][0-9]*$ ]] || return 0
+  [[ $node_id =~ ^[[:xdigit:]]{64}$ && -s $token_file ]] || return 1
+  balance_response=$(curl -fsS --connect-timeout 5 --max-time 10 \
+    "http://127.0.0.1:$ca_port/balance?node_id=$node_id") || return 1
+  balance=$(sed -n 's/.*"balance":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' <<< "$balance_response")
+  [[ $balance =~ ^-?[0-9]+$ ]] || return 1
+  (( balance < target )) || return 0
+  add_bytes=$((target - balance))
+  token=$(<"$token_file") || return 1
+  payload="{\"node_id\":\"$node_id\",\"add_bytes\":$add_bytes,\"note\":\"local deployment gate\"}"
+  credit_response=$(curl -fsS --connect-timeout 5 --max-time 10 \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data-binary "$payload" "http://127.0.0.1:$ca_port/credit") || return 1
+  credited_balance=$(sed -n 's/.*"balance":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' <<< "$credit_response")
+  [[ $credited_balance =~ ^[0-9]+$ ]] && (( credited_balance >= target ))
+}
+
 assert_reachable() {
   local source=$1 target=$2 port=${3:-9000}
   if ! dc exec -T "$source" timeout 2 bash -lc "exec 3<>/dev/tcp/$target/$port" >/dev/null 2>&1; then
@@ -152,6 +202,7 @@ launch_tunnel_server() {
   rm -f "$server_log"
 
   local command="exec env BNFS_RELAY_INCLUDE_INDEX=0 /opt/bnfs/tunserver -index index:9000 -target 127.0.0.1:8080"
+  local node_id
   if [[ -n $relay ]]; then
 	if [[ $relay == *,* ]]; then
 	  command+=" -relays '$relay'"
@@ -176,7 +227,12 @@ launch_tunnel_server() {
     [[ -f $server_log ]] && tail -n 80 "$server_log" >&2
     return 1
   fi
-  awk '/本节点 ID:/{print $NF; exit}' "$server_log"
+  node_id=$(awk '/本节点 ID:/{print $NF; exit}' "$server_log")
+  if ! credit_local_test_node "$node_id"; then
+    log_step "$service 本地门禁测试额度初始化失败"
+    return 1
+  fi
+  printf '%s\n' "$node_id"
 }
 
 stop_nat_process() {
@@ -382,14 +438,22 @@ launch_tunnel_client() {
     command+=" -key $BNFS_CHAOS_NAT_KEY_DIR/$service.key"
   fi
   command+=" > '$inside_dir/${service}.log' 2>&1"
+  if [[ -n ${BNFS_CHAOS_NAT_CA_URL:-} ]]; then
+    command="if [ ! -r /artifacts/.private/billing-key.json ] && [ -r /artifacts/.private/ca-issue-client.token ]; then export BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue-client.token; fi; $command"
+  fi
   dc exec -T -d "$service" sh -lc "$command"
 }
 
 wait_client_ready() {
   local service=$1 scenario=$2 timeout_seconds=${3:-45}
-  local client_log=$RUNTIME_DIR/$scenario/${service}.log deadline remaining
+  local client_log=$RUNTIME_DIR/$scenario/${service}.log deadline remaining node_id
   deadline=$((SECONDS + timeout_seconds))
   if ! wait_file_pattern "$client_log" '已建立隧道连接' "$timeout_seconds"; then
+    return 1
+  fi
+  node_id=$(awk '/本节点 ID:/{print $NF; exit}' "$client_log")
+  if ! credit_local_test_node "$node_id"; then
+    log_step "$service 本地门禁测试额度初始化失败"
     return 1
   fi
   remaining=$((deadline - SECONDS))

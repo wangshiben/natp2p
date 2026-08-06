@@ -32,7 +32,6 @@ import (
 	"crypto/ecdh"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"sync/atomic"
@@ -40,6 +39,7 @@ import (
 	"time"
 
 	"bnfs_p2p/crypoto"
+	"bnfs_p2p/logx"
 	"bnfs_p2p/p2pnode"
 	"bnfs_p2p/p2pnode/impl/natnode"
 	"bnfs_p2p/p2pnode/impl/relaynode"
@@ -74,13 +74,15 @@ func main() {
 func runRelay(listen, public string, threshold int64, failAt int) {
 	privKey, err := crypoto.MakeKeyPair()
 	if err != nil {
-		log.Fatalf("生成私钥失败: %v", err)
+		logx.Errorf("生成私钥失败: %v", err)
+		os.Exit(1)
 	}
 	var _ *ecdh.PrivateKey = privKey
 
 	rn, err := relaynode.NewRelayNode(privKey, listen, public)
 	if err != nil {
-		log.Fatalf("创建 relay 节点失败: %v", err)
+		logx.Errorf("创建 relay 节点失败: %v", err)
+		os.Exit(1)
 	}
 
 	// hookCallCount 记录 hook 被调用的总次数；用于 -failat 决定第几次返回 error。
@@ -135,11 +137,13 @@ func runRelay(listen, public string, threshold int64, failAt int) {
 func runListen(relayAddr string) {
 	privKey, err := crypoto.MakeKeyPair()
 	if err != nil {
-		log.Fatalf("生成私钥失败: %v", err)
+		logx.Errorf("生成私钥失败: %v", err)
+		os.Exit(1)
 	}
 	node, err := natnode.NewNATNode(privKey, relayAddr)
 	if err != nil {
-		log.Fatalf("创建节点失败: %v", err)
+		logx.Errorf("创建节点失败: %v", err)
+		os.Exit(1)
 	}
 	defer node.Close()
 
@@ -188,15 +192,18 @@ func runListen(relayAddr string) {
 // runConnect 启动 client 端 NAT 节点，跨 relay 连接 target 并发送多轮数据。
 func runConnect(relayAddr, target string, rounds, size int) {
 	if len(target) != 64 {
-		log.Fatalf("无效的 target NodeID 长度: %d (应为64位hex)", len(target))
+		logx.Errorf("无效的 target NodeID 长度: %d (应为64位hex)", len(target))
+		os.Exit(1)
 	}
 	privKey, err := crypoto.MakeKeyPair()
 	if err != nil {
-		log.Fatalf("生成私钥失败: %v", err)
+		logx.Errorf("生成私钥失败: %v", err)
+		os.Exit(1)
 	}
 	node, err := natnode.NewNATNode(privKey, relayAddr)
 	if err != nil {
-		log.Fatalf("创建节点失败: %v", err)
+		logx.Errorf("创建节点失败: %v", err)
+		os.Exit(1)
 	}
 	defer node.Close()
 
@@ -213,7 +220,8 @@ func runConnect(relayAddr, target string, rounds, size int) {
 	defer connCancel()
 	conn, err := node.Connect(connCtx, p2pnode.NodeID(target))
 	if err != nil {
-		log.Fatalf("连接失败: %v", err)
+		logx.Errorf("连接失败: %v", err)
+		os.Exit(1)
 	}
 	fmt.Printf("已连接到 %s, 开始 %d 轮通信 (每轮 %d 字节)\n", target, rounds, size)
 

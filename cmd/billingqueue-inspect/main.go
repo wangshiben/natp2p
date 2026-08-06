@@ -34,6 +34,8 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	relayIDText := flags.String("relay-id", "", "optional target Relay NodeID consistency check")
 	payerKeyPath := flags.String("payer-key", "", "optional target payer private-key file")
 	relayKeyPath := flags.String("relay-key", "", "target Relay private-key file")
+	payerBillingKeyPath := flags.String("payer-billing-key", "", "optional independent payer billing private-key file")
+	relayBillingKeyPath := flags.String("relay-billing-key", "", "optional independent Relay billing private-key file")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
 	}
@@ -42,7 +44,10 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	options, optionsErr := inspectionOptions(*payerIDText, *relayIDText, *payerKeyPath, *relayKeyPath)
+	options, optionsErr := inspectionOptions(
+		*payerIDText, *relayIDText, *payerKeyPath, *relayKeyPath,
+		*payerBillingKeyPath, *relayBillingKeyPath,
+	)
 	if optionsErr != nil {
 		fmt.Fprintln(stderr, "billingqueue-inspect: target_invalid")
 		return 2
@@ -69,9 +74,13 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func inspectionOptions(payerIDText, relayIDText, payerKeyPath, relayKeyPath string) (billingqueue.InspectionOptions, error) {
+func inspectionOptions(
+	payerIDText, relayIDText, payerKeyPath, relayKeyPath string,
+	payerBillingKeyPath, relayBillingKeyPath string,
+) (billingqueue.InspectionOptions, error) {
 	var options billingqueue.InspectionOptions
-	targeted := payerIDText != "" || relayIDText != "" || payerKeyPath != "" || relayKeyPath != ""
+	targeted := payerIDText != "" || relayIDText != "" || payerKeyPath != "" || relayKeyPath != "" ||
+		payerBillingKeyPath != "" || relayBillingKeyPath != ""
 	if !targeted {
 		return options, nil
 	}
@@ -104,6 +113,20 @@ func inspectionOptions(payerIDText, relayIDText, payerKeyPath, relayKeyPath stri
 		return billingqueue.InspectionOptions{}, err
 	}
 	options.RelayPublicKey = relayPrivateKey.PublicKey()
+	if payerBillingKeyPath != "" {
+		payerBillingPrivateKey, err := loadPrivateKey(payerBillingKeyPath)
+		if err != nil {
+			return billingqueue.InspectionOptions{}, err
+		}
+		options.PayerBillingPublicKey = payerBillingPrivateKey.PublicKey()
+	}
+	if relayBillingKeyPath != "" {
+		relayBillingPrivateKey, err := loadPrivateKey(relayBillingKeyPath)
+		if err != nil {
+			return billingqueue.InspectionOptions{}, err
+		}
+		options.RelayBillingPublicKey = relayBillingPrivateKey.PublicKey()
+	}
 	if options.PayerID == (billingvoucher.Identifier{}) && options.PayerPublicKey == nil {
 		return billingqueue.InspectionOptions{}, errors.New("targeted inspection requires a payer identity")
 	}

@@ -58,6 +58,11 @@ type Cert struct {
 	Nonce string `json:"nonce"`
 	// Issuer 是签发方标识（如 CA 服务名），仅供人读/审计，不参与信任决策。
 	Issuer string `json:"issuer,omitempty"`
+	// AuthorizationID 把本节点与一个具体扣费密钥授权关系绑定。
+	AuthorizationID string `json:"authorization_id,omitempty"`
+	// BillingKeyID / BillingPubKey 标识独立于节点身份密钥的扣费签名密钥。
+	BillingKeyID  string `json:"billing_key_id,omitempty"`
+	BillingPubKey string `json:"billing_public_key,omitempty"`
 }
 
 // SignedCert 是证书主体 + CA 的 ECDSA 签名，即节点随身携带的完整凭证。
@@ -153,6 +158,9 @@ func Verify(pub *ecdsa.PublicKey, sc *SignedCert, opts VerifyOptions) error {
 
 	// 2. 身份自洽：NodeID == SHA256(pubkey hex)。
 	if err := checkNodeIDMatchesPubKey(cert.SubjectNodeID, cert.SubjectPubKey); err != nil {
+		return err
+	}
+	if err := ValidateBillingBinding(*cert); err != nil {
 		return err
 	}
 

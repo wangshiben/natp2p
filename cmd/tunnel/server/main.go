@@ -16,7 +16,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -49,17 +48,18 @@ func main() {
 	serviceName := flag.String("service-name", "", "service name included in listener status")
 	flag.Parse()
 	if *relayCount < 1 || *relayCount > 3 {
-		log.Fatalf("relay-count 必须在 1..3 之间")
+		logx.Errorf("relay-count 必须在 1..3 之间")
+		os.Exit(1)
 	}
 	if *relayAddr != "" && *relayAddrs != "" {
-		log.Fatalf("-relay 与 -relays 不能同时使用")
+		logx.Errorf("-relay 与 -relays 不能同时使用")
+		os.Exit(1)
 	}
-
-	logx.SetLevel(logx.LevelInfo)
 
 	privKey, err := loadKey(*keyFile)
 	if err != nil {
-		log.Fatalf("加载私钥失败: %v", err)
+		logx.Errorf("加载私钥失败: %v", err)
+		os.Exit(1)
 	}
 
 	// If a relay is pinned, use it as the bootstrap relay so it becomes this
@@ -74,16 +74,19 @@ func main() {
 	}
 	node, err := natnode.NewNATNode(privKey, bootstrapAddr)
 	if err != nil {
-		log.Fatalf("创建节点失败: %v", err)
+		logx.Errorf("创建节点失败: %v", err)
+		os.Exit(1)
 	}
 	if err := node.SetBillingPrivateSnapshotPath(*billingPrivateSnapshot); err != nil {
 		_ = node.Close()
-		log.Fatalf("初始化私有计费快照失败: %v", err)
+		logx.Errorf("初始化私有计费快照失败: %v", err)
+		os.Exit(1)
 	}
 
 	// tunnel server = server 角色（计费对象）：申请 server 证书并注入。-ca 为空则不启用。
 	if err := admissioncli.SetupNat(node, *caURL, admissioncli.RoleServer()); err != nil {
-		log.Fatalf("申请 indexSign 失败: %v", err)
+		logx.Errorf("申请 indexSign 失败: %v", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -127,11 +130,13 @@ func main() {
 		listener, err = node.ListenServiceRelays(ctx, serviceRelays, serviceOptions)
 	}
 	if err != nil {
-		log.Fatalf("启动持久服务注册失败: %v", err)
+		logx.Errorf("启动持久服务注册失败: %v", err)
+		os.Exit(1)
 	}
 	defer listener.Close()
 	if err := startServiceStatusReporter(ctx, *statusFile, *serviceName, string(node.ID()), listener); err != nil {
-		log.Fatalf("启动服务会话状态上报失败: %v", err)
+		logx.Errorf("启动服务会话状态上报失败: %v", err)
+		os.Exit(1)
 	}
 	go serveServiceSessions(ctx, listener, *target)
 
@@ -168,7 +173,7 @@ func serveServiceSessions(ctx context.Context, listener *natnode.ServiceListener
 		connection, err := listener.Accept(ctx)
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Printf("服务接入循环退出: %v", err)
+				logx.Errorf("服务接入循环退出: %v", err)
 			}
 			return
 		}
@@ -199,7 +204,7 @@ func forwardToLocal(stream *mux.Stream, target string) {
 
 	local, err := net.Dial("tcp", target)
 	if err != nil {
-		log.Printf("拨号本地 %s 失败: %v", target, err)
+		logx.Warnf("拨号本地 %s 失败: %v", target, err)
 		return
 	}
 	defer local.Close()

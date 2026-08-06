@@ -1134,6 +1134,9 @@ func (t *TcpStream) writeBytesLockedContext(ctx context.Context, buf []byte) err
 				return context.DeadlineExceeded
 			}
 		}
+		if errors.Is(err, ErrRelayChangedDuringSend) {
+			return err
+		}
 		t.failAndClose(err)
 		return err
 	}

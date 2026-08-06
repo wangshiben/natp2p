@@ -54,17 +54,21 @@ func TestRunTargetUsesPrivateKeyFilesWithoutLeakingThem(t *testing.T) {
 	payerID, _ := billingvoucher.NodeIDFromPublicKey(payer.PublicKey())
 	payerKeyPath := writeCommandIdentity(t, "payer-secret.key", payer)
 	relayKeyPath := writeCommandIdentity(t, "relay-secret.key", relay)
+	payerBillingKeyPath := writeCommandIdentity(t, "payer-billing-secret.key", generateCommandIdentity(t))
+	relayBillingKeyPath := writeCommandIdentity(t, "relay-billing-secret.key", generateCommandIdentity(t))
 	privateKeyHex := hex.EncodeToString(relay.Bytes())
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	status := run([]string{
 		"-path", path, "-payer-id", payerID.String(), "-payer-key", payerKeyPath, "-relay-key", relayKeyPath,
+		"-payer-billing-key", payerBillingKeyPath, "-relay-billing-key", relayBillingKeyPath,
 	}, &stdout, &stderr)
 	if status != 0 {
 		t.Fatalf("run status = %d, stderr = %q", status, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), `"channel_depth":0`) ||
 		strings.Contains(stdout.String(), payerKeyPath) || strings.Contains(stdout.String(), relayKeyPath) ||
+		strings.Contains(stdout.String(), payerBillingKeyPath) || strings.Contains(stdout.String(), relayBillingKeyPath) ||
 		strings.Contains(stdout.String(), privateKeyHex) || stderr.Len() != 0 {
 		t.Fatalf("target output was not redacted: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}

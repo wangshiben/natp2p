@@ -30,6 +30,10 @@ const componentProbeTimeoutMs = boundedInteger(process.env.COMPONENT_PROBE_TIMEO
 const containerProbeMode = process.env.CONTAINER_PROBE_MODE ?? "off";
 const containerProbeStateRoot = path.resolve(process.env.CONTAINER_ADVERSARY_STATE_ROOT ?? "");
 const containerProbeStartTimeoutMs = boundedInteger(process.env.CONTAINER_PROBE_START_TIMEOUT_MS, 60000, 1000, 120000);
+const billingFixtureFiles = Object.freeze({
+  payer: process.env.CA_BILLING_PAYER_KEY_FILE ?? "",
+  relay: process.env.CA_BILLING_RELAY_KEY_FILE ?? "",
+});
 const snapshotPath = path.join(runDir, "billing-adversary.json");
 const statusPath = path.join(runDir, "billing-adversary.status");
 const alertPath = path.join(runDir, "billing-adversary.alert");
@@ -68,7 +72,7 @@ try {
     stateDir: componentProbeStateDir,
     timeoutMs: componentProbeTimeoutMs,
   });
-  const context = { waitSubmitPath, componentProbe };
+  const context = { waitSubmitPath, componentProbe, billingFixture: await loadBillingFixture() };
   const initial = await runAttackCycle(client, randomNonce(), context);
   for (const event of initial) await recordEvent(event);
   if (containerProbeMode !== "off") {
@@ -138,6 +142,36 @@ async function loadCACredentials() {
     readCredential(files.admin),
   ]);
   return { enrollmentTokens: { server, relay }, adminToken: admin };
+}
+
+async function loadBillingFixture() {
+  const filenames = Object.values(billingFixtureFiles);
+  if (filenames.every((filename) => filename === "")) return null;
+  if (filenames.some((filename) => filename === "")) {
+    throw Object.assign(new Error("incomplete billing fixture"), { code: "billing_fixture_incomplete" });
+  }
+  const [payer, relay] = await Promise.all([
+    readPrivateJSON(billingFixtureFiles.payer),
+    readPrivateJSON(billingFixtureFiles.relay),
+  ]);
+  return { payer, relay };
+}
+
+async function readPrivateJSON(filename) {
+  const resolved = path.resolve(filename);
+  if (resolved === runDir || !resolved.startsWith(`${runDir}${path.sep}`)) {
+    throw Object.assign(new Error("billing fixture outside run directory"), { code: "billing_fixture_path_invalid" });
+  }
+  const stat = await fs.lstat(resolved);
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0
+    || stat.size <= 0 || stat.size > 65536) {
+    throw Object.assign(new Error("invalid billing fixture file"), { code: "billing_fixture_file_invalid" });
+  }
+  try {
+    return JSON.parse(await fs.readFile(resolved, "utf8"));
+  } catch {
+    throw Object.assign(new Error("invalid billing fixture JSON"), { code: "billing_fixture_json_invalid" });
+  }
 }
 
 async function readCredential(filename) {

@@ -162,6 +162,33 @@ type delayedE2ELeg struct {
 	delay time.Duration
 }
 
+type relayGenerationErrorLeg struct {
+	*observingE2ELeg
+	started chan struct{}
+	release chan struct{}
+}
+
+func newRelayGenerationErrorLeg() *relayGenerationErrorLeg {
+	return &relayGenerationErrorLeg{
+		observingE2ELeg: newObservingE2ELeg(nil),
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+}
+
+func (leg *relayGenerationErrorLeg) SendMessage(ctx context.Context, message *network.Message) error {
+	leg.mu.Lock()
+	leg.sentPayloads = append(leg.sentPayloads, append([]byte(nil), message.Payload...))
+	leg.mu.Unlock()
+	close(leg.started)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-leg.release:
+		return ErrMessageMaxRetransmits
+	}
+}
+
 func newDelayedE2ELeg(delay time.Duration) *delayedE2ELeg {
 	return &delayedE2ELeg{observingE2ELeg: newObservingE2ELeg(nil), delay: delay}
 }
@@ -348,6 +375,38 @@ func TestDualStreamKCPToTCPFailoverSealsOnce(t *testing.T) {
 	}
 	if dual.preferredTransport() != streamTransportTCP {
 		t.Fatalf("TCP should become preferred after KCP failure, got %s", dual.preferredTransport())
+	}
+}
+
+func TestDualStreamReturnsRecoverableErrorWhenRelayChangesDuringBillableSend(t *testing.T) {
+	leg := newRelayGenerationErrorLeg()
+	dual := newDualStream("e2e-test-peer", "relay-generation-change")
+	t.Cleanup(func() { _ = dual.Close() })
+	if err := dual.attach(streamTransportTCP, leg); err != nil {
+		t.Fatal(err)
+	}
+	dual.SetCryptoSuite(&countingE2ESuite{})
+
+	message := newE2ETestMessage([]byte("rebill after migration"))
+	message.Header.BillingSessionID[0] = 1
+	message.Header.BillingSequence = 1
+	message.Header.BillingBytes = uint64(len(message.Payload))
+	result := make(chan error, 1)
+	go func() { result <- dual.SendMessage(context.Background(), message) }()
+	select {
+	case <-leg.started:
+	case <-time.After(time.Second):
+		t.Fatal("billable send did not reach the old Relay leg")
+	}
+	dual.relayGeneration.Add(1)
+	close(leg.release)
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrRelayChangedDuringSend) {
+			t.Fatalf("send error=%v, want %v", err, ErrRelayChangedDuringSend)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("billable send did not return after Relay migration")
 	}
 }
 

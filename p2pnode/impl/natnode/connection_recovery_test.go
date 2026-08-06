@@ -15,14 +15,16 @@ import (
 )
 
 type billingRotationRecoveryStream struct {
-	mu         sync.Mutex
-	observer   network.OutboundRecordObserver
-	sendCalls  int
-	closeCalls int
-	sessions   [][32]byte
-	sequences  []uint64
-	firstSend  chan<- struct{}
-	release    <-chan struct{}
+	mu                 sync.Mutex
+	observer           network.OutboundRecordObserver
+	sendCalls          int
+	closeCalls         int
+	sessions           [][32]byte
+	sequences          []uint64
+	firstSend          chan<- struct{}
+	release            <-chan struct{}
+	firstError         error
+	beforeFirstFailure func()
 }
 
 func (stream *billingRotationRecoveryStream) Close() error {
@@ -77,9 +79,85 @@ func (stream *billingRotationRecoveryStream) SendMessageWithInitialWrite(
 		if stream.release != nil {
 			<-stream.release
 		}
+		if stream.beforeFirstFailure != nil {
+			stream.beforeFirstFailure()
+		}
+		if stream.firstError != nil {
+			return stream.firstError
+		}
 		return networkFrameWork.ErrMessageMaxRetransmits
 	}
 	return nil
+}
+
+func TestRelayMigrationRebillsOnTheNewRelayWithoutClosingConnection(t *testing.T) {
+	payerKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRelayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRelayKey, err := crypoto.MakeKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter, err := newNatBillingMeter(payerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meter.enabled = true
+	oldRelayAddress := "relay-old:9000"
+	newRelayAddress := "relay-new:9000"
+	oldSessionID := billingvoucher.Identifier{31, 32, 33}
+	newSessionID := billingvoucher.Identifier{41, 42, 43}
+	if _, err := meter.activateRelaySession(
+		oldRelayAddress, oldSessionID.String(), crypoto.GetPubKeyStr(oldRelayKey.PublicKey()),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := meter.activateRelaySession(
+		newRelayAddress, newSessionID.String(), crypoto.GetPubKeyStr(newRelayKey.PublicKey()),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var relayMu sync.Mutex
+	currentRelay := oldRelayAddress
+	stream := &billingRotationRecoveryStream{firstError: networkFrameWork.ErrRelayChangedDuringSend}
+	stream.beforeFirstFailure = func() {
+		relayMu.Lock()
+		currentRelay = newRelayAddress
+		relayMu.Unlock()
+	}
+	failedRelays := make([]string, 0, 1)
+	connection := &serviceConnection{Connection: newNATConnection(
+		p2pnode.PeerInfo{ID: "peer"}, stream, nil, meter,
+		func() string {
+			relayMu.Lock()
+			defer relayMu.Unlock()
+			return currentRelay
+		},
+		func(relayAddress string) {
+			failedRelays = append(failedRelays, relayAddress)
+		},
+	)}
+
+	if err := connection.Send(context.Background(), &p2pnode.Message{Payload: []byte("relay-migration")}); err != nil {
+		t.Fatalf("Send after Relay migration: %v", err)
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.sendCalls != 2 || stream.closeCalls != 0 {
+		t.Fatalf("transport sends=%d closes=%d, want 2/0", stream.sendCalls, stream.closeCalls)
+	}
+	if stream.sessions[0] != [32]byte(oldSessionID) || stream.sessions[1] != [32]byte(newSessionID) {
+		t.Fatalf("billing sessions=%x then %x, want old then new Relay sessions", stream.sessions[0], stream.sessions[1])
+	}
+	if len(failedRelays) != 1 || failedRelays[0] != oldRelayAddress {
+		t.Fatalf("billing failures=%v, want only %s", failedRelays, oldRelayAddress)
+	}
 }
 
 func (*billingRotationRecoveryStream) SendMessageAsync(

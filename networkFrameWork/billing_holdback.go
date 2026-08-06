@@ -20,6 +20,8 @@ const (
 	noisePreludeMaxMessages   = 4
 	noisePreludeMaxBytes      = 16 << 10
 	handshakeInfoMaxBytes     = 64 << 10
+	holdbackRetryInitialDelay = 100 * time.Millisecond
+	holdbackRetryMaximumDelay = 2 * time.Second
 )
 
 type messageHoldbackLimits struct {
@@ -38,6 +40,7 @@ type messageHoldbackLimits struct {
 	maxConnectionApprovedFingerprintBytes int64
 	maxApprovedMessages                   int
 	maxConnectionApprovedMessages         int
+	recoveryTTL                           time.Duration
 }
 
 func defaultMessageHoldbackLimits() messageHoldbackLimits {
@@ -64,6 +67,7 @@ func defaultMessageHoldbackLimits() messageHoldbackLimits {
 		maxConnectionApprovedFingerprintBytes: 2 << 20,
 		maxApprovedMessages:                   8192,
 		maxConnectionApprovedMessages:         512,
+		recoveryTTL:                           retiredBusinessConnectionTTL,
 	}
 }
 
@@ -88,6 +92,10 @@ type messageHoldbackConnection struct {
 	noiseMessages            uint8
 	handshakeInfoSeen        bool
 	billingEstablished       bool
+	e2eSessionID             [32]byte
+	e2eSessionSeen           bool
+	recoveryTimer            *time.Timer
+	recoveryGeneration       uint64
 }
 
 type messageHoldbackValidationLock struct {
@@ -100,6 +108,8 @@ type messageHoldbackPhase struct {
 	noiseMessages      uint8
 	handshakeInfoSeen  bool
 	billingEstablished bool
+	e2eSessionID       [32]byte
+	e2eSessionSeen     bool
 }
 
 type messageHoldbackEntry struct {
@@ -112,6 +122,9 @@ type messageHoldbackEntry struct {
 	validating       bool
 	approved         bool
 	deferred         bool
+	deferredSince    time.Time
+	retryAfter       time.Time
+	deferCount       uint8
 	message          *network.Message
 	fingerprintBytes int64
 	timer            *time.Timer
@@ -126,8 +139,10 @@ type messageHoldbackCompletion struct {
 }
 
 type messageHoldbackApproval struct {
-	kind     uint8
-	noiseBit uint8
+	kind           uint8
+	noiseBit       uint8
+	e2eSessionID   [32]byte
+	bindE2ESession bool
 }
 
 const (
@@ -143,6 +158,7 @@ type messageHoldback struct {
 	entries          map[messageHoldbackKey]*messageHoldbackEntry
 	connections      map[messageHoldbackConnectionKey]*messageHoldbackConnection
 	validationLocks  map[string]*messageHoldbackValidationLock
+	entriesByNode    map[string]int
 	approved         *list.List
 	pendingBytes     int64
 	pendingMessages  int
@@ -166,6 +182,7 @@ func newMessageHoldback(limits messageHoldbackLimits) *messageHoldback {
 		entries:         make(map[messageHoldbackKey]*messageHoldbackEntry),
 		connections:     make(map[messageHoldbackConnectionKey]*messageHoldbackConnection),
 		validationLocks: make(map[string]*messageHoldbackValidationLock),
+		entriesByNode:   make(map[string]int),
 		approved:        list.New(),
 	}
 }
@@ -223,6 +240,16 @@ func (holdback *messageHoldback) add(nodeID string, frame *network.Frame) (*mess
 				holdback.mu.Unlock()
 				return &messageHoldbackCompletion{frames: []*network.Frame{frameCopy}}, nil
 			}
+			if entry.deferred && entry.message != nil && frame.SeqId+1 == entry.totalFrames &&
+				!time.Now().Before(entry.retryAfter) {
+				entry.deferred = false
+				holdback.stopTimerLocked(entry)
+				completion := &messageHoldbackCompletion{
+					entry: entry, frames: orderedFrames(entry.frames), message: entry.message,
+				}
+				holdback.mu.Unlock()
+				return completion, nil
+			}
 			holdback.mu.Unlock()
 			return nil, nil
 		}
@@ -241,6 +268,7 @@ func (holdback *messageHoldback) add(nodeID string, frame *network.Frame) (*mess
 		connection = &messageHoldbackConnection{}
 		holdback.connections[connectionKey] = connection
 	}
+	holdback.stopConnectionRecoveryLocked(connection)
 	newMessage := entry == nil
 	if newMessage {
 		if connection.pendingMessages >= holdback.limits.maxConnectionMessages {
@@ -288,6 +316,7 @@ func (holdback *messageHoldback) add(nodeID string, frame *network.Frame) (*mess
 	}
 	if newMessage {
 		holdback.entries[key] = entry
+		holdback.entriesByNode[key.nodeID]++
 		holdback.pendingMessages++
 		connection.pendingMessages++
 	}
@@ -332,6 +361,7 @@ func (holdback *messageHoldback) phase(entry *messageHoldbackEntry) (messageHold
 	return messageHoldbackPhase{
 		noiseMask: connection.noiseMask, noiseMessages: connection.noiseMessages,
 		handshakeInfoSeen: connection.handshakeInfoSeen, billingEstablished: connection.billingEstablished,
+		e2eSessionID: connection.e2eSessionID, e2eSessionSeen: connection.e2eSessionSeen,
 	}, true
 }
 
@@ -366,12 +396,7 @@ func (holdback *messageHoldback) validationGuard(entry *messageHoldbackEntry) (f
 }
 
 func (holdback *messageHoldback) hasNodeEntriesLocked(nodeID string) bool {
-	for key := range holdback.entries {
-		if key.nodeID == nodeID {
-			return true
-		}
-	}
-	return false
+	return holdback.entriesByNode[nodeID] != 0
 }
 
 func (holdback *messageHoldback) deferCompletion(completion *messageHoldbackCompletion) bool {
@@ -386,7 +411,23 @@ func (holdback *messageHoldback) deferCompletion(completion *messageHoldbackComp
 	}
 	entry.deferred = true
 	entry.message = completion.message
-	holdback.scheduleLocked(entry, holdback.limits.pendingTTL)
+	now := time.Now()
+	if entry.deferredSince.IsZero() {
+		entry.deferredSince = now
+	}
+	delay := holdbackRetryInitialDelay
+	for count := uint8(0); count < entry.deferCount && delay < holdbackRetryMaximumDelay; count++ {
+		delay *= 2
+	}
+	if delay > holdbackRetryMaximumDelay {
+		delay = holdbackRetryMaximumDelay
+	}
+	if entry.deferCount < 31 {
+		entry.deferCount++
+	}
+	entry.retryAfter = now.Add(delay)
+	remaining := holdback.limits.pendingTTL - now.Sub(entry.deferredSince)
+	holdback.scheduleLocked(entry, remaining)
 	return true
 }
 
@@ -413,6 +454,7 @@ func (holdback *messageHoldback) nextDeferred(nodeID string, sessionID [32]byte)
 	if selected == nil {
 		return nil
 	}
+	selected.deferred = false
 	holdback.stopTimerLocked(selected)
 	return &messageHoldbackCompletion{
 		entry: selected, frames: orderedFrames(selected.frames), message: selected.message,
@@ -431,6 +473,9 @@ func (holdback *messageHoldback) approve(entry *messageHoldbackEntry, approval m
 	connectionKey := messageHoldbackConnectionKey{nodeID: entry.key.nodeID, connectionID: entry.key.connectionID}
 	connection := holdback.connections[connectionKey]
 	if connection == nil {
+		return false
+	}
+	if approval.bindE2ESession && connection.e2eSessionSeen && connection.e2eSessionID != approval.e2eSessionID {
 		return false
 	}
 
@@ -458,6 +503,10 @@ func (holdback *messageHoldback) approve(entry *messageHoldbackEntry, approval m
 	case holdbackApprovalKeepAlive:
 	case holdbackApprovalBilling:
 		connection.billingEstablished = true
+	}
+	if approval.bindE2ESession {
+		connection.e2eSessionID = approval.e2eSessionID
+		connection.e2eSessionSeen = true
 	}
 
 	holdback.approvedBytes += entry.fingerprintBytes
@@ -503,7 +552,32 @@ func (holdback *messageHoldback) forgetConnection(nodeID, connectionID string) {
 			holdback.removeEntryLocked(entry)
 		}
 	}
-	delete(holdback.connections, messageHoldbackConnectionKey{nodeID: nodeID, connectionID: connectionID})
+	connectionKey := messageHoldbackConnectionKey{nodeID: nodeID, connectionID: connectionID}
+	holdback.stopConnectionRecoveryLocked(holdback.connections[connectionKey])
+	delete(holdback.connections, connectionKey)
+	holdback.mu.Unlock()
+}
+
+func (holdback *messageHoldback) resetConnection(nodeID, connectionID string) {
+	if holdback == nil || connectionID == "" {
+		return
+	}
+	holdback.mu.Lock()
+	connectionKey := messageHoldbackConnectionKey{nodeID: nodeID, connectionID: connectionID}
+	for _, entry := range holdback.entries {
+		if entry.key.nodeID == nodeID && entry.key.connectionID == connectionID {
+			holdback.removeEntryLocked(entry)
+		}
+	}
+	connection := holdback.connections[connectionKey]
+	if connection != nil {
+		if holdback.connectionHasPhaseLocked(connection) {
+			holdback.scheduleConnectionRecoveryLocked(connectionKey, connection)
+		} else {
+			holdback.stopConnectionRecoveryLocked(connection)
+			delete(holdback.connections, connectionKey)
+		}
+	}
 	holdback.mu.Unlock()
 }
 
@@ -578,6 +652,14 @@ func (holdback *messageHoldback) removeEntryLocked(entry *messageHoldbackEntry) 
 		return
 	}
 	delete(holdback.entries, entry.key)
+	if remaining := holdback.entriesByNode[entry.key.nodeID] - 1; remaining > 0 {
+		holdback.entriesByNode[entry.key.nodeID] = remaining
+	} else {
+		delete(holdback.entriesByNode, entry.key.nodeID)
+		if validationLock := holdback.validationLocks[entry.key.nodeID]; validationLock != nil && validationLock.users == 0 {
+			delete(holdback.validationLocks, entry.key.nodeID)
+		}
+	}
 	holdback.stopTimerLocked(entry)
 	connectionKey := messageHoldbackConnectionKey{nodeID: entry.key.nodeID, connectionID: entry.key.connectionID}
 	connection := holdback.connections[connectionKey]
@@ -608,10 +690,43 @@ func (holdback *messageHoldback) removeEntryLocked(entry *messageHoldbackEntry) 
 
 func (holdback *messageHoldback) removeIdleConnectionLocked(key messageHoldbackConnectionKey, connection *messageHoldbackConnection) {
 	if connection == nil || connection.pendingMessages != 0 || connection.pendingFrames != 0 || connection.approvedMessages != 0 ||
-		connection.noiseMessages != 0 || connection.handshakeInfoSeen || connection.billingEstablished {
+		holdback.connectionHasPhaseLocked(connection) {
 		return
 	}
+	holdback.stopConnectionRecoveryLocked(connection)
 	delete(holdback.connections, key)
+}
+
+func (holdback *messageHoldback) connectionHasPhaseLocked(connection *messageHoldbackConnection) bool {
+	return connection != nil && (connection.noiseMessages != 0 || connection.handshakeInfoSeen ||
+		connection.billingEstablished || connection.e2eSessionSeen)
+}
+
+func (holdback *messageHoldback) scheduleConnectionRecoveryLocked(key messageHoldbackConnectionKey, connection *messageHoldbackConnection) {
+	holdback.stopConnectionRecoveryLocked(connection)
+	connection.recoveryGeneration++
+	generation := connection.recoveryGeneration
+	timeout := holdback.limits.recoveryTTL
+	if timeout <= 0 {
+		timeout = time.Nanosecond
+	}
+	connection.recoveryTimer = time.AfterFunc(timeout, func() {
+		holdback.mu.Lock()
+		if holdback.connections[key] == connection && connection.recoveryGeneration == generation {
+			connection.recoveryTimer = nil
+			if connection.pendingMessages == 0 && connection.approvedMessages == 0 {
+				delete(holdback.connections, key)
+			}
+		}
+		holdback.mu.Unlock()
+	})
+}
+
+func (holdback *messageHoldback) stopConnectionRecoveryLocked(connection *messageHoldbackConnection) {
+	if connection != nil && connection.recoveryTimer != nil {
+		connection.recoveryTimer.Stop()
+		connection.recoveryTimer = nil
+	}
 }
 
 func (state *forwardHookState) framesForForward(ctx context.Context, frame *network.Frame, direction string) ([]*network.Frame, error) {
@@ -624,7 +739,7 @@ func (state *forwardHookState) framesForForward(ctx context.Context, frame *netw
 		return []*network.Frame{frame}, nil
 	}
 	holdback := state.config.ensureMessageHoldback()
-	completion, err := holdback.add(state.nodeID, frame)
+	completion, err := holdback.add(state.holdbackScopeID, frame)
 	if err != nil || completion == nil {
 		return nil, err
 	}
@@ -649,7 +764,15 @@ func (state *forwardHookState) framesForForward(ctx context.Context, frame *netw
 			ctx, completion.message, completion.entry.key.connectionID, direction, phase,
 		)
 		if validateErr != nil {
-			if errors.Is(validateErr, ErrBillableRecordDeferred) {
+			if errors.Is(validateErr, ErrBillableRecordDeferred) ||
+				errors.Is(validateErr, ErrBillableRecordRetryable) ||
+				errors.Is(validateErr, context.DeadlineExceeded) && ctx.Err() == nil {
+				header := completion.message.Header
+				logx.Warnf(
+					"[billing-trace] stage=holdback_validation_deferred nodeId=%.16s connId=%s direction=%s billingSession=%x billingSequence=%d billingBytes=%d err=%v",
+					state.nodeID, completion.entry.key.connectionID, direction,
+					header.BillingSessionID, header.BillingSequence, header.BillingBytes, validateErr,
+				)
 				if !holdback.deferCompletion(completion) {
 					return authorized, errors.New("billing holdback: deferred message expired before retention")
 				}
@@ -657,7 +780,7 @@ func (state *forwardHookState) framesForForward(ctx context.Context, frame *netw
 			}
 			header := completion.message.Header
 			logx.Warnf(
-				"[billing-trace] stage=holdback_validation_rejected nodeId=%.16s connId=%s direction=%s phase=%d billingSession=%x billingSequence=%d billingBytes=%d err=%v",
+				"[billing-trace] stage=holdback_validation_rejected nodeId=%.16s connId=%s direction=%s phase=%+v billingSession=%x billingSequence=%d billingBytes=%d err=%v",
 				state.nodeID, completion.entry.key.connectionID, direction, phase,
 				header.BillingSessionID, header.BillingSequence, header.BillingBytes, validateErr,
 			)
@@ -711,7 +834,7 @@ func (state *forwardHookState) validateHeldMessage(ctx context.Context, message 
 		}
 		return messageHoldbackApproval{kind: holdbackApprovalNoise, noiseBit: noiseBit}, nil
 	case header.RouteName == KeepAliveRoute:
-		if presentFields != 0 || !phase.handshakeInfoSeen {
+		if presentFields != 0 || (!phase.handshakeInfoSeen && !phase.billingEstablished) || !phase.e2eSessionSeen {
 			return messageHoldbackApproval{}, errors.New("billing holdback: keepalive is not allowed in the current phase")
 		}
 		metadata, err := crypoto.InspectE2ERecord(message.Payload)
@@ -721,26 +844,56 @@ func (state *forwardHookState) validateHeldMessage(ctx context.Context, message 
 		if metadata.PlaintextBytes != 0 {
 			return messageHoldbackApproval{}, errors.New("billing holdback: keepalive plaintext is not empty")
 		}
+		e2eSessionID, err := heldE2ESessionID(metadata.MessageID)
+		if err != nil || e2eSessionID != phase.e2eSessionID {
+			return messageHoldbackApproval{}, errors.New("billing holdback: keepalive belongs to another E2E session")
+		}
 		return messageHoldbackApproval{kind: holdbackApprovalKeepAlive}, nil
 	case header.RouteName == billingHandshakeInfoRoute:
 		if presentFields != 0 || phase.billingEstablished || phase.handshakeInfoSeen || len(message.Payload) > handshakeInfoMaxBytes {
 			return messageHoldbackApproval{}, errors.New("billing holdback: handshake metadata is not allowed in the current phase")
 		}
-		if _, err := crypoto.InspectE2ERecord(message.Payload); err != nil {
+		metadata, err := crypoto.InspectE2ERecord(message.Payload)
+		if err != nil {
 			return messageHoldbackApproval{}, fmt.Errorf("billing holdback: handshake metadata is not an E2E record: %w", err)
 		}
-		return messageHoldbackApproval{kind: holdbackApprovalHandshakeInfo}, nil
+		e2eSessionID, err := heldE2ESessionID(metadata.MessageID)
+		if err != nil || phase.e2eSessionSeen && e2eSessionID != phase.e2eSessionID {
+			return messageHoldbackApproval{}, errors.New("billing holdback: handshake metadata belongs to another E2E session")
+		}
+		return messageHoldbackApproval{
+			kind: holdbackApprovalHandshakeInfo, e2eSessionID: e2eSessionID, bindE2ESession: true,
+		}, nil
 	case state.config.BillableRoute != "" && header.RouteName == state.config.BillableRoute:
 		if presentFields != 3 {
 			return messageHoldbackApproval{}, errors.New("billing holdback: authenticated data is missing billing metadata")
 		}
+		metadata, err := crypoto.InspectE2ERecord(message.Payload)
+		if err != nil {
+			return messageHoldbackApproval{}, fmt.Errorf("billing holdback: billable payload is not an E2E record: %w", err)
+		}
+		e2eSessionID, err := heldE2ESessionID(metadata.MessageID)
+		if err != nil || phase.e2eSessionSeen && e2eSessionID != phase.e2eSessionID {
+			return messageHoldbackApproval{}, errors.New("billing holdback: billable payload belongs to another E2E session")
+		}
 		if err := state.observeBillableRecord(ctx, message, direction); err != nil {
 			return messageHoldbackApproval{}, err
 		}
-		return messageHoldbackApproval{kind: holdbackApprovalBilling}, nil
+		return messageHoldbackApproval{
+			kind: holdbackApprovalBilling, e2eSessionID: e2eSessionID, bindE2ESession: true,
+		}, nil
 	default:
 		return messageHoldbackApproval{}, fmt.Errorf("billing holdback: route %q is not allowed on a billable connection", header.RouteName)
 	}
+}
+
+func heldE2ESessionID(messageID []byte) ([32]byte, error) {
+	var sessionID [32]byte
+	if len(messageID) < len(sessionID) {
+		return sessionID, errors.New("billing holdback: E2E record has no complete session ID")
+	}
+	copy(sessionID[:], messageID[:len(sessionID)])
+	return sessionID, nil
 }
 
 func classifyNoisePrelude(payload []byte) (uint8, bool) {
@@ -776,16 +929,48 @@ func (state *forwardHookState) acknowledgeHeldMessage(connectionID string, messa
 	}
 	holdback := state.config.ensureMessageHoldback()
 	if holdback != nil {
-		holdback.acknowledge(state.nodeID, connectionID, messageID)
+		holdback.acknowledge(state.holdbackScopeID, connectionID, messageID)
+	}
+}
+
+func (state *forwardHookState) resetHeldConnection(connectionID string) {
+	if state == nil || state.config == nil {
+		return
+	}
+	if holdback := state.config.ensureMessageHoldback(); holdback != nil {
+		holdback.resetConnection(state.holdbackScopeID, connectionID)
+	}
+}
+
+func (state *forwardHookState) forgetHeldConnection(connectionID string) {
+	if state == nil || state.config == nil {
+		return
+	}
+	if holdback := state.config.ensureMessageHoldback(); holdback != nil {
+		holdback.forgetConnection(state.holdbackScopeID, connectionID)
 	}
 }
 
 func (config *ForwardHookConfig) forgetHeldConnection(nodeID, connectionID string) {
+	config.forgetHeldConnectionForSession(nodeID, "", connectionID)
+}
+
+func (config *ForwardHookConfig) forgetHeldConnectionForSession(nodeID, registrationSessionID, connectionID string) {
 	if config == nil {
 		return
 	}
 	holdback := config.ensureMessageHoldback()
 	if holdback != nil {
-		holdback.forgetConnection(nodeID, connectionID)
+		holdback.forgetConnection(billingHoldbackScopeID(nodeID, registrationSessionID), connectionID)
+	}
+}
+
+func (config *ForwardHookConfig) resetHeldConnectionForSession(nodeID, registrationSessionID, connectionID string) {
+	if config == nil {
+		return
+	}
+	holdback := config.ensureMessageHoldback()
+	if holdback != nil {
+		holdback.resetConnection(billingHoldbackScopeID(nodeID, registrationSessionID), connectionID)
 	}
 }

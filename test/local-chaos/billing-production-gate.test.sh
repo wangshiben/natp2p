@@ -47,6 +47,8 @@ reset_mocks() {
   MOCK_CHANNEL_RELAY=4570997
   MOCK_CHANNEL_CA=240579
   MOCK_GLOBAL_CA_NOISE=39322
+	MOCK_PAYER_ACCOUNT_BEFORE=10000000
+	MOCK_SAME_USER=true
 	MOCK_RECOVERY_DOWNLOAD_FAIL=0
 }
 
@@ -111,12 +113,17 @@ billing_production_gate_read_accounting() {
   calls=$(mock_event_count accounting)
   mock_event accounting
   if (( calls == 0 )); then
-    printf '100\t200\t7\t0\t0\t0\t0\n'
+    printf '100\t200\t7\t0\t0\t0\t0\t0\t%s\t%s\t%s\n' \
+      "$MOCK_PAYER_ACCOUNT_BEFORE" "$MOCK_PAYER_ACCOUNT_BEFORE" "$MOCK_SAME_USER"
   else
-    printf '%s\t%s\t10\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t10\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$((100 + MOCK_CHANNEL_CA + MOCK_GLOBAL_CA_NOISE))" \
       "$((200 + MOCK_RELAY_INCOME_CREDIT))" \
-      "$MOCK_CHANNEL_COUNT" "$MOCK_CHANNEL_GROSS" "$MOCK_CHANNEL_RELAY" "$MOCK_CHANNEL_CA"
+      "$MOCK_CHANNEL_COUNT" "$MOCK_CHANNEL_GROSS" "$MOCK_CHANNEL_RELAY" "$MOCK_CHANNEL_CA" \
+      "$MOCK_PAYER_DEBIT" \
+      "$((MOCK_PAYER_ACCOUNT_BEFORE - MOCK_PAYER_DEBIT + MOCK_RELAY_INCOME_CREDIT))" \
+      "$((MOCK_PAYER_ACCOUNT_BEFORE - MOCK_PAYER_DEBIT + MOCK_RELAY_INCOME_CREDIT))" \
+      "$MOCK_SAME_USER"
   fi
 }
 billing_production_gate_start_client() {

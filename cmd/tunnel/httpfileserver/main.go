@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,6 +27,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"bnfs_p2p/logx"
 )
 
 const bytesPerMiB = 1024 * 1024
@@ -192,7 +195,7 @@ func main() {
 	maxIntMiB := int64(^uint(0)>>1) / bytesPerMiB
 	sendRateBytesPerSecond, rateErr := resolveSendRateBytes(*sendRateMiBPS, *sendRateKiBPS)
 	if *sizeMB < 1 || *maxSizeMB < *sizeMB || int64(*maxSizeMB) > maxIntMiB || rateErr != nil {
-		fmt.Printf("invalid server configuration: default=%d MB max=%d MB send-rate=%d MiB/s send-rate=%d KiB/s\n",
+		logx.Errorf("invalid server configuration: default=%d MB max=%d MB send-rate=%d MiB/s send-rate=%d KiB/s",
 			*sizeMB, *maxSizeMB, *sendRateMiBPS, *sendRateKiBPS)
 		os.Exit(2)
 	}
@@ -203,7 +206,7 @@ func main() {
 	fmt.Printf("生成 %d MB 测试数据（默认 %d MB）...\n", *maxSizeMB, *sizeMB)
 	data := make([]byte, maxSize)
 	if _, err := rand.Read(data); err != nil {
-		fmt.Printf("生成测试数据失败: %v\n", err)
+		logx.Errorf("生成测试数据失败: %v", err)
 		os.Exit(1)
 	}
 	type checksumKey struct {
@@ -311,9 +314,8 @@ func main() {
 		WriteTimeout: 24 * time.Hour,
 		ReadTimeout:  1 * time.Minute,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		fmt.Printf("服务器退出: %v\n", err)
-		os.Exit(1)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logx.Errorf("HTTP 文件服务器运行循环退出，未执行强制退出: %v", err)
 	}
 }
 

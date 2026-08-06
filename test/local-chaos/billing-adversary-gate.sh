@@ -21,8 +21,9 @@ start_billing_adversary() {
   local run_dir=$1 ca_port=$2 watch_pid=$3 container_probe_mode=${4:-enforce} attempt pid start
   local component_probe_bin=${COMPONENT_PROBE_BIN:-$run_dir/build-runtime/build/billing-adversary-probe}
   local component_probe_state_dir=${COMPONENT_PROBE_STATE_DIR:-$run_dir/billing-component-probe}
-  local credential_root=${PRIVATE_RUNTIME_DIR:-$run_dir/runtime/.private}/ca
-  local credential_environment=()
+  local private_root=${PRIVATE_RUNTIME_DIR:-$run_dir/runtime/.private}
+  local credential_root=$private_root/ca
+  local credential_environment=() billing_fixture_environment=()
   if [[ -f $credential_root/enroll-server.token && -f $credential_root/enroll-relay.token \
     && -f $credential_root/admin.token ]]; then
     credential_environment=(
@@ -31,11 +32,22 @@ start_billing_adversary() {
       "CA_ADMIN_TOKEN_FILE=$credential_root/admin.token"
     )
   fi
+  if [[ -f $private_root/malicious-natserver/billing-key.json \
+    && -f $private_root/malicious-relay/billing-key.json ]]; then
+    billing_fixture_environment=(
+      "CA_BILLING_PAYER_KEY_FILE=$private_root/malicious-natserver/billing-key.json"
+      "CA_BILLING_RELAY_KEY_FILE=$private_root/malicious-relay/billing-key.json"
+    )
+  elif [[ -f $private_root/malicious-natserver/billing-key.json \
+    || -f $private_root/malicious-relay/billing-key.json ]]; then
+    return 1
+  fi
   env RUN_DIR="$run_dir" CA_BASE_URL="http://127.0.0.1:$ca_port" WATCH_PID="$watch_pid" \
     COMPONENT_PROBE_BIN="$component_probe_bin" COMPONENT_PROBE_STATE_DIR="$component_probe_state_dir" \
     CONTAINER_ADVERSARY_STATE_ROOT="${PRIVATE_RUNTIME_DIR:-$run_dir/runtime/.private}" \
     CONTAINER_PROBE_MODE="$container_probe_mode" \
     "${credential_environment[@]}" \
+    "${billing_fixture_environment[@]}" \
     node "$ROOT_DIR/test/local-chaos/monitor/billing-adversary.mjs" \
     > "$run_dir/billing-adversary.log" 2>&1 < /dev/null &
   pid=$!

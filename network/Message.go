@@ -4,6 +4,7 @@ import (
 	"bnfs_p2p/logx"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -265,15 +266,30 @@ func (h *Header) ParseToBytes() ([]byte, error) {
 	return headerBytes, nil
 }
 
-func (m *Message) ParseToBytes() ([]byte, error) {
-	m.Header.PayLoadLength = uint(len(m.Payload))
+func (m *Message) ParseToBytes() (encoded []byte, returnErr error) {
 	defer func() {
-		err := recover()
-		if err != nil {
-			logx.Errorf("Message.ParseToBytes panic: %v", err)
-			panic(err)
+		recovered := recover()
+		if recovered == nil {
+			return
 		}
+		var cause error
+		switch value := recovered.(type) {
+		case error:
+			cause = value
+		default:
+			cause = fmt.Errorf("%v", value)
+		}
+		encoded = nil
+		returnErr = fmt.Errorf("message serialization recovered from panic: %w", cause)
+		logx.Errorf("Message.ParseToBytes isolated panic: %v", returnErr)
 	}()
+	if m == nil {
+		return nil, errors.New("message must not be nil")
+	}
+	if m.Header == nil {
+		return nil, errors.New("message header must not be nil")
+	}
+	m.Header.PayLoadLength = uint(len(m.Payload))
 	headerBytes, err := m.Header.ParseToBytes()
 	if err != nil {
 		return nil, err

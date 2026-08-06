@@ -41,6 +41,7 @@ type EndpointFrameMux struct {
 	conns                  map[string]*muxConn
 	inbound                map[muxFrameKey]muxInboundRoute
 	outbound               map[muxFrameKey]*muxOutboundRoute
+	billingGenerations     map[muxFrameKey]*muxBillingGenerationRoute
 	retired                map[string]time.Time
 	kcpGoodput             map[streamTransport]*frameRelayGoodputState
 	kcpCooldown            time.Time
@@ -70,18 +71,19 @@ func NewEndpointFrameMux(stream network.Stream, onNew func(connId string, conn n
 	}
 	ctx, cancel := context.WithCancel(dual.ctx)
 	m := &EndpointFrameMux{
-		ctx:        ctx,
-		cancel:     cancel,
-		dual:       dual,
-		adapterSet: make(map[*TcpStream]struct{}),
-		conns:      make(map[string]*muxConn),
-		inbound:    make(map[muxFrameKey]muxInboundRoute),
-		outbound:   make(map[muxFrameKey]*muxOutboundRoute),
-		retired:    make(map[string]time.Time),
-		kcpGoodput: make(map[streamTransport]*frameRelayGoodputState),
-		onNew:      onNew,
-		outCh:      make(chan *network.Frame, endpointMuxDataQueueCapacity),
-		controlCh:  make(chan *network.Frame, 1024),
+		ctx:                ctx,
+		cancel:             cancel,
+		dual:               dual,
+		adapterSet:         make(map[*TcpStream]struct{}),
+		conns:              make(map[string]*muxConn),
+		inbound:            make(map[muxFrameKey]muxInboundRoute),
+		outbound:           make(map[muxFrameKey]*muxOutboundRoute),
+		billingGenerations: make(map[muxFrameKey]*muxBillingGenerationRoute),
+		retired:            make(map[string]time.Time),
+		kcpGoodput:         make(map[streamTransport]*frameRelayGoodputState),
+		onNew:              onNew,
+		outCh:              make(chan *network.Frame, endpointMuxDataQueueCapacity),
+		controlCh:          make(chan *network.Frame, 1024),
 	}
 
 	if len(m.attachCurrentLegs()) == 0 {
@@ -163,6 +165,9 @@ func (m *EndpointFrameMux) nextOutboundFrame() (*network.Frame, bool) {
 }
 
 func (m *EndpointFrameMux) writeFrame(frame *network.Frame) {
+	if m.outboundBillingGenerationStale(frame, time.Now()) {
+		return
+	}
 	adapters, routeKey, routed := m.orderedAdaptersForFrame(frame)
 	for _, adapter := range adapters {
 		if err := adapter.HandleFrame(m.ctx, frame); err != nil {
@@ -189,6 +194,7 @@ func (m *EndpointFrameMux) Close() {
 	m.conns = make(map[string]*muxConn)
 	m.inbound = make(map[muxFrameKey]muxInboundRoute)
 	m.outbound = make(map[muxFrameKey]*muxOutboundRoute)
+	m.billingGenerations = make(map[muxFrameKey]*muxBillingGenerationRoute)
 	m.retired = make(map[string]time.Time)
 	m.kcpGoodput = make(map[streamTransport]*frameRelayGoodputState)
 	m.outboundFrames = 0
@@ -311,6 +317,7 @@ func (m *EndpointFrameMux) dispatchFromAdapter(adapter *TcpFrameAdapter, f *netw
 	now := time.Now()
 	if f.FrameType == network.FrameTypeAck {
 		m.observeOutboundAckLocked(f, now)
+		m.observeBillingGenerationAckLocked(f, now)
 	}
 	if m.isRetiredLocked(connId, now) {
 		m.mu.Unlock()
@@ -366,6 +373,11 @@ func (m *EndpointFrameMux) removeConn(connId string) bool {
 	for key := range m.outbound {
 		if key.connectionID == connId {
 			m.removeOutboundRouteLocked(key)
+		}
+	}
+	for key := range m.billingGenerations {
+		if key.connectionID == connId {
+			delete(m.billingGenerations, key)
 		}
 	}
 	m.mu.Unlock()
@@ -441,6 +453,9 @@ func (m *EndpointFrameMux) writeSharedContext(ctx context.Context, f *network.Fr
 	}
 	if queue == nil {
 		return errors.New("endpoint mux queue unavailable")
+	}
+	if err := m.trackOutboundBillingGeneration(f, time.Now()); err != nil {
+		return err
 	}
 	select {
 	case queue <- f:
@@ -526,10 +541,17 @@ type muxOutboundRoute struct {
 	lastActive   time.Time
 }
 
+type muxBillingGenerationRoute struct {
+	generation uint64
+	total      uint32
+	lastActive time.Time
+}
+
 const (
 	endpointMuxFramePayload             = 32 * 1024
 	endpointMuxQualityRouteTTL          = 2 * time.Minute
 	endpointMuxQualityMaxRoutes         = 8192
+	endpointMuxBillingGenerationLimit   = 8192
 	endpointMuxQualityMaxFramesPerRoute = 32768
 	endpointMuxQualityMaxTrackedFrames  = 262144
 )
@@ -657,6 +679,7 @@ func (m *EndpointFrameMux) maintainCarrierQuality(now time.Time) {
 	}
 	m.lastQualityMaintenance = now
 	m.sweepOutboundLocked(now)
+	m.sweepBillingGenerationsLocked(now)
 	decisions := m.evaluateCarrierGoodputLocked(now)
 	if len(decisions) > 0 {
 		m.kcpCooldown = now.Add(frameRelayGoodputCooldown)
@@ -668,6 +691,86 @@ func (m *EndpointFrameMux) maintainCarrierQuality(now time.Time) {
 		logx.Warnf("[EndpointMux] KCP carrier 确认吞吐连续低于阈值, 切换 TCP: goodput=%dB/s threshold=%dB/s sent=%d acked=%d window=%s cooldown=%s",
 			decision.goodput, defaultKCPGoodputBytesPerSecond, decision.sent, decision.acked,
 			decision.elapsed, frameRelayGoodputCooldown)
+	}
+}
+
+func (m *EndpointFrameMux) trackOutboundBillingGeneration(frame *network.Frame, now time.Time) error {
+	if m == nil || m.dual == nil || frame == nil || frame.ConnectionId == "" ||
+		(frame.FrameType != network.FrameTypeData && frame.FrameType != network.FrameTypeRetransmit) {
+		return nil
+	}
+	key := muxFrameKey{connectionID: frame.ConnectionId, messageID: frame.MessageId}
+	generation := m.dual.relayGeneration.Load()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.billingGenerations == nil {
+		m.billingGenerations = make(map[muxFrameKey]*muxBillingGenerationRoute)
+	}
+	if route := m.billingGenerations[key]; route != nil {
+		if route.generation != generation {
+			return ErrRelayChangedDuringSend
+		}
+		route.lastActive = now
+		return nil
+	}
+	if frame.FrameType != network.FrameTypeData || frame.SeqId != 0 ||
+		len(frame.Payload) < network.HeaderLength {
+		return nil
+	}
+	header, err := network.ParseHeader(frame.Payload[:network.HeaderLength])
+	if err != nil || header.BillingSequence == 0 {
+		return nil
+	}
+	if len(m.billingGenerations) >= endpointMuxBillingGenerationLimit {
+		m.sweepBillingGenerationsLocked(now)
+	}
+	if len(m.billingGenerations) >= endpointMuxBillingGenerationLimit {
+		return errors.New("endpoint mux billing generation capacity exceeded")
+	}
+	m.billingGenerations[key] = &muxBillingGenerationRoute{
+		generation: generation,
+		total:      frame.TotalFrames,
+		lastActive: now,
+	}
+	return nil
+}
+
+func (m *EndpointFrameMux) outboundBillingGenerationStale(frame *network.Frame, now time.Time) bool {
+	if m == nil || m.dual == nil || frame == nil || frame.ConnectionId == "" ||
+		(frame.FrameType != network.FrameTypeData && frame.FrameType != network.FrameTypeRetransmit) {
+		return false
+	}
+	key := muxFrameKey{connectionID: frame.ConnectionId, messageID: frame.MessageId}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	route := m.billingGenerations[key]
+	if route == nil {
+		return false
+	}
+	route.lastActive = now
+	return route.generation != m.dual.relayGeneration.Load()
+}
+
+func (m *EndpointFrameMux) observeBillingGenerationAckLocked(frame *network.Frame, now time.Time) {
+	if frame == nil || frame.ConnectionId == "" {
+		return
+	}
+	key := muxFrameKey{connectionID: frame.ConnectionId, messageID: frame.MessageId}
+	route := m.billingGenerations[key]
+	if route == nil {
+		return
+	}
+	route.lastActive = now
+	if isFullFrameAck(frame, route.total) {
+		delete(m.billingGenerations, key)
+	}
+}
+
+func (m *EndpointFrameMux) sweepBillingGenerationsLocked(now time.Time) {
+	for key, route := range m.billingGenerations {
+		if route == nil || now.Sub(route.lastActive) >= endpointMuxQualityRouteTTL {
+			delete(m.billingGenerations, key)
+		}
 	}
 }
 

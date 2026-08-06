@@ -17,6 +17,7 @@ package relaynode
 
 import (
 	"bnfs_p2p/DHTable"
+	"bnfs_p2p/admission"
 	"bnfs_p2p/billingcontrol"
 	"bnfs_p2p/crypoto"
 	"bnfs_p2p/interfaces"
@@ -66,9 +67,10 @@ type hostRouteBroadcastEvent struct {
 
 // RelayNode 是公网中继节点，实现 p2pnode.Node 接口。
 type RelayNode struct {
-	identity *DHTable.Node
-	privKey  *ecdh.PrivateKey
-	addr     string // 本 relay 的公网业务监听地址（如 "0.0.0.0:9000" 对外可达地址）
+	identity          *DHTable.Node
+	privKey           *ecdh.PrivateKey
+	billingPrivateKey *ecdh.PrivateKey
+	addr              string // 本 relay 的公网业务监听地址（如 "0.0.0.0:9000" 对外可达地址）
 
 	// 两张独立 DHT：区分 Nat 节点与 Relay 节点（需求 2）。
 	natNodes   interfaces.DHTTable // 本 relay 当前托管（已注册）的 NAT 节点
@@ -228,6 +230,7 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 	n := &RelayNode{
 		identity:                identity,
 		privKey:                 privKey,
+		billingPrivateKey:       privKey,
 		addr:                    publicAddr,
 		natNodes:                natNodes,
 		relayNodes:              relayNodes,
@@ -353,6 +356,45 @@ func (n *RelayNode) SetBillingQueuePath(path string) error {
 	}
 	n.billingQueuePath = path
 	return nil
+}
+
+// SetBillingPrivateKey 配置独立于 Relay 节点身份私钥的扣费签名私钥。
+// 必须在 SetAdmission 之前调用；旧证书无需调用。
+func (n *RelayNode) SetBillingPrivateKey(privateKey *ecdh.PrivateKey) error {
+	if privateKey == nil {
+		return errors.New("relaynode: billing private key is nil")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.billingPipeline != nil || n.billingPipelineErr != nil {
+		return errors.New("relaynode: billing private key must be set before admission")
+	}
+	n.billingPrivateKey = privateKey
+	return nil
+}
+
+func (n *RelayNode) billingPublicKeyHex() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return hex.EncodeToString(n.billingPrivateKey.PublicKey().Bytes())
+}
+
+func (n *RelayNode) billingPublicKeyForWire() string {
+	config := n.admissionConfig()
+	if config == nil || config.SelfCert == nil || config.SelfCert.Cert.AuthorizationID == "" {
+		return ""
+	}
+	return n.billingPublicKeyHex()
+}
+
+// BuildNodeAuthorizationRequest 使用 Relay 身份私钥与独立扣费私钥共同签署 CA 授权请求。
+func (n *RelayNode) BuildNodeAuthorizationRequest(
+	billingPrivateKey *ecdh.PrivateKey,
+	ttl time.Duration,
+) (admission.NodeAuthorizationRequest, error) {
+	return admission.NewNodeAuthorizationRequest(
+		n.privKey, billingPrivateKey, admission.RoleRelay, ttl,
+	)
 }
 
 // Start 启动内嵌 relay 服务器（阻塞）。应在独立 goroutine 中调用。

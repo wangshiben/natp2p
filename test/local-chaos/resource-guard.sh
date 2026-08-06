@@ -193,7 +193,7 @@ read_cpu_ticks() {
     idle = $5 + $6
     total = 0
     for (i = 2; i <= NF; i++) total += $i
-    print total, idle
+    printf "%.0f %.0f\n", total, idle
     exit
   }' /proc/stat
 }

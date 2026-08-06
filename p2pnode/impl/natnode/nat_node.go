@@ -213,6 +213,27 @@ func (n *NATNode) SetBillingPrivateSnapshotPath(path string) error {
 	return n.billingMeter.setPrivateSnapshotPath(path)
 }
 
+// SetBillingPrivateKey 配置独立于节点身份私钥的扣费签名私钥。
+// 必须在 SetIndexSign、Listen 或 Connect 之前调用；旧证书无需调用。
+func (n *NATNode) SetBillingPrivateKey(privateKey *ecdh.PrivateKey) error {
+	return n.billingMeter.setBillingPrivateKey(privateKey)
+}
+
+// SetAdmissionVerifier 配置用于校验 Relay 扣费证书的 CA 离线验证器。
+// 必须在 SetIndexSign、Listen 或 Connect 之前调用。
+func (n *NATNode) SetAdmissionVerifier(verifier admission.CertVerifier) error {
+	return n.billingMeter.setCertificateVerifier(verifier)
+}
+
+// BuildNodeAuthorizationRequest 使用节点身份私钥与独立扣费私钥共同签署 CA 授权请求。
+func (n *NATNode) BuildNodeAuthorizationRequest(
+	billingPrivateKey *ecdh.PrivateKey,
+	role admission.Role,
+	ttl time.Duration,
+) (admission.NodeAuthorizationRequest, error) {
+	return admission.NewNodeAuthorizationRequest(n.privKey, billingPrivateKey, role, ttl)
+}
+
 // PubKeyHex 返回本节点公钥 hex（申请 indexSign 时作为 subject 公钥提交给 CA）。
 func (n *NATNode) PubKeyHex() string { return n.identity.Pubkey() }
 

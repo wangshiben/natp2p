@@ -9,7 +9,11 @@ import (
 	"bnfs_p2p/admission"
 	"bnfs_p2p/p2pnode/impl/natnode"
 	"bnfs_p2p/p2pnode/impl/relaynode"
+	"bytes"
 	"context"
+	"crypto/ecdh"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,8 +24,34 @@ import (
 const (
 	issueTokenFileEnv          = "BNFS_CA_ISSUE_TOKEN_FILE"
 	certificateFileEnv         = "BNFS_CA_CERT_FILE"
+	billingKeyFileEnv          = "BNFS_BILLING_KEY_FILE"
 	maximumCertificateFileSize = 64 << 10
 )
+
+type billingPrivateKeyJWK struct {
+	KeyType     string   `json:"kty"`
+	Curve       string   `json:"crv"`
+	X           string   `json:"x"`
+	Y           string   `json:"y"`
+	D           string   `json:"d"`
+	KeyOps      []string `json:"key_ops,omitempty"`
+	Extractable bool     `json:"ext,omitempty"`
+}
+
+type billingPrivateKeyBundle struct {
+	Version                   int                  `json:"version"`
+	KeyID                     string               `json:"key_id"`
+	Label                     string               `json:"label"`
+	Algorithm                 string               `json:"algorithm"`
+	PrivateKeyJWK             billingPrivateKeyJWK `json:"private_key_jwk"`
+	PublicKeyHex              string               `json:"public_key_hex"`
+	ChargeEndpoint            string               `json:"charge_endpoint,omitempty"`
+	NodeAuthorizationEndpoint string               `json:"node_authorization_endpoint,omitempty"`
+	FrameworkEnvironment      string               `json:"framework_environment,omitempty"`
+	CanonicalFormat           string               `json:"canonical_format,omitempty"`
+	RegistrationStatus        string               `json:"registration_status,omitempty"`
+	GeneratedAt               string               `json:"generated_at,omitempty"`
+}
 
 // ParseMode 把字符串解析为 relaynode.AdmissionMode；空串按「有 CA 则 enforce，否则 off」。
 func ParseMode(s string, caGiven bool) relaynode.AdmissionMode {
@@ -64,6 +94,24 @@ func requestCert(cc *admission.CAClient, pubKeyHex string, role admission.Role) 
 		return nil, fmt.Errorf("向 CA 申请 %s 证书失败: %w", role, err)
 	}
 	return sc, nil
+}
+
+func authorizeNodeCert(
+	cc *admission.CAClient,
+	request admission.NodeAuthorizationRequest,
+) (*admission.SignedCert, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	response, err := cc.AuthorizeNode(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("向 CA 申请 %s 节点扣费授权失败: %w", request.Role, err)
+	}
+	if err := cc.Verify(response.SignedCert, admission.VerifyOptions{
+		ExpectNodeID: response.NodeID, ExpectRole: request.Role,
+	}); err != nil {
+		return nil, fmt.Errorf("CA 返回的节点扣费证书验签失败: %w", err)
+	}
+	return response.SignedCert, nil
 }
 
 func certificateForIdentity(cc *admission.CAClient, pubKeyHex, nodeID string, role admission.Role) (*admission.SignedCert, error) {
@@ -119,6 +167,109 @@ func readCertificateFile(filename string) (*admission.SignedCert, error) {
 	return &certificate, nil
 }
 
+func configuredBillingPrivateKey() (*ecdh.PrivateKey, bool, error) {
+	filename := os.Getenv(billingKeyFileEnv)
+	if filename == "" {
+		return nil, false, nil
+	}
+	if os.Getenv(issueTokenFileEnv) != "" {
+		return nil, false, fmt.Errorf("%s 不能与 %s 同时配置",
+			billingKeyFileEnv, issueTokenFileEnv)
+	}
+	privateKey, err := readBillingPrivateKeyFile(filename)
+	if err != nil {
+		return nil, false, fmt.Errorf("加载 CA Web 扣费私钥失败: %w", err)
+	}
+	return privateKey, true, nil
+}
+
+func readBillingPrivateKeyFile(filename string) (*ecdh.PrivateKey, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maximumCertificateFileSize {
+		return nil, fmt.Errorf("扣费私钥文件必须是 1..%d 字节的普通文件", maximumCertificateFileSize)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("扣费私钥文件权限必须为 0600 或更严格")
+	}
+	decoder := json.NewDecoder(io.LimitReader(file, maximumCertificateFileSize+1))
+	decoder.DisallowUnknownFields()
+	var bundle billingPrivateKeyBundle
+	if err := decoder.Decode(&bundle); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("扣费私钥文件包含多余 JSON 值")
+		}
+		return nil, err
+	}
+	if bundle.Version != 1 || bundle.Algorithm != "ECDSA_P256_SHA256" ||
+		bundle.PrivateKeyJWK.KeyType != "EC" || bundle.PrivateKeyJWK.Curve != "P-256" {
+		return nil, fmt.Errorf("扣费私钥格式或算法不受支持")
+	}
+	privateScalar, err := base64.RawURLEncoding.DecodeString(bundle.PrivateKeyJWK.D)
+	if err != nil || len(privateScalar) != 32 {
+		return nil, fmt.Errorf("扣费私钥 JWK 的 d 参数无效")
+	}
+	privateKey, err := ecdh.P256().NewPrivateKey(privateScalar)
+	if err != nil {
+		return nil, fmt.Errorf("扣费私钥不是合法 P-256 密钥: %w", err)
+	}
+	publicKey, err := admission.ParseIdentityPublicKey(bundle.PublicKeyHex)
+	if err != nil || !bytes.Equal(publicKey.Bytes(), privateKey.PublicKey().Bytes()) {
+		return nil, fmt.Errorf("扣费私钥与 public_key_hex 不匹配")
+	}
+	x, xErr := base64.RawURLEncoding.DecodeString(bundle.PrivateKeyJWK.X)
+	y, yErr := base64.RawURLEncoding.DecodeString(bundle.PrivateKeyJWK.Y)
+	jwkPublicKey := append([]byte{4}, append(x, y...)...)
+	if xErr != nil || yErr != nil || len(x) != 32 || len(y) != 32 ||
+		!bytes.Equal(jwkPublicKey, publicKey.Bytes()) {
+		return nil, fmt.Errorf("扣费私钥 JWK 公钥坐标不匹配")
+	}
+	keyID, err := admission.BillingKeyIDFromPublicKeyHex(bundle.PublicKeyHex)
+	if err != nil || keyID != bundle.KeyID {
+		return nil, fmt.Errorf("扣费私钥 key_id 与公钥指纹不匹配")
+	}
+	if bundle.RegistrationStatus != "" && bundle.RegistrationStatus != "active" {
+		return nil, fmt.Errorf("扣费私钥尚未在 CA Web 确认登记")
+	}
+	return privateKey, nil
+}
+
+func validateCertificateBillingBinding(
+	certificate *admission.SignedCert,
+	nodeID string,
+	billingPrivateKey *ecdh.PrivateKey,
+) error {
+	if certificate == nil || billingPrivateKey == nil {
+		return fmt.Errorf("预签证书或本地扣费私钥为空")
+	}
+	billingPublicKey := hex.EncodeToString(billingPrivateKey.PublicKey().Bytes())
+	billingKeyID, err := admission.BillingKeyIDFromPublicKeyHex(billingPublicKey)
+	if err != nil {
+		return fmt.Errorf("计算本地扣费密钥 ID 失败: %w", err)
+	}
+	if certificate.Cert.BillingPubKey != billingPublicKey {
+		return fmt.Errorf("预签证书扣费公钥与本地扣费私钥不匹配")
+	}
+	if certificate.Cert.BillingKeyID != billingKeyID {
+		return fmt.Errorf("预签证书扣费密钥 ID 与本地扣费私钥不匹配")
+	}
+	if certificate.Cert.AuthorizationID != admission.NodeAuthorizationID(nodeID, billingKeyID) {
+		return fmt.Errorf("预签证书节点授权 ID 与本地节点及扣费私钥不匹配")
+	}
+	return nil
+}
+
 // SetupRelay 为 relay/index 节点配置准入：拉公钥 + 申请 relay 证书 + SetAdmission。
 // caURL 为空则不启用（直接返回 nil）。
 func SetupRelay(rn *relaynode.RelayNode, caURL, modeStr string) error {
@@ -129,7 +280,30 @@ func SetupRelay(rn *relaynode.RelayNode, caURL, modeStr string) error {
 	if err != nil {
 		return err
 	}
-	cert, err := certificateForIdentity(cc, rn.PubKeyHex(), string(rn.ID()), admission.RoleRelay)
+	billingPrivateKey, independentBilling, err := configuredBillingPrivateKey()
+	if err != nil {
+		return err
+	}
+	var cert *admission.SignedCert
+	if independentBilling {
+		if os.Getenv(certificateFileEnv) != "" {
+			cert, err = certificateForIdentity(cc, rn.PubKeyHex(), string(rn.ID()), admission.RoleRelay)
+			if err == nil {
+				err = validateCertificateBillingBinding(cert, string(rn.ID()), billingPrivateKey)
+			}
+		} else {
+			request, requestErr := rn.BuildNodeAuthorizationRequest(billingPrivateKey, 0)
+			if requestErr != nil {
+				return requestErr
+			}
+			cert, err = authorizeNodeCert(cc, request)
+		}
+		if err == nil {
+			err = rn.SetBillingPrivateKey(billingPrivateKey)
+		}
+	} else {
+		cert, err = certificateForIdentity(cc, rn.PubKeyHex(), string(rn.ID()), admission.RoleRelay)
+	}
 	if err != nil {
 		return err
 	}
@@ -152,8 +326,34 @@ func SetupNat(node *natnode.NATNode, caURL string, role admission.Role) error {
 	if err != nil {
 		return err
 	}
-	cert, err := certificateForIdentity(cc, node.PubKeyHex(), string(node.ID()), role)
+	billingPrivateKey, independentBilling, err := configuredBillingPrivateKey()
 	if err != nil {
+		return err
+	}
+	var cert *admission.SignedCert
+	if independentBilling {
+		if os.Getenv(certificateFileEnv) != "" {
+			cert, err = certificateForIdentity(cc, node.PubKeyHex(), string(node.ID()), role)
+			if err == nil {
+				err = validateCertificateBillingBinding(cert, string(node.ID()), billingPrivateKey)
+			}
+		} else {
+			request, requestErr := node.BuildNodeAuthorizationRequest(billingPrivateKey, role, 0)
+			if requestErr != nil {
+				return requestErr
+			}
+			cert, err = authorizeNodeCert(cc, request)
+		}
+		if err == nil {
+			err = node.SetBillingPrivateKey(billingPrivateKey)
+		}
+	} else {
+		cert, err = certificateForIdentity(cc, node.PubKeyHex(), string(node.ID()), role)
+	}
+	if err != nil {
+		return err
+	}
+	if err := node.SetAdmissionVerifier(cc); err != nil {
 		return err
 	}
 	b, err := json.Marshal(cert)
@@ -166,6 +366,12 @@ func SetupNat(node *natnode.NATNode, caURL string, role admission.Role) error {
 }
 
 func certificateSource() string {
+	if os.Getenv(billingKeyFileEnv) != "" {
+		if os.Getenv(certificateFileEnv) != "" {
+			return "pre-signed-billing-key"
+		}
+		return "billing-key-authorization"
+	}
 	if os.Getenv(certificateFileEnv) != "" {
 		return "pre-signed"
 	}

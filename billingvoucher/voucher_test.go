@@ -276,6 +276,39 @@ func TestSignatureIdentityAndCanonicality(t *testing.T) {
 	}
 }
 
+func TestIndependentBillingKeysPreserveNodeBindings(t *testing.T) {
+	payerIdentity := generateIdentity(t)
+	relayIdentity := generateIdentity(t)
+	payerBillingKey := generateIdentity(t)
+	relayBillingKey := generateIdentity(t)
+	body := bodyForIdentities(t, payerIdentity, relayIdentity, 1, 512*1024, Identifier{})
+
+	payerSignature, err := SignPayerBilling(body, payerBillingKey)
+	if err != nil {
+		t.Fatalf("SignPayerBilling: %v", err)
+	}
+	relaySignature, err := SignRelayBilling(body, relayBillingKey)
+	if err != nil {
+		t.Fatalf("SignRelayBilling: %v", err)
+	}
+	mutual, err := NewMutualVoucher(body, payerSignature, relaySignature)
+	if err != nil {
+		t.Fatalf("NewMutualVoucher: %v", err)
+	}
+	if err := mutual.VerifyBillingSignatures(payerBillingKey.PublicKey(), relayBillingKey.PublicKey()); err != nil {
+		t.Fatalf("independent billing signatures rejected: %v", err)
+	}
+	if err := mutual.Verify(payerBillingKey.PublicKey(), relayBillingKey.PublicKey()); err == nil {
+		t.Fatal("legacy identity verification accepted independent billing keys")
+	}
+	if err := mutual.VerifyBillingSignatures(payerIdentity.PublicKey(), relayBillingKey.PublicKey()); err == nil {
+		t.Fatal("wrong payer billing key verified")
+	}
+	if err := VerifyRelayBillingSignature(body, payerSignature, payerBillingKey.PublicKey()); err == nil {
+		t.Fatal("payer billing signature verified in Relay domain")
+	}
+}
+
 func TestCanonicalParsersRejectAmbiguity(t *testing.T) {
 	payer := generateIdentity(t)
 	relay := generateIdentity(t)

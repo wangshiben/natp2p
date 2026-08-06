@@ -3,11 +3,12 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 
+	"bnfs_p2p/logx"
 	"github.com/pion/ice/v3"
 )
 
@@ -27,14 +28,15 @@ var (
 func main() {
 	listener, err := net.Listen("tcp", ":9000")
 	if err != nil {
-		log.Fatalf("Failed to start relay server: %v", err)
+		logx.Errorf("Failed to start relay server: %v", err)
+		os.Exit(1)
 	}
 	fmt.Println("Relay Server started on :9000")
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
+			logx.Warnf("Failed to accept connection: %v", err)
 			continue
 		}
 		go handleConnection(conn)
@@ -115,7 +117,7 @@ func handleConnection(conn net.Conn) {
 		forwardMsg := fmt.Sprintf("FROM %s: %s\n", nodeID, payload)
 		_, err = targetSession.Conn.Write([]byte(forwardMsg))
 		if err != nil {
-			fmt.Printf("Failed to forward message to %s: %v\n", targetID, err)
+			logx.Warnf("Failed to forward message to %s: %v", targetID, err)
 		} else {
 			fmt.Printf("Forwarded message from %s to %s\n", nodeID, targetID)
 		}

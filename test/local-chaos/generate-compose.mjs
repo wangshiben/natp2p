@@ -9,17 +9,33 @@ const image = process.env.BNFS_CHAOS_IMAGE ?? "bnfs-local-chaos:latest";
 const enableCA = process.env.BNFS_CHAOS_ENABLE_CA === "1";
 const enableAdversaries = enableCA && process.env.BNFS_CHAOS_ENABLE_ADVERSARIES === "1";
 const caHostPort = process.env.BNFS_CHAOS_CA_HOST_PORT ?? "19100";
+const caWebHostPort = process.env.BNFS_CHAOS_CA_WEB_HOST_PORT ?? "8088";
+const caBackendImage = process.env.BNFS_CHAOS_CA_BACKEND_IMAGE ?? "bnfs-ca-web-backend:latest";
+const caFrontendImage = process.env.BNFS_CHAOS_CA_FRONTEND_IMAGE ?? "bnfs-ca-web-frontend:latest";
+const caTLSHosts = process.env.BNFS_CHAOS_CA_TLS_HOSTS ?? "localhost,127.0.0.1,::1,192.168.1.12";
+const caAdminTokenFile = process.env.BNFS_CHAOS_CA_ADMIN_TOKEN_FILE ?? "";
+const caBackendUser = typeof process.getuid === "function" && typeof process.getgid === "function"
+  ? `${process.getuid()}:${process.getgid()}`
+  : "65532:65532";
 const adversarySeed = process.env.BNFS_CHAOS_ADVERSARY_SEED ?? "bnfs-container-adversary-v1";
 const ipFamilyPlanFile = process.env.BNFS_CHAOS_IP_FAMILY_PLAN_FILE ?? "";
 const reconnectGateURL = process.env.BNFS_CHAOS_RECONNECT_GATE_URL ?? "";
 const reconnectGateToken = process.env.BNFS_CHAOS_RECONNECT_GATE_TOKEN ?? "";
+const caClientRoleServices = parseCAClientRoleServices(
+  process.env.BNFS_CHAOS_CA_CLIENT_ROLE_SERVICES ?? "",
+);
 const accessNetworkSecondOctet = parseAccessNetworkSecondOctet(
   process.env.BNFS_CHAOS_ACCESS_NETWORK_SECOND_OCTET ?? "211",
+);
+const controlNetworkSecondOctet = parseControlNetworkSecondOctet(
+  process.env.BNFS_CHAOS_CONTROL_NETWORK_SECOND_OCTET ?? "200",
+  accessNetworkSecondOctet,
 );
 const relayCount = 7;
 const natServerCount = 13;
 const natClientCount = 6;
 const caCredentials = enableCA ? provisionCACredentials() : null;
+const billingBundles = enableCA ? provisionBillingKeys() : new Map();
 const ipFamilyPlan = readIPFamilyPlan(ipFamilyPlanFile);
 validateReconnectGateConfiguration();
 const ipFamilySpecs = Object.freeze({
@@ -47,9 +63,9 @@ const ipFamilySpecs = Object.freeze({
 });
 
 const networks = {
-  control_index: network("10.200.0.0/24"),
-  control_partition_a: network("10.200.1.0/24"),
-  control_partition_b: network("10.200.2.0/24"),
+  control_index: network(`10.${controlNetworkSecondOctet}.0.0/24`),
+  control_partition_a: network(`10.${controlNetworkSecondOctet}.1.0/24`),
+  control_partition_b: network(`10.${controlNetworkSecondOctet}.2.0/24`),
 };
 for (let relay = 1; relay <= relayCount; relay += 1) {
   networks[relayNetwork(relay)] = network(`10.${accessNetworkSecondOctet}.${relay}.0/24`);
@@ -64,6 +80,7 @@ if (enableCA) {
   // on the explicitly loopback-bound host port without changing NAT/Relay
   // partition reachability.
   networks.ca_host = { driver: "bridge" };
+  networks.ca_database = network(`10.${controlNetworkSecondOctet}.3.0/24`);
 }
 if (enableAdversaries) {
   networks.adversary_billing = network("10.202.0.0/24");
@@ -76,7 +93,9 @@ const admissionArgs = enableCA
 
 const services = {};
 if (enableCA) {
+  services["ca-postgres"] = caPostgresService();
   services.ca = caService("ca");
+  services["ca-web"] = caWebService();
   services["malicious-random-natserver"] = {
     ...idleNatService("malicious-random-natserver", [relayNetwork(3)]),
     labels: {
@@ -196,6 +215,17 @@ function parseAccessNetworkSecondOctet(value) {
   return Number.parseInt(value, 10);
 }
 
+function parseControlNetworkSecondOctet(value, accessSecondOctet) {
+  if (!/^(?:200|1[6-9]|[2-9][0-9]|1[0-9]{2}|20[14-9]|21[0-9]|22[0-3])$/.test(value)) {
+    throw new Error("BNFS_CHAOS_CONTROL_NETWORK_SECOND_OCTET must select an isolated RFC1918 /16");
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (parsed === accessSecondOctet) {
+    throw new Error("control and access network address pools must not overlap");
+  }
+  return parsed;
+}
+
 function ipFamilyNetwork(spec) {
   const config = [];
   if (spec.ipv4Subnet) config.push({ subnet: spec.ipv4Subnet });
@@ -223,27 +253,112 @@ function commonService(name) {
 }
 
 function caService(name) {
+  const servicePrivateDirectory = preparePrivateDirectory(name);
   return {
-    ...commonService(name),
+    image: caBackendImage,
+    user: caBackendUser,
+    init: true,
+    stop_grace_period: "15s",
     command: [
-      "/opt/bnfs/caserver", "-listen", ":9100",
-      "-key", "/artifacts/.private/ca-key.pem",
-      "-ledger", "/artifacts/.private/ledger.json",
-      "-issuer", "bnfs-local-chaos",
-      "-relay-enrollment-token-file", "/artifacts/.private/enroll-relay.token",
-      "-server-enrollment-token-file", "/artifacts/.private/enroll-server.token",
-      "-client-enrollment-token-file", "/artifacts/.private/enroll-client.token",
-      "-admin-token-file", "/artifacts/.private/admin.token",
+      "--listen", "0.0.0.0:9100",
+      "--data", "/data",
+      "--issuer", "bnfs-local-chaos",
+      "--database-connections", "32",
+      "--database-idle-connections", "4",
+      "--relay-enrollment-token-file", "/data/enroll-relay.token",
+      "--server-enrollment-token-file", "/data/enroll-server.token",
+      "--client-enrollment-token-file", "/data/enroll-client.token",
+      "--admin-token-file", "/data/admin.token",
     ],
+    environment: {
+      CA_DATABASE_DRIVER: "postgres",
+      CA_DATABASE_URL: "postgres://ca_web:bnfs_soak_local_password@ca-postgres:5432/ca_web?sslmode=disable",
+      CA_ENABLE_MOCK_USERS: "true",
+      CA_LOG_DIRECTORY: "/data/logs",
+      CA_LOG_LEVEL: "info",
+      CA_LOG_MAX_SIZE_MIB: "32",
+      CA_LOG_ROTATE_INTERVAL: "24h",
+      CA_LOG_RETENTION: "720h",
+      CA_LOG_CONSOLE: "true",
+      CA_LOG_REDACT_ERRORS: "false",
+    },
+    volumes: [`${servicePrivateDirectory}:/data`],
     networks: caNetworkAttachments(),
     ports: [`127.0.0.1:${caHostPort}:9100`],
+    depends_on: { "ca-postgres": { condition: "service_healthy" } },
     healthcheck: {
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9100'"],
+      test: ["CMD", "/ca-web", "--healthcheck", "http://127.0.0.1:9100/readyz"],
       interval: "2s",
-      timeout: "1s",
-      retries: 20,
-      start_period: "2s",
+      timeout: "3s",
+      retries: 30,
+      start_period: "5s",
     },
+    read_only: true,
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m"],
+    security_opt: ["no-new-privileges:true"],
+    cap_drop: ["ALL"],
+    logging: { driver: "local", options: { "max-size": "20m", "max-file": "2" } },
+  };
+}
+
+function caPostgresService() {
+  const servicePrivateDirectory = preparePrivateDirectory("ca-postgres");
+  const dataDirectory = path.join(servicePrivateDirectory, "data");
+  fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+  return {
+    image: "postgres:17-alpine",
+    restart: "unless-stopped",
+    stop_grace_period: "15s",
+    environment: {
+      POSTGRES_DB: "ca_web",
+      POSTGRES_USER: "ca_web",
+      POSTGRES_PASSWORD: "bnfs_soak_local_password",
+    },
+    volumes: [`${dataDirectory}:/var/lib/postgresql/data`],
+    networks: ["ca_database"],
+    healthcheck: {
+      test: ["CMD-SHELL", "pg_isready -U ca_web -d ca_web"],
+      interval: "2s",
+      timeout: "3s",
+      retries: 30,
+      start_period: "5s",
+    },
+    security_opt: ["no-new-privileges:true"],
+    logging: { driver: "local", options: { "max-size": "20m", "max-file": "2" } },
+  };
+}
+
+function caWebService() {
+  const servicePrivateDirectory = preparePrivateDirectory("ca-web");
+  const tlsDirectory = path.join(servicePrivateDirectory, "tls");
+  fs.mkdirSync(tlsDirectory, { recursive: true, mode: 0o700 });
+  return {
+    image: caFrontendImage,
+    restart: "unless-stopped",
+    environment: {
+      BACKEND_URL: "http://ca:9100",
+      TLS_HOSTS: caTLSHosts,
+    },
+    ports: [`${caWebHostPort}:8088`],
+    volumes: [`${tlsDirectory}:/etc/nginx/tls`],
+    networks: ["ca_host"],
+    depends_on: { ca: { condition: "service_healthy" } },
+    healthcheck: {
+      test: ["CMD", "curl", "-kfsS", "https://127.0.0.1:8088/"],
+      interval: "5s",
+      timeout: "3s",
+      retries: 12,
+      start_period: "5s",
+    },
+    read_only: true,
+    tmpfs: [
+      "/var/cache/nginx:rw,nosuid,nodev,size=32m,mode=0755",
+      "/var/run:rw,nosuid,nodev,size=4m,mode=0755",
+      "/etc/nginx/conf.d:rw,nosuid,nodev,size=1m,mode=0755",
+      "/tmp:rw,noexec,nosuid,nodev,size=4m,mode=1777",
+    ],
+    security_opt: ["no-new-privileges:true"],
+    logging: { driver: "local", options: { "max-size": "20m", "max-file": "2" } },
   };
 }
 
@@ -252,6 +367,7 @@ function nodeService(name, command, attachedNetworks) {
     ...commonService(name),
     command,
     networks: attachedNetworks,
+    environment: frameworkLogEnvironment("/artifacts/.private/logs"),
     healthcheck: {
       test: ["CMD-SHELL", "kill -0 1"],
       interval: "2s",
@@ -260,9 +376,9 @@ function nodeService(name, command, attachedNetworks) {
       start_period: "2s",
     },
   };
-  if (enableCA && caCredentials) {
+  if (enableCA && caCredentials && billingBundles.has(name)) {
     service.depends_on = { ca: { condition: "service_healthy" } };
-    service.environment = ["BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue.token"];
+    service.environment.push("BNFS_BILLING_KEY_FILE=/artifacts/.private/billing-key.json");
   }
   return attachIPFamilyNetwork(service, name);
 }
@@ -273,9 +389,10 @@ function idleNatService(name, attachedNetworks) {
     command: ["sleep", "infinity"],
     cap_add: ["NET_ADMIN"],
     networks: attachedNetworks,
+    environment: frameworkLogEnvironment("/artifacts/.private/logs"),
   };
-  if (enableCA && caCredentials) {
-    service.environment = ["BNFS_CA_ISSUE_TOKEN_FILE=/artifacts/.private/ca-issue.token"];
+  if (enableCA && caCredentials && billingBundles.has(name)) {
+    service.environment.push("BNFS_BILLING_KEY_FILE=/artifacts/.private/billing-key.json");
   }
   if (reconnectGateURL !== "") {
     service.environment ??= [];
@@ -301,7 +418,7 @@ function validateReconnectGateConfiguration() {
 
 function adversaryService(name, role, peerURL, attachedNetworks) {
   const servicePrivateDirectory = preparePrivateDirectory(name);
-  return {
+  const service = {
     image,
     init: true,
     read_only: true,
@@ -320,6 +437,7 @@ function adversaryService(name, role, peerURL, attachedNetworks) {
       "-attack-offset", role === "relay" ? "30s" : "0s",
     ],
     volumes: [`${servicePrivateDirectory}:/state`],
+    environment: frameworkLogEnvironment("/state/logs"),
     tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16m"],
     networks: attachedNetworks,
     depends_on: { ca: { condition: "service_healthy" } },
@@ -337,6 +455,22 @@ function adversaryService(name, role, peerURL, attachedNetworks) {
     },
     logging: { driver: "local", options: { "max-size": "10m", "max-file": "2" } },
   };
+  if (billingBundles.has(name)) {
+    service.environment.push("BNFS_BILLING_KEY_FILE=/state/billing-key.json");
+  }
+  return service;
+}
+
+function frameworkLogEnvironment(directory) {
+  return [
+    `BNFS_LOG_DIRECTORY=${directory}`,
+    "BNFS_LOG_LEVEL=info",
+    "BNFS_LOG_MAX_SIZE_MIB=64",
+    "BNFS_LOG_ROTATE_INTERVAL=24h",
+    "BNFS_LOG_RETENTION=720h",
+    "BNFS_LOG_CONSOLE=true",
+    "BNFS_LOG_ERROR_STACK=true",
+  ];
 }
 
 function relayName(index) {
@@ -353,30 +487,160 @@ function nodeName(prefix, index) {
 
 function provisionCACredentials() {
   const caDirectory = path.join(privateRuntimeDir, "ca");
+  const adminTokenPath = path.join(caDirectory, "admin.token");
+  const adminToken = caAdminTokenFile === ""
+    ? readOrCreateCredential(adminTokenPath)
+    : readExternalCredential(caAdminTokenFile);
+  if (caAdminTokenFile !== "") installCredential(adminTokenPath, adminToken);
   const values = {
     relay: readOrCreateCredential(path.join(caDirectory, "enroll-relay.token")),
     server: readOrCreateCredential(path.join(caDirectory, "enroll-server.token")),
     client: readOrCreateCredential(path.join(caDirectory, "enroll-client.token")),
-    admin: readOrCreateCredential(path.join(caDirectory, "admin.token")),
+    admin: adminToken,
   };
   if (new Set(Object.values(values)).size !== Object.keys(values).length) {
     throw new Error("CA credentials must be distinct");
   }
-  for (const service of ["index", ...numberedNames("relay", relayCount)]) {
-    installCredential(path.join(privateRuntimeDir, service, "ca-issue.token"), values.relay);
-  }
-  for (const service of numberedNames("natserver", natServerCount)) {
-    installCredential(path.join(privateRuntimeDir, service, "ca-issue.token"), values.server);
-  }
-  installCredential(path.join(privateRuntimeDir, "malicious-random-natserver", "ca-issue.token"), values.server);
-  for (const service of numberedNames("natclient", natClientCount)) {
-    installCredential(path.join(privateRuntimeDir, service, "ca-issue.token"), values.client);
-  }
-  installCredential(path.join(privateRuntimeDir, "malicious-natclient", "ca-issue.token"), values.client);
-  if (enableAdversaries) {
-    installCredential(path.join(privateRuntimeDir, "mixed-path-probe", "ca-issue.token"), values.client);
-  }
   return Object.freeze(values);
+}
+
+function provisionBillingKeys() {
+  const groups = new Map([
+    ["demo_user", []],
+    ["developer", []],
+    ["observer", []],
+  ]);
+  const services = ["index", ...numberedNames("relay", relayCount),
+    ...numberedNames("natserver", natServerCount), ...numberedNames("natclient", natClientCount),
+    "malicious-random-natserver", "malicious-natclient"];
+  if (enableAdversaries) services.push("malicious-natserver", "malicious-relay", "mixed-path-probe");
+  const users = [...groups.keys()];
+  services.forEach((service, index) => groups.get(users[index % users.length]).push(service));
+
+  const bundles = new Map();
+  const manifest = { version: 1, users: [] };
+  for (const [username, assignedServices] of groups) {
+    const primary = assignedServices[0];
+    const filename = path.join(privateRuntimeDir, primary, "billing-key.json");
+    const bundle = readOrCreateBillingBundle(filename, username);
+    for (const service of assignedServices) {
+      const target = path.join(privateRuntimeDir, service, "billing-key.json");
+      installBillingBundle(target, bundle);
+      installBillingPrivateKey(path.join(privateRuntimeDir, service, "billing-private.key"), bundle);
+      bundles.set(service, Object.freeze({ ...bundle, username }));
+    }
+    manifest.users.push({
+      username,
+      user_id: `usr_mock_${username === "demo_user" ? "demo" : username}`,
+      key_id: bundle.key_id,
+      public_key_hex: bundle.public_key_hex,
+      label: bundle.label,
+      services: assignedServices,
+    });
+  }
+  const manifestPath = path.join(privateRuntimeDir, "ca", "billing-key-bootstrap.json");
+  writeSecureJSON(manifestPath, manifest);
+  return bundles;
+}
+
+function readOrCreateBillingBundle(filename, username) {
+  const existing = readOptionalJSON(filename);
+  if (existing !== null) {
+    validateBillingBundle(existing, username);
+    return existing;
+  }
+  const pair = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const privateJWK = pair.privateKey.export({ format: "jwk" });
+  const x = Buffer.from(privateJWK.x, "base64url");
+  const y = Buffer.from(privateJWK.y, "base64url");
+  const publicKeyHex = Buffer.concat([Buffer.from([4]), x, y]).toString("hex");
+  const keyID = crypto.createHash("sha256").update(Buffer.concat([Buffer.from([4]), x, y])).digest("hex");
+  const bundle = {
+    version: 1,
+    key_id: keyID,
+    label: `local-chaos-${username}`,
+    algorithm: "ECDSA_P256_SHA256",
+    private_key_jwk: privateJWK,
+    public_key_hex: publicKeyHex,
+    charge_endpoint: "/api/v1/billing/charge",
+    node_authorization_endpoint: "/v1/node/authorize",
+    framework_environment: "BNFS_BILLING_KEY_FILE",
+    canonical_format: "CA-BILLING-V1\\n{key_id}\\n{amount_bytes}\\n{unix_timestamp}\\n{nonce}\\n{reference}",
+    registration_status: "pending",
+    generated_at: new Date().toISOString(),
+  };
+  writeSecureJSON(filename, bundle);
+  return bundle;
+}
+
+function validateBillingBundle(bundle, username) {
+  if (!bundle || bundle.version !== 1 || bundle.algorithm !== "ECDSA_P256_SHA256"
+    || bundle.label !== `local-chaos-${username}` || bundle.registration_status === "unconfirmed"
+    || typeof bundle.key_id !== "string" || !/^[0-9a-f]{64}$/.test(bundle.key_id)
+    || typeof bundle.public_key_hex !== "string" || !/^04[0-9a-f]{128}$/.test(bundle.public_key_hex)
+    || !bundle.private_key_jwk?.d) {
+    throw new Error(`invalid billing key bundle for ${username}`);
+  }
+  const privateKey = crypto.createPrivateKey({ key: bundle.private_key_jwk, format: "jwk" });
+  const publicJWK = crypto.createPublicKey(privateKey).export({ format: "jwk" });
+  const publicKeyHex = Buffer.concat([
+    Buffer.from([4]), Buffer.from(publicJWK.x, "base64url"), Buffer.from(publicJWK.y, "base64url"),
+  ]).toString("hex");
+  const keyID = crypto.createHash("sha256").update(Buffer.from(publicKeyHex, "hex")).digest("hex");
+  if (publicKeyHex !== bundle.public_key_hex || keyID !== bundle.key_id) {
+    throw new Error(`billing key bundle does not match its fingerprint for ${username}`);
+  }
+}
+
+function installBillingBundle(filename, bundle) {
+  const existing = readOptionalJSON(filename);
+  if (existing !== null) {
+    validateBillingBundle(existing, bundle.label.replace(/^local-chaos-/, ""));
+    if (existing.key_id !== bundle.key_id || existing.public_key_hex !== bundle.public_key_hex) {
+      throw new Error(`billing key mismatch for ${path.dirname(filename)}`);
+    }
+  }
+  writeSecureJSON(filename, bundle);
+}
+
+function installBillingPrivateKey(filename, bundle) {
+  const privateScalar = Buffer.from(bundle.private_key_jwk.d, "base64url");
+  if (privateScalar.length !== 32) {
+    throw new Error(`invalid billing private key for ${path.basename(path.dirname(filename))}`);
+  }
+  writeSecureFile(filename, `${privateScalar.toString("hex")}\n`);
+}
+
+function readOptionalJSON(filename) {
+  try {
+    const file = fs.lstatSync(filename);
+    if (!file.isFile() || file.isSymbolicLink() || file.size > 65536 || (file.mode & 0o077) !== 0) {
+      throw new Error(`invalid private JSON file ${filename}`);
+    }
+    return JSON.parse(fs.readFileSync(filename, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function writeSecureJSON(filename, value) {
+  writeSecureFile(filename, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writeSecureFile(filename, value) {
+  fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+  fs.chmodSync(path.dirname(filename), 0o700);
+  const temporary = `${filename}.tmp-${process.pid}`;
+  const descriptor = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW, 0o600);
+  try {
+    fs.writeFileSync(descriptor, value);
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  fs.renameSync(temporary, filename);
+  fs.chmodSync(filename, 0o600);
 }
 
 function readOrCreateCredential(filename) {
@@ -441,8 +705,25 @@ function readCredential(filename) {
   return token;
 }
 
+function readExternalCredential(filename) {
+  if (!path.isAbsolute(filename)) throw new Error("CA admin token file must be absolute");
+  const file = fs.lstatSync(filename);
+  if ((file.mode & 0o077) !== 0) throw new Error("CA admin token file permissions must be 0600");
+  return readCredential(filename);
+}
+
 function numberedNames(prefix, count) {
   return Array.from({ length: count }, (_, index) => nodeName(prefix, index + 1));
+}
+
+function parseCAClientRoleServices(value) {
+  if (value === "") return Object.freeze([]);
+  const services = value.split(",");
+  if (services.some((service) => !/^natserver(?:0[1-9]|1[0-3])$/.test(service))
+    || new Set(services).size !== services.length) {
+    throw new Error("BNFS_CHAOS_CA_CLIENT_ROLE_SERVICES must contain distinct natserver service names");
+  }
+  return Object.freeze(services);
 }
 
 function numberedRelayNetworks() {

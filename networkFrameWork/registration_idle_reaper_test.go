@@ -70,6 +70,35 @@ func TestTransportCoverReapsSilentRegistrationGroup(t *testing.T) {
 	}
 }
 
+func TestTransportCoverReapsOpenDualRegistrationAfterReceiveStops(t *testing.T) {
+	cover := NewTransportCover()
+	cover.SetRegistrationIdlePolicy(40*time.Millisecond, 5*time.Millisecond)
+	relay := newIdleLifecycleCarrier("stale-open-registration")
+	relay.lastReceiveMicros.Store(time.Now().Add(-time.Second).UnixMicro())
+	dual := newDualStreamWithPump(relay.NodeId(), "", false)
+	dual.legs[streamTransportKCP] = &legEntry{
+		id: streamTransportKCP, family: streamTransportKCP, stream: relay,
+	}
+	dual.legOrder = []streamTransport{streamTransportKCP}
+	dual.preferred = streamTransportKCP
+	group := newIdleLifecycleGroup(relay)
+	group.relayStream = dual
+	cover.StreamGroup[group.nodeId] = group
+	unregistered := make(chan string, 1)
+	cover.SetUnregisterHook(func(nodeID string) { unregistered <- nodeID })
+	go cover.listenGroup(group.nodeId, group)
+
+	waitLifecycleCondition(t, time.Second, func() bool { return !cover.HasGroup(group.nodeId) })
+	select {
+	case nodeID := <-unregistered:
+		if nodeID != group.nodeId {
+			t.Fatalf("unregistered node = %q, want %q", nodeID, group.nodeId)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale open dual registration did not invoke unregister hook")
+	}
+}
+
 func TestTransportCoverKeepsLiveSilentRegistrationAndAcceptsBusiness(t *testing.T) {
 	cover := NewTransportCover()
 	cover.SetRegistrationIdlePolicy(40*time.Millisecond, 5*time.Millisecond)
@@ -211,6 +240,30 @@ func TestDualStreamLatestReceiveTimeUsesNewestPhysicalLeg(t *testing.T) {
 
 	if got := dual.LatestReceiveTime(); !got.Equal(newerTime) {
 		t.Fatalf("latest receive = %s, want %s", got, newerTime)
+	}
+}
+
+func TestDualStreamStaleRequiresOrphanedKCP(t *testing.T) {
+	kcp := newIdleLifecycleCarrier("orphaned-kcp")
+	kcp.lastReceiveMicros.Store(time.Now().Add(-3 * time.Second).UnixMicro())
+	dual := newDualStreamWithPump(kcp.NodeId(), "", false)
+	dual.legs[streamTransportKCP] = &legEntry{id: streamTransportKCP, family: streamTransportKCP, stream: kcp}
+	dual.legOrder = []streamTransport{streamTransportKCP}
+	t.Cleanup(func() { _ = dual.Close() })
+
+	if !dual.isStale(2 * time.Second) {
+		t.Fatal("orphaned KCP stream with no recent receive was not classified as stale")
+	}
+	tcp := newIdleLifecycleCarrier("orphaned-kcp")
+	tcp.lastReceiveMicros.Store(time.Now().Add(-3 * time.Second).UnixMicro())
+	dual.legs[streamTransportTCP] = &legEntry{id: streamTransportTCP, family: streamTransportTCP, stream: tcp}
+	dual.legOrder = append(dual.legOrder, streamTransportTCP)
+	if dual.isStale(2 * time.Second) {
+		t.Fatal("open TCP backup did not protect a silent KCP carrier")
+	}
+	tcp.unhealthy.Store(true)
+	if !dual.isStale(2 * time.Second) {
+		t.Fatal("closed TCP backup kept an orphaned KCP carrier alive")
 	}
 }
 

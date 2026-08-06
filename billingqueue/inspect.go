@@ -34,10 +34,12 @@ type Inspection struct {
 // required for a targeted inspection. PayerPublicKey is optional when every
 // selected settlement envelope contains the payer public identity.
 type InspectionOptions struct {
-	PayerID        billingvoucher.Identifier
-	RelayID        billingvoucher.Identifier
-	PayerPublicKey *ecdh.PublicKey
-	RelayPublicKey *ecdh.PublicKey
+	PayerID               billingvoucher.Identifier
+	RelayID               billingvoucher.Identifier
+	PayerPublicKey        *ecdh.PublicKey
+	PayerBillingPublicKey *ecdh.PublicKey
+	RelayPublicKey        *ecdh.PublicKey
+	RelayBillingPublicKey *ecdh.PublicKey
 }
 
 // Inspect reads and validates an existing persistent queue without modifying it.
@@ -123,7 +125,8 @@ func InspectWithOptions(path string, limits Limits, options InspectionOptions) (
 func normalizeInspectionOptions(options InspectionOptions) (InspectionOptions, bool, error) {
 	targeted := options.PayerID != (billingvoucher.Identifier{}) ||
 		options.RelayID != (billingvoucher.Identifier{}) ||
-		options.PayerPublicKey != nil || options.RelayPublicKey != nil
+		options.PayerPublicKey != nil || options.PayerBillingPublicKey != nil ||
+		options.RelayPublicKey != nil || options.RelayBillingPublicKey != nil
 	if !targeted {
 		return options, false, nil
 	}
@@ -151,6 +154,9 @@ func normalizeInspectionOptions(options InspectionOptions) (InspectionOptions, b
 		return InspectionOptions{}, false, errors.New("billingqueue: inspection Relay identity mismatch")
 	}
 	options.RelayID = relayID
+	if options.RelayBillingPublicKey == nil {
+		options.RelayBillingPublicKey = options.RelayPublicKey
+	}
 	return options, true, nil
 }
 
@@ -167,11 +173,13 @@ func inspectTargetChannels(inspection *Inspection, items []entry, options Inspec
 			voucher.Body.AuthorizedThroughBytes != billingvoucher.MaxBillableBytes {
 			return fmt.Errorf("%w: target mutual voucher uses an unsupported settlement policy", ErrCorrupt)
 		}
-		payerPublicKey, err := inspectionPayerPublicKey(item.envelope, options.PayerPublicKey)
+		payerPublicKey, err := inspectionPayerPublicKey(
+			item.envelope, options.PayerPublicKey, options.PayerBillingPublicKey,
+		)
 		if err != nil {
 			return fmt.Errorf("%w: target payer identity is unavailable", ErrCorrupt)
 		}
-		if err := voucher.Verify(payerPublicKey, options.RelayPublicKey); err != nil {
+		if err := voucher.VerifyBillingSignatures(payerPublicKey, options.RelayBillingPublicKey); err != nil {
 			return fmt.Errorf("%w: target mutual voucher signature verification failed", ErrCorrupt)
 		}
 		key := voucherChannel(voucher)
@@ -203,12 +211,19 @@ func inspectTargetChannels(inspection *Inspection, items []entry, options Inspec
 	return nil
 }
 
-func inspectionPayerPublicKey(envelope Envelope, expected *ecdh.PublicKey) (*ecdh.PublicKey, error) {
+func inspectionPayerPublicKey(
+	envelope Envelope,
+	expectedIdentity *ecdh.PublicKey,
+	expectedBilling *ecdh.PublicKey,
+) (*ecdh.PublicKey, error) {
 	if envelope.PayerPublicKey == "" {
-		if expected == nil {
+		if expectedIdentity == nil {
 			return nil, errors.New("payer public identity is missing")
 		}
-		return expected, nil
+		if expectedBilling != nil {
+			return expectedBilling, nil
+		}
+		return expectedIdentity, nil
 	}
 	encoded, err := hex.DecodeString(envelope.PayerPublicKey)
 	if err != nil || hex.EncodeToString(encoded) != envelope.PayerPublicKey {
@@ -218,8 +233,22 @@ func inspectionPayerPublicKey(envelope Envelope, expected *ecdh.PublicKey) (*ecd
 	if err != nil {
 		return nil, errors.New("payer public identity is invalid")
 	}
-	if expected != nil && !bytes.Equal(expected.Bytes(), publicKey.Bytes()) {
+	if expectedIdentity != nil && !bytes.Equal(expectedIdentity.Bytes(), publicKey.Bytes()) {
 		return nil, errors.New("payer public identity does not match inspection identity")
 	}
-	return publicKey, nil
+	signingPublicKey := publicKey
+	if envelope.PayerBillingPublicKey != "" {
+		encodedBilling, err := hex.DecodeString(envelope.PayerBillingPublicKey)
+		if err != nil || hex.EncodeToString(encodedBilling) != envelope.PayerBillingPublicKey {
+			return nil, errors.New("payer billing identity is not canonical")
+		}
+		signingPublicKey, err = ecdh.P256().NewPublicKey(encodedBilling)
+		if err != nil {
+			return nil, errors.New("payer billing identity is invalid")
+		}
+	}
+	if expectedBilling != nil && !bytes.Equal(expectedBilling.Bytes(), signingPublicKey.Bytes()) {
+		return nil, errors.New("payer billing identity does not match inspection identity")
+	}
+	return signingPublicKey, nil
 }

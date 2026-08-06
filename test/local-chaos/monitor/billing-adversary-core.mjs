@@ -89,7 +89,7 @@ export async function runAttackScenario(client, scenario, nonce, context = {}) {
     const componentResult = await runComponentProbe(context, scenario, nonce);
     componentProbeCovered = true;
     componentProbePassed = componentResult.status === "PASS";
-    const fixture = await fixtureFor(client);
+    const fixture = await fixtureFor(client, context.billingFixture);
     let result;
     switch (scenario) {
       case "relay_usage_inflation":
@@ -170,16 +170,17 @@ async function runComponentProbe(context, scenario, nonce) {
   return result;
 }
 
-async function fixtureFor(client) {
+async function fixtureFor(client, billingFixture) {
   let fixturePromise = fixturePromises.get(client);
   if (!fixturePromise) {
-    fixturePromise = initializeFixture(client);
+    fixturePromise = initializeFixture(client, billingFixture);
     fixturePromises.set(client, fixturePromise);
   }
   return fixturePromise;
 }
 
-async function initializeFixture(client) {
+async function initializeFixture(client, billingFixture) {
+  if (billingFixture) return initializeAuthorizedFixture(client, billingFixture);
   const payer = createIdentity();
   const relay = createIdentity();
   const payerIssue = await client.post("/issue", {
@@ -203,6 +204,50 @@ async function initializeFixture(client) {
   return {
     payer: { ...payer, certificate: payerIssue.body.signed_cert },
     relay: { ...relay, certificate: relayIssue.body.signed_cert },
+  };
+}
+
+async function initializeAuthorizedFixture(client, billingFixture) {
+  const bundles = normalizeBillingFixture(billingFixture);
+  const payer = await authorizeFixtureIdentity(client, bundles.payer, "server");
+  const relay = await authorizeFixtureIdentity(client, bundles.relay, "relay");
+  const balancesBefore = await balances(client, { payer, relay });
+  if (!balancesBefore.available || balancesBefore.values[0] < fixtureCreditBytes) {
+    throw codedError("fixture_authorized_balance_unavailable");
+  }
+  return { payer, relay };
+}
+
+async function authorizeFixtureIdentity(client, bundle, role) {
+  const identity = createIdentity();
+  const nonce = crypto.randomBytes(24).toString("base64url");
+  const request = {
+    subject_pubkey: identity.publicHex,
+    role,
+    billing_key_id: bundle.keyID,
+    timestamp: Math.floor(Date.now() / 1000),
+    nonce,
+    ttl_seconds: 86400,
+    node_signature: "",
+    billing_signature: "",
+  };
+  const canonical = authorizationCanonical(request);
+  request.node_signature = signAuthorization(canonical, identity.privateKey);
+  request.billing_signature = signAuthorization(canonical, bundle.privateKey);
+  const response = await client.post("/v1/node/authorize", request);
+  const expectedAuthorizationID = authorizationID(identity.nodeIDHex, bundle.keyID);
+  if (response.status !== 200 || response.body?.node_id !== identity.nodeIDHex
+    || response.body?.authorization_id !== expectedAuthorizationID
+    || !validCertificate(response.body?.signed_cert, identity, role, bundle, expectedAuthorizationID)) {
+    throw codedError("fixture_identity_authorization_failed");
+  }
+  return {
+    ...identity,
+    privateKey: bundle.privateKey,
+    billingKeyID: bundle.keyID,
+    billingPublicHex: bundle.publicHex,
+    authorizationID: expectedAuthorizationID,
+    certificate: response.body.signed_cert,
   };
 }
 
@@ -512,18 +557,51 @@ function failedVerdict(failureCode, responses, balanceDelta, stateChanged, depth
 
 async function balances(client, fixture) {
   const values = [];
+  const authorizations = [];
   for (const identity of [fixture.payer, fixture.relay]) {
-    const response = await client.get(`/balance?node=${encodeURIComponent(identity.nodeIDHex)}`);
+    const authorization = identity.authorizationID
+      || identity.certificate?.cert?.authorization_id
+      || "";
+    const query = new URLSearchParams({ node: identity.nodeIDHex });
+    if (authorization) query.set("authorization_id", authorization);
+    const response = await client.get(`/balance?${query}`);
     const value = Number(response.body?.balance);
     if (response.status !== 200 || !Number.isSafeInteger(value)) {
       return { available: false, values: [] };
     }
+    let authorizationState = null;
+    if (authorization) {
+      const consumed = Number(response.body?.authorization_consumed_bytes);
+      const earned = Number(response.body?.authorization_earned_bytes);
+      if (!Number.isSafeInteger(consumed) || consumed < 0 || !Number.isSafeInteger(earned) || earned < 0) {
+        return { available: false, values: [] };
+      }
+      authorizationState = { consumed, earned };
+    }
     values.push(value);
+    authorizations.push(authorizationState);
   }
-  return { available: true, values };
+  return {
+    available: true,
+    values,
+    authorizations,
+    authorizationScoped: authorizations.every((state) => state !== null),
+  };
 }
 
 function balanceDifference(before, after) {
+  if (before.authorizationScoped && after.authorizationScoped) {
+    const payerConsumed = after.authorizations[0].consumed - before.authorizations[0].consumed;
+    const payerEarned = after.authorizations[0].earned - before.authorizations[0].earned;
+    const relayConsumed = after.authorizations[1].consumed - before.authorizations[1].consumed;
+    const relayEarned = after.authorizations[1].earned - before.authorizations[1].earned;
+    return {
+      changed: [payerConsumed, payerEarned, relayConsumed, relayEarned].some((value) => value !== 0),
+      net: -payerConsumed + relayEarned,
+      payer: -payerConsumed,
+      relay: relayEarned,
+    };
+  }
   const changes = after.values.map((value, index) => value - (before.values[index] ?? 0));
   return {
     changed: changes.some((value) => value !== 0),
@@ -538,13 +616,18 @@ function submitVoucher(client, fixture, voucher) {
 }
 
 function voucherRequest(fixture, voucher) {
-  return {
+  const request = {
     canonical_voucher: voucher.canonical.toString("base64"),
     payer_public_key: fixture.payer.publicHex,
     relay_public_key: fixture.relay.publicHex,
     payer_cert: fixture.payer.certificate,
     relay_cert: fixture.relay.certificate,
   };
+  if (fixture.payer.billingPublicHex || fixture.relay.billingPublicHex) {
+    request.payer_billing_public_key = fixture.payer.billingPublicHex;
+    request.relay_billing_public_key = fixture.relay.billingPublicHex;
+  }
+  return request;
 }
 
 function submitRequest(client, request) {
@@ -568,12 +651,72 @@ function createIdentity() {
   };
 }
 
-function validCertificate(value, identity, role) {
-  return value && typeof value === "object"
+function validCertificate(value, identity, role, billingBundle = null, expectedAuthorizationID = "") {
+  const validIdentity = value && typeof value === "object"
     && value.cert?.subject_node_id === identity.nodeIDHex
     && value.cert?.subject_pubkey === identity.publicHex
     && value.cert?.role === role
     && typeof value.sig === "string";
+  if (!validIdentity || !billingBundle) return validIdentity;
+  return value.cert?.billing_key_id === billingBundle.keyID
+    && value.cert?.billing_public_key === billingBundle.publicHex
+    && value.cert?.authorization_id === expectedAuthorizationID;
+}
+
+function normalizeBillingFixture(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw codedError("billing_fixture_invalid");
+  }
+  const payer = normalizeBillingBundle(value.payer);
+  const relay = normalizeBillingBundle(value.relay);
+  if (payer.keyID === relay.keyID) throw codedError("billing_fixture_not_isolated");
+  return { payer, relay };
+}
+
+function normalizeBillingBundle(value) {
+  if (!value || value.version !== 1 || value.algorithm !== "ECDSA_P256_SHA256"
+    || value.registration_status !== "active" || !/^[0-9a-f]{64}$/.test(String(value.key_id ?? ""))
+    || !/^04[0-9a-f]{128}$/.test(String(value.public_key_hex ?? ""))
+    || !value.private_key_jwk?.d) {
+    throw codedError("billing_fixture_key_invalid");
+  }
+  let privateKey;
+  try {
+    privateKey = crypto.createPrivateKey({ key: value.private_key_jwk, format: "jwk" });
+  } catch {
+    throw codedError("billing_fixture_private_key_invalid");
+  }
+  const publicJWK = crypto.createPublicKey(privateKey).export({ format: "jwk" });
+  const publicHex = Buffer.concat([
+    Buffer.from([4]),
+    Buffer.from(publicJWK.x, "base64url"),
+    Buffer.from(publicJWK.y, "base64url"),
+  ]).toString("hex");
+  const keyID = sha256(Buffer.from(publicHex, "hex")).toString("hex");
+  if (publicHex !== value.public_key_hex || keyID !== value.key_id) {
+    throw codedError("billing_fixture_key_binding_invalid");
+  }
+  return { privateKey, publicHex, keyID };
+}
+
+function authorizationCanonical(request) {
+  return [
+    "CA-NODE-AUTHORIZATION-V1",
+    request.subject_pubkey,
+    request.role,
+    request.billing_key_id,
+    String(request.timestamp),
+    request.nonce,
+    String(request.ttl_seconds),
+  ].join("\n");
+}
+
+function signAuthorization(canonical, privateKey) {
+  return crypto.sign("sha256", Buffer.from(canonical), privateKey).toString("base64url");
+}
+
+function authorizationID(nodeID, billingKeyID) {
+  return sha256(Buffer.from(`CA-NODE-AUTHORIZATION-ID-V1\0${nodeID}\0${billingKeyID}`)).toString("hex");
 }
 
 function voucherBody(fixture, nonce, overrides = {}) {

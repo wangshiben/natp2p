@@ -13,6 +13,8 @@ import (
 
 var ErrBillableRecordDeferred = errors.New("billing record is waiting for an earlier sequence")
 
+var ErrBillableRecordRetryable = errors.New("billing record validation is temporarily unavailable")
+
 // ForwardHookFunc 是每转发到指定大小时调用的 hook。
 // 返回 nil 则继续转发；返回 error 则触发 errorHook 并停止该方向的转发。
 type ForwardHookFunc func(ctx context.Context, stats *ForwardStats) error
@@ -82,6 +84,7 @@ type ForwardHookConfig struct {
 type forwardHookState struct {
 	config            *ForwardHookConfig
 	nodeID            string // 该 hook 所属 StreamGroup 代表的对端 NodeId（计费按节点归因用）
+	holdbackScopeID   string
 	accumulatedBytes  int64
 	accumulatedFrames int64
 	lastFrame         *network.Frame
@@ -90,14 +93,22 @@ type forwardHookState struct {
 // newForwardHookState 创建 hook 状态。
 // nodeID 是该 hook 所属 StreamGroup 代表的对端 NodeId，会填入每次触发的 ForwardStats，
 // 供计费方向按 serverNode 归因上行流量；不需要归因时传空串即可（向后兼容）。
-func newForwardHookState(config *ForwardHookConfig, nodeID string) *forwardHookState {
+func newForwardHookState(config *ForwardHookConfig, nodeID string, registrationSessionID ...string) *forwardHookState {
 	if config == nil {
 		return nil
 	}
 	return &forwardHookState{
-		config: config,
-		nodeID: nodeID,
+		config:          config,
+		nodeID:          nodeID,
+		holdbackScopeID: billingHoldbackScopeID(nodeID, registrationSessionID...),
 	}
+}
+
+func billingHoldbackScopeID(nodeID string, registrationSessionID ...string) string {
+	if len(registrationSessionID) == 0 || registrationSessionID[0] == "" {
+		return nodeID
+	}
+	return nodeID + "\x00" + registrationSessionID[0]
 }
 
 func (c *ForwardHookConfig) ensureRetransmitCache() *globalRetransmitCache {
@@ -131,7 +142,7 @@ func (s *forwardHookState) onFrame(ctx context.Context, f *network.Frame, direct
 	if f.FrameType != network.FrameTypeData && f.FrameType != network.FrameTypeRetransmit {
 		return true
 	}
-	if direction != "client_to_relay" && !s.config.ensureRetransmitCache().recordFrame(s.nodeID, f) {
+	if direction != "client_to_relay" && !s.config.ensureRetransmitCache().recordFrame(s.holdbackScopeID, f) {
 		return true
 	}
 

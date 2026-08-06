@@ -118,7 +118,10 @@ function validatedRequest(value) {
     throw codedError("waitsubmit_request_invalid");
   }
   const keys = Object.keys(value).sort();
-  const expected = ["canonical_voucher", "payer_cert", "payer_public_key", "relay_cert", "relay_public_key"];
+  const legacyExpected = ["canonical_voucher", "payer_cert", "payer_public_key", "relay_cert", "relay_public_key"];
+  const billingExpected = [...legacyExpected, "payer_billing_public_key", "relay_billing_public_key"].sort();
+  const billingBound = keys.includes("payer_billing_public_key") || keys.includes("relay_billing_public_key");
+  const expected = billingBound ? billingExpected : legacyExpected;
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
     throw codedError("waitsubmit_request_invalid");
   }
@@ -126,7 +129,9 @@ function validatedRequest(value) {
     || !canonicalPublicKey(value.payer_public_key)
     || !canonicalPublicKey(value.relay_public_key)
     || !validCertificate(value.payer_cert)
-    || !validCertificate(value.relay_cert)) {
+    || !validCertificate(value.relay_cert)
+    || (billingBound && (!validBillingBinding(value.payer_cert, value.payer_billing_public_key)
+      || !validBillingBinding(value.relay_cert, value.relay_billing_public_key)))) {
     throw codedError("waitsubmit_request_invalid");
   }
   const cloned = clone(value);
@@ -167,6 +172,20 @@ function validCertificate(value) {
     && cert.nonce.length > 0
     && cert.nonce.length <= 256
     && (cert.issuer === undefined || (typeof cert.issuer === "string" && cert.issuer.length <= 256));
+}
+
+function validBillingBinding(value, billingPublicKey) {
+  if (!canonicalPublicKey(billingPublicKey)) return false;
+  const cert = value.cert;
+  const billingKeyID = crypto.createHash("sha256")
+    .update(Buffer.from(billingPublicKey, "hex"))
+    .digest("hex");
+  const authorizationID = crypto.createHash("sha256")
+    .update(`CA-NODE-AUTHORIZATION-ID-V1\0${cert.subject_node_id}\0${billingKeyID}`)
+    .digest("hex");
+  return cert.billing_public_key === billingPublicKey
+    && cert.billing_key_id === billingKeyID
+    && cert.authorization_id === authorizationID;
 }
 
 async function persist(file, value) {

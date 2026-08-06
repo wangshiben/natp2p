@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -181,6 +182,26 @@ func (c *CAClient) Issue(ctx context.Context, reqBody IssueRequest) (*SignedCert
 	return ir.SignedCert, nil
 }
 
+// AuthorizeNode 使用节点身份与用户扣费密钥的双重持有证明申请绑定证书。
+// 该端点不使用 Enrollment Token，授权能力来自扣费私钥签名本身。
+func (c *CAClient) AuthorizeNode(ctx context.Context, request NodeAuthorizationRequest) (*NodeAuthorizationResponse, error) {
+	var response NodeAuthorizationResponse
+	status, err := c.postJSONStatus(ctx, PathAuthorizeNode, request, &response)
+	if err != nil {
+		return nil, err
+	}
+	if response.Error != "" {
+		return &response, fmt.Errorf("admission: CA 节点授权失败: %s", response.Error)
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return &response, fmt.Errorf("admission: CA 节点授权返回 %d", status)
+	}
+	if response.SignedCert == nil || response.AuthorizationID == "" || response.NodeID == "" {
+		return nil, errors.New("admission: CA 节点授权应答不完整")
+	}
+	return &response, nil
+}
+
 // Settle 向 CA 上报某 serverNode 的上行用量增量并取回余额裁决。
 // relay 的周期结算循环调用它；返回的 SettleResponse.Allow=false 表示应熔断该节点。
 func (c *CAClient) Settle(ctx context.Context, req SettleRequest) (*SettleResponse, error) {
@@ -199,11 +220,29 @@ func (c *CAClient) Settle(ctx context.Context, req SettleRequest) (*SettleRespon
 // so callers can distinguish retryable conditions from terminal rejections.
 func (c *CAClient) SettleVoucher(ctx context.Context, req VoucherSettleRequest) (*VoucherSettleResponse, error) {
 	var out VoucherSettleResponse
-	if err := c.postJSON(ctx, PathVoucherSettle, req, &out); err != nil {
+	status, err := c.postJSONStatus(ctx, PathVoucherSettle, req, &out)
+	if err != nil {
+		if status >= http.StatusInternalServerError {
+			return &VoucherSettleResponse{
+				Retryable: true, ErrorCode: VoucherErrorTemporarilyUnavailable,
+				Error: fmt.Sprintf("CA 暂时不可用 (status=%d)", status),
+			}, fmt.Errorf("admission: CA 双签凭证结算暂时失败: %w", err)
+		}
 		return nil, err
+	}
+	if status >= http.StatusInternalServerError {
+		out.Retryable = true
+		out.ErrorCode = VoucherErrorTemporarilyUnavailable
+		if out.Error == "" {
+			out.Error = fmt.Sprintf("CA 暂时不可用 (status=%d)", status)
+		}
 	}
 	if out.Error != "" {
 		return &out, fmt.Errorf("admission: CA 双签凭证结算失败: %s", out.Error)
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		out.Error = fmt.Sprintf("CA 拒绝双签凭证结算 (status=%d)", status)
+		return &out, fmt.Errorf("admission: %s", out.Error)
 	}
 	return &out, nil
 }
@@ -235,29 +274,40 @@ func (c *CAClient) Credit(ctx context.Context, req CreditRequest) (*CreditRespon
 
 // postJSON 是内部 helper：POST 一个 JSON body 并把应答解码进 out。
 func (c *CAClient) postJSON(ctx context.Context, path string, body any, out any) error {
+	status, err := c.postJSONStatus(ctx, path, body, out)
+	if err != nil {
+		return err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return fmt.Errorf("admission: CA %s 返回 %d", path, status)
+	}
+	return nil
+}
+
+func (c *CAClient) postJSONStatus(ctx context.Context, path string, body any, out any) (int, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("admission: 编码 %s 请求失败: %w", path, err)
+		return 0, fmt.Errorf("admission: 编码 %s 请求失败: %w", path, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("admission: 构造 %s 请求失败: %w", path, err)
+		return 0, fmt.Errorf("admission: 构造 %s 请求失败: %w", path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authorize(req, path)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("admission: 请求 %s 失败: %w", path, err)
+		return 0, fmt.Errorf("admission: 请求 %s 失败: %w", path, err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return fmt.Errorf("admission: 读取 %s 应答失败: %w", path, err)
+		return resp.StatusCode, fmt.Errorf("admission: 读取 %s 应答失败: %w", path, err)
 	}
 	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("admission: 解析 %s 应答失败 (status=%d body=%s): %w", path, resp.StatusCode, string(respBody), err)
+		return resp.StatusCode, fmt.Errorf("admission: 解析 %s 应答失败 (status=%d body=%s): %w", path, resp.StatusCode, string(respBody), err)
 	}
-	return nil
+	return resp.StatusCode, nil
 }
 
 func (c *CAClient) authorize(request *http.Request, path string) {
