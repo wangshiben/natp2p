@@ -7,11 +7,14 @@ RUNTIME_DIR=${BNFS_CHAOS_RUNTIME_DIR:-$ROOT_DIR/test/local-chaos/.runtime}
 COMPOSE_FILE=$RUNTIME_DIR/compose.json
 COMPOSE_PROJECT=${BNFS_CHAOS_COMPOSE_PROJECT:-bnfs-local-chaos}
 BNFS_CHAOS_IMAGE=${BNFS_CHAOS_IMAGE:-bnfs-local-chaos:latest}
+BNFS_NATP2P_SDK_ROOT=${BNFS_NATP2P_SDK_ROOT:-$ROOT_DIR/../natP2pSDK}
 BNFS_CA_WEB_ROOT=${BNFS_CA_WEB_ROOT:-$ROOT_DIR/ca_web}
 BNFS_CHAOS_CA_BACKEND_IMAGE=${BNFS_CHAOS_CA_BACKEND_IMAGE:-bnfs-ca-web-backend:latest}
 BNFS_CHAOS_CA_FRONTEND_IMAGE=${BNFS_CHAOS_CA_FRONTEND_IMAGE:-bnfs-ca-web-frontend:latest}
+BNFS_SECURITY_PROFILE=${BNFS_SECURITY_PROFILE:-development}
 export ROOT_DIR RUNTIME_DIR COMPOSE_FILE COMPOSE_PROJECT BNFS_CHAOS_IMAGE
-export BNFS_CA_WEB_ROOT BNFS_CHAOS_CA_BACKEND_IMAGE BNFS_CHAOS_CA_FRONTEND_IMAGE
+export BNFS_NATP2P_SDK_ROOT
+export BNFS_CA_WEB_ROOT BNFS_CHAOS_CA_BACKEND_IMAGE BNFS_CHAOS_CA_FRONTEND_IMAGE BNFS_SECURITY_PROFILE
 source "$ROOT_DIR/test/local-chaos/network-pools.sh"
 
 scenario=all
@@ -89,14 +92,20 @@ trap cleanup EXIT
 if (( build == 1 )); then
   build_dir=$RUNTIME_DIR/build
   mkdir -p "$build_dir"
+  if [[ ! -f $BNFS_NATP2P_SDK_ROOT/go.mod \
+      || ! -f $BNFS_NATP2P_SDK_ROOT/cmd/tunclient/main.go \
+      || ! -f $BNFS_NATP2P_SDK_ROOT/cmd/tunserver/main.go ]]; then
+    printf '[local-chaos] natP2pSDK 源码目录无效: %s\n' "$BNFS_NATP2P_SDK_ROOT" >&2
+    exit 1
+  fi
   printf '[local-chaos] 在宿主机构建静态测试二进制\n'
   if ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/nodeserver" "$ROOT_DIR/cmd/tunnel/nodeserver" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/caserver" "$ROOT_DIR/cmd/caserver" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billingqueue-inspect" "$ROOT_DIR/cmd/billingqueue-inspect" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billing-adversary-probe" "$ROOT_DIR/cmd/billing-adversary-probe" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billing-adversary-node" "$ROOT_DIR/cmd/billing-adversary-node" \
-    || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunserver" "$ROOT_DIR/cmd/tunnel/server" \
-    || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunclient" "$ROOT_DIR/cmd/tunnel/client" \
+    || ! (cd "$BNFS_NATP2P_SDK_ROOT" && GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunserver" ./cmd/tunserver) \
+    || ! (cd "$BNFS_NATP2P_SDK_ROOT" && GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/tunclient" ./cmd/tunclient) \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/httpfileserver" "$ROOT_DIR/cmd/tunnel/httpfileserver"; then
     printf '[local-chaos] 测试二进制构建失败\n' >&2
     exit 1

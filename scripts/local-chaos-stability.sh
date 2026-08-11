@@ -3,6 +3,9 @@
 set -uo pipefail
 umask 077
 
+BNFS_SECURITY_PROFILE=${BNFS_SECURITY_PROFILE:-development}
+export BNFS_SECURITY_PROFILE
+
 if [[ -n ${BNFS_STABILITY_ROOT_DIR:-} ]]; then
   ROOT_DIR=$BNFS_STABILITY_ROOT_DIR
 else
@@ -658,7 +661,7 @@ is_ip_family_coverage_mode() {
 }
 
 create_ip_family_plan() {
-  local run_dir=$1 mode=$2 plan_file family relay natserver natclient
+  local run_dir=$1 mode=$2 selected=${3:-} plan_file family relay natserver natclient excluded_client= scenario_reserved_server=
   local -a relays=() natservers=() natclients=()
   is_ip_family_coverage_mode "$mode" || return 1
   plan_file=$run_dir/ip-family-plan.tsv
@@ -668,9 +671,12 @@ create_ip_family_plan() {
   fi
   mapfile -t relays < <(numbered_service_names relay "$TOPOLOGY_RELAY_COUNT" | awk '/^relay0[3-7]$/' | shuf -n 3)
   # natserver06 is reserved by the production waitSubmit recovery gate.
+  [[ $selected != 2 ]] || scenario_reserved_server=natserver02
   mapfile -t natservers < <(numbered_service_names natserver "$TOPOLOGY_NAT_SERVER_COUNT" \
-    | awk '$0 != "natserver06"' | shuf -n 3)
-  mapfile -t natclients < <(numbered_service_names natclient "$TOPOLOGY_NAT_CLIENT_COUNT" | shuf -n 3)
+    | awk -v reserved="$scenario_reserved_server" '$0 != "natserver06" && $0 != reserved' | shuf -n 3)
+  [[ $selected != 2 ]] || excluded_client=natclient04
+  mapfile -t natclients < <(numbered_service_names natclient "$TOPOLOGY_NAT_CLIENT_COUNT" \
+    | awk -v excluded="$excluded_client" '$0 != excluded' | shuf -n 3)
   (( ${#relays[@]} == 3 && ${#natservers[@]} == 3 && ${#natclients[@]} == 3 )) || return 1
   {
     printf 'family\trelay\tnatserver\tnatclient\n'
@@ -935,7 +941,7 @@ start_run() {
   fi
   project_suffix=${run_id//[^a-zA-Z0-9]/}
   project=bnfs-soak-${project_suffix,,}
-  if ! create_ip_family_plan "$run_dir" "$ip_family_coverage"; then
+  if ! create_ip_family_plan "$run_dir" "$ip_family_coverage" "$scenario"; then
     printf 'unable to create IP family coverage plan\n' >&2
     rm -f "$run_dir/ip-family-plan.tsv"
     rmdir "$run_dir" 2>/dev/null || true
@@ -3036,16 +3042,78 @@ validate_random_server_pool() {
 }
 
 random_batch_server_line() {
-  local run_dir=$1 selection_roll=${2:-} count
+  local run_dir=$1 selection_roll=${2:-} count uncovered_line=
   validate_random_server_pool "$run_dir/server-pool.tsv" || return 1
   count=$(awk 'END { print NR - 1 }' "$run_dir/server-pool.tsv") || return 1
   (( count > 0 )) || return 1
   if [[ -z $selection_roll ]]; then
+    if [[ -s $run_dir/random-batches.tsv ]]; then
+      uncovered_line=$(awk -F '\t' '
+        NR == FNR { if (FNR > 1 && $11 == "PASS") covered[$3]=1; next }
+        FNR > 1 && !covered[$1] { print }
+      ' "$run_dir/random-batches.tsv" "$run_dir/server-pool.tsv" | shuf -n 1) || return 1
+      if [[ -n $uncovered_line ]]; then
+        printf '%s\n' "$uncovered_line"
+        return 0
+      fi
+    fi
     selection_roll=$(random_below "$count") || return 1
   fi
   [[ $selection_roll =~ ^[0-9]+$ ]] && (( selection_roll < count )) || return 1
   awk -v selected="$((selection_roll + 2))" 'NR == selected { print; exit }' \
     "$run_dir/server-pool.tsv"
+}
+
+random_client_partition_covered() {
+  local run_dir=$1 client=$2 partition=$3
+  [[ $client =~ ^natclient0[1-6]$ && $partition =~ ^[AB]$ ]] || return 1
+  [[ -s $run_dir/transfers.tsv ]] || return 1
+  awk -F '\t' -v client="$client" -v partition="$partition" '
+    NR == FNR {
+      if (FNR > 1 && $2 ~ /^relay0[2-5]$/) server_partition[$1]="A"
+      if (FNR > 1 && $2 ~ /^relay0[6-7]$/) server_partition[$1]="B"
+      next
+    }
+    FNR > 1 && $3 == client && $7 == 0 && $8 > 0 && $11 == "yes" \
+      && server_partition[$5] == partition { found=1 }
+    END { exit !found }
+  ' "$run_dir/server-pool.tsv" "$run_dir/transfers.tsv"
+}
+
+random_malicious_client_covered() {
+  local run_dir=$1
+  awk -F '\t' '$11 == "PASS" && $10 == "true" { found=1 } END { exit !found }' \
+    "$run_dir/random-batches.tsv"
+}
+
+select_random_batch_clients() {
+  local run_dir=$1 server_line=$2 eligible_file=$3 selected_file=$4 client_count=$5
+  local server server_relay server_endpoint server_family target_id partition= client line
+  local priority_file=${selected_file}.priority candidate_file=${selected_file}.candidates
+  IFS=$'\t' read -r server server_relay server_endpoint server_family target_id <<< "$server_line"
+  [[ $server_relay =~ ^relay0[1-7]$ && $client_count =~ ^[1-4]$ ]] || return 1
+  case $server_relay in
+    relay0[2-5]) partition=A ;;
+    relay0[6-7]) partition=B ;;
+  esac
+  : > "$priority_file"
+  while IFS= read -r line; do
+    client=${line%%$'\t'*}
+    if [[ -n $partition && $client =~ ^natclient0[1-6]$ ]] \
+      && ! random_client_partition_covered "$run_dir" "$client" "$partition"; then
+      printf '%s\n' "$line" >> "$priority_file"
+    fi
+  done < "$eligible_file"
+  shuf "$priority_file" > "$candidate_file" || return 1
+  if ! random_malicious_client_covered "$run_dir"; then
+    awk -F '\t' -v malicious="$MALICIOUS_NAT_CLIENT" '$1 == malicious { print; exit }' \
+      "$eligible_file" >> "$candidate_file"
+  fi
+  shuf "$eligible_file" >> "$candidate_file" || return 1
+  awk -F '\t' -v limit="$client_count" '!seen[$1]++ { print; selected++; if (selected == limit) exit }' \
+    "$candidate_file" > "$selected_file"
+  rm -f "$priority_file" "$candidate_file"
+  [[ $(wc -l < "$selected_file") -eq $client_count ]]
 }
 
 random_clients_reaching_server() {
@@ -3121,9 +3189,10 @@ random_batch_worker() {
       sleep 1
       continue
     fi
-    mapfile -t selected_lines < <(shuf -n "$client_count" "$eligible_file")
+    select_random_batch_clients "$run_dir" "$server_line" "$eligible_file" "$selected_file" \
+      "$client_count" || return 1
+    mapfile -t selected_lines < "$selected_file"
     (( ${#selected_lines[@]} == client_count )) || return 1
-    printf '%s\n' "${selected_lines[@]}" > "$selected_file"
     selected_clients=$(cut -f1 "$selected_file" | paste -sd, -)
     [[ $selected_clients ]] || return 1
     malicious_selected=false

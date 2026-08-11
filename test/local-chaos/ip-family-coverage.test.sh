@@ -8,6 +8,18 @@ trap 'rm -rf "$test_root"' EXIT
 
 source "$ROOT_DIR/scripts/local-chaos-stability.sh"
 
+scenario_plan_dir=$test_root/scenario-plan
+mkdir -p "$scenario_plan_dir"
+create_ip_family_plan "$scenario_plan_dir" random 2
+if grep -q $'\tnatclient04$' "$scenario_plan_dir/ip-family-plan.tsv"; then
+  printf 'scenario 2 IP family plan moved its only relay02 NatClient\n' >&2
+  exit 1
+fi
+if cut -f3 "$scenario_plan_dir/ip-family-plan.tsv" | grep -qx natserver02; then
+  printf 'scenario 2 IP family plan moved natclient04 only reachable NatServer\n' >&2
+  exit 1
+fi
+
 dc() {
   [[ $1 == ps && $2 == -q ]] || return 1
   case $3 in

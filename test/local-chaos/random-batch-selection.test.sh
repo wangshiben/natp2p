@@ -80,6 +80,30 @@ validate_random_server_pool "$run_dir/server-pool.tsv" \
 [[ $(random_batch_server_line "$run_dir" 13 | cut -f1) == malicious-random-natserver ]] \
   || fail 'step 0 could not select the malicious NatServer'
 
+printf 'timestamp\tbatch_id\tselected_server\tserver_pool_includes_malicious\tserver_malicious\tmode\trequested_clients\tselected_clients\tclient_pool_includes_malicious\tmalicious_client_selected\tstatus\ttarget_pairs\tsucceeded\tfailed\n' \
+  > "$run_dir/random-batches.tsv"
+for number in $(seq 1 13); do
+  printf '2026-07-26T00:00:00+08:00\tbatch-%s-1\tnatserver%02d\ttrue\tfalse\tsingle\t1\tnatclient01\ttrue\tfalse\tPASS\tnatclient01→natserver%02d\t1\t0\n' \
+    "$number" "$number" "$number" >> "$run_dir/random-batches.tsv"
+done
+[[ $(random_batch_server_line "$run_dir" | cut -f1) == malicious-random-natserver ]] \
+  || fail 'coverage-aware Server selection repeated a covered NatServer'
+
+printf 'timestamp\ttransfer_id\tclient\tingress_relay\tserver\trequested_mib\trc\tbytes\tseconds\tmib_per_second\tsha256_ok\texpected_sha\tactual_sha\n' \
+  > "$run_dir/transfers.tsv"
+for number in $(seq 1 6); do
+  printf '2026-07-26T00:00:00+08:00\ttransfer-%s\tnatclient%02d\trelay01\tnatserver01\t100\t0\t104857600\t20\t5\tyes\texpected\tactual\n' \
+    "$number" "$number" >> "$run_dir/transfers.tsv"
+done
+selected_clients_file=$test_root/selected-clients.tsv
+select_random_batch_clients "$run_dir" "$(random_batch_server_line "$run_dir" 0)" \
+  "$pool_file" "$selected_clients_file" 4 \
+  || fail 'coverage-aware Client selection failed'
+[[ $(wc -l < "$selected_clients_file") -eq 4 ]] \
+  || fail 'coverage-aware Client selection returned the wrong count'
+grep -q '^malicious-natclient'$'\t' "$selected_clients_file" \
+  || fail 'coverage-aware Client selection omitted the untested malicious Client'
+
 server_without_malicious=$test_root/server-without-malicious.tsv
 head -n -1 "$run_dir/server-pool.tsv" > "$server_without_malicious"
 if validate_random_server_pool "$server_without_malicious"; then
