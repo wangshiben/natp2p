@@ -28,8 +28,11 @@ BUG_*.md
 /cmd/tunnel/*_DESIGN.md
 /cmd/tunnel/*_IMPLEMENTATION.md
 /cmd/tunnel/*_PLAN.md
-/cmd/tunnel/localsim/results_*/
 /pacakgeTest/
+/test/runtimeScript/results_*/
+/test/runtimeScript/local-chaos/.runtime/
+/test/runtimeScript/local-chaos/.soak/
+# 兼容迁移前遗留的本地证据目录，待人工归档后可删除。
 /test/local-chaos/.runtime/
 /test/local-chaos/.soak/
 

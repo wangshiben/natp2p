@@ -2,7 +2,10 @@
 .credentials
 .idea
 .vscode
+test/runtimeScript/local-chaos/.runtime
+test/runtimeScript/local-chaos/.soak
 test/local-chaos/.runtime
+test/local-chaos/.soak
 *.bin
 *.log
 *.pid

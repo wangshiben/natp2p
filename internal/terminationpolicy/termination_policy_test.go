@@ -60,32 +60,32 @@ func TestReusableFrameworkHasNoProcessTerminationCalls(t *testing.T) {
 
 func TestReviewedCommandTerminationCallsDoNotChange(t *testing.T) {
 	reviewed := map[string]int{
-		"cmd/billing-adversary-node/main.go#main":  2,
-		"cmd/billing-adversary-probe/main.go#main": 4,
-		"cmd/billing-toctou-demo/main.go#main":     2,
-		"cmd/billing-toctou-demo/main.go#must":     1,
-		"cmd/billingpoc-race/main.go#main":         4,
-		"cmd/billingpoc-race/main.go#must":         1,
-		"cmd/billingpoc/main.go#main":              3,
-		"cmd/billingpoc/main.go#must":              1,
-		"cmd/billingqueue-inspect/main.go#main":    1,
-		"cmd/caserver/main.go#main":                4,
-		"cmd/client_a/main.go#main":                3,
-		"cmd/client_b/main.go#main":                5,
-		"cmd/hooktest/main.go#main":                1,
-		"cmd/hooktest/main.go#runConnect":          5,
-		"cmd/hooktest/main.go#runListen":           2,
-		"cmd/hooktest/main.go#runRelay":            2,
-		"cmd/relay_server/main.go#main":            1,
-		"cmd/relaychat/main.go#main":               1,
-		"cmd/relaychat/main.go#runConnect":         7,
-		"cmd/relaychat/main.go#runListen":          4,
-		"cmd/relaychat/main.go#runRelay":           4,
-		"cmd/tunnel/client/main.go#main":           6,
-		"cmd/tunnel/httpfileserver/main.go#main":   2,
-		"cmd/tunnel/nodeserver/main.go#main":       4,
-		"cmd/tunnel/server/main.go#main":           8,
-		"cmd/tunnel/test_validator/main.go#main":   2,
+		"test/testCode/billing-adversary-node/main.go#main":  2,
+		"test/testCode/billing-adversary-probe/main.go#main": 4,
+		"test/testCode/billing-toctou-demo/main.go#main":     2,
+		"test/testCode/billing-toctou-demo/main.go#must":     1,
+		"test/testCode/billingpoc-race/main.go#main":         4,
+		"test/testCode/billingpoc-race/main.go#must":         1,
+		"test/testCode/billingpoc/main.go#main":              3,
+		"test/testCode/billingpoc/main.go#must":              1,
+		"test/testCode/billingqueue-inspect/main.go#main":    1,
+		"test/testCode/caserver/main.go#main":                4,
+		"test/testCode/client_a/main.go#main":                3,
+		"test/testCode/client_b/main.go#main":                5,
+		"test/testCode/hooktest/main.go#main":                1,
+		"test/testCode/hooktest/main.go#runConnect":          5,
+		"test/testCode/hooktest/main.go#runListen":           2,
+		"test/testCode/hooktest/main.go#runRelay":            2,
+		"test/testCode/relay_server/main.go#main":            1,
+		"test/testCode/relaychat/main.go#main":               1,
+		"test/testCode/relaychat/main.go#runConnect":         7,
+		"test/testCode/relaychat/main.go#runListen":          4,
+		"test/testCode/relaychat/main.go#runRelay":           4,
+		"cmd/tunnel/client/main.go#main":                     6,
+		"test/testCode/tunnel/httpfileserver/main.go#main":   2,
+		"test/testCode/tunnel/nodeserver/main.go#main":       4,
+		"cmd/tunnel/server/main.go#main":                     8,
+		"test/testCode/tunnel/test_validator/main.go#main":   2,
 	}
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -94,54 +94,57 @@ func TestReviewedCommandTerminationCallsDoNotChange(t *testing.T) {
 	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
 	fileSet := token.NewFileSet()
 	actual := make(map[string]int)
-	err := filepath.WalkDir(filepath.Join(repositoryRoot, "cmd"), func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		parsed, err := parser.ParseFile(fileSet, path, nil, 0)
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(repositoryRoot, path)
-		if err != nil {
-			return err
-		}
-		relative = filepath.ToSlash(relative)
-		for _, declaration := range parsed.Decls {
-			function, ok := declaration.(*ast.FuncDecl)
-			if !ok || function.Body == nil {
-				continue
+	commandRoots := []string{filepath.Join(repositoryRoot, "cmd"), filepath.Join(repositoryRoot, "test", "testCode")}
+	for _, commandRoot := range commandRoots {
+		err := filepath.WalkDir(commandRoot, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
 			}
-			ast.Inspect(function.Body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			parsed, err := parser.ParseFile(fileSet, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			relative, err := filepath.Rel(repositoryRoot, path)
+			if err != nil {
+				return err
+			}
+			relative = filepath.ToSlash(relative)
+			for _, declaration := range parsed.Decls {
+				function, ok := declaration.(*ast.FuncDecl)
+				if !ok || function.Body == nil {
+					continue
 				}
-				kind := terminationKind(call.Fun)
-				if kind == "" {
+				ast.Inspect(function.Body, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					kind := terminationKind(call.Fun)
+					if kind == "" {
+						return true
+					}
+					position := fileSet.Position(call.Pos())
+					if kind != "exit" && kind != "fatal" {
+						t.Errorf("%s is never approved in command code: %s:%d function=%s", kind, relative, position.Line, function.Name.Name)
+						return true
+					}
+					key := relative + "#" + function.Name.Name
+					if _, ok := reviewed[key]; !ok {
+						t.Errorf("unreviewed command termination: %s:%d function=%s kind=%s", relative, position.Line, function.Name.Name, kind)
+						return true
+					}
+					actual[key]++
 					return true
-				}
-				position := fileSet.Position(call.Pos())
-				if kind != "exit" && kind != "fatal" {
-					t.Errorf("%s is never approved in command code: %s:%d function=%s", kind, relative, position.Line, function.Name.Name)
-					return true
-				}
-				key := relative + "#" + function.Name.Name
-				if _, ok := reviewed[key]; !ok {
-					t.Errorf("unreviewed command termination: %s:%d function=%s kind=%s", relative, position.Line, function.Name.Name, kind)
-					return true
-				}
-				actual[key]++
-				return true
-			})
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	for key, expected := range reviewed {
 		if actual[key] != expected {
