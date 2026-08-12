@@ -5,7 +5,25 @@ import (
 	"bnfs_p2p/logx"
 	"encoding/json"
 	"errors"
+	"fmt"
 )
+
+type SecurityProfile string
+
+const (
+	SecurityProfileDevelopment SecurityProfile = "development"
+	SecurityProfileStaging     SecurityProfile = "staging"
+	SecurityProfileProduction  SecurityProfile = "production"
+)
+
+func ParseSecurityProfile(value string) (SecurityProfile, error) {
+	switch SecurityProfile(value) {
+	case SecurityProfileDevelopment, SecurityProfileStaging, SecurityProfileProduction:
+		return SecurityProfile(value), nil
+	default:
+		return "", fmt.Errorf("relaynode: invalid security profile %q", value)
+	}
+}
 
 // 网络准入（无交互 indexSign 方案，2026-07-07 用户定稿）。
 //
@@ -36,9 +54,46 @@ const (
 
 // AdmissionConfig 是 RelayNode 的准入配置。
 type AdmissionConfig struct {
-	Mode     AdmissionMode
-	SelfCert *admission.SignedCert  // 本节点持有的准入证书(indexSign)，随 HELLO/注册携带
-	Verifier admission.CertVerifier // 离线证书验证器（通常是 *admission.CAClient）
+	Mode                AdmissionMode
+	Profile             SecurityProfile
+	SelfCert            *admission.SignedCert  // 本节点持有的准入证书(indexSign)，随 HELLO/注册携带
+	Verifier            admission.CertVerifier // 离线证书验证器（通常是 *admission.CAClient）
+	RevocationStatePath string
+}
+
+func ValidateAdmissionConfig(cfg *AdmissionConfig, verifierNodeID string) error {
+	if cfg == nil {
+		return errors.New("relaynode: admission configuration is required")
+	}
+	if cfg.Profile == "" {
+		return errors.New("relaynode: security profile must be explicit")
+	}
+	if cfg.Profile == SecurityProfileProduction {
+		if cfg.Mode != AdmissionEnforce {
+			return errors.New("relaynode: production requires admission enforce")
+		}
+		if cfg.SelfCert == nil || cfg.Verifier == nil {
+			return errors.New("relaynode: production requires a relay certificate and CA verifier")
+		}
+		if cfg.SelfCert.Cert.Role != admission.RoleRelay || cfg.SelfCert.Cert.SubjectNodeID != verifierNodeID {
+			return errors.New("relaynode: production relay certificate does not match identity")
+		}
+		if cfg.SelfCert.Cert.AuthorizationID == "" || cfg.SelfCert.Cert.BillingKeyID == "" {
+			return errors.New("relaynode: production requires an independently bound billing authorization")
+		}
+		if cfg.RevocationStatePath == "" {
+			return errors.New("relaynode: production requires a durable revocation state path")
+		}
+		if err := cfg.Verifier.Verify(cfg.SelfCert, admission.VerifyOptions{
+			ExpectNodeID: verifierNodeID, ExpectRole: admission.RoleRelay,
+		}); err != nil {
+			return fmt.Errorf("relaynode: production relay certificate verification failed: %w", err)
+		}
+	}
+	if cfg.Profile == SecurityProfileStaging && cfg.Mode == AdmissionOff {
+		return errors.New("relaynode: staging cannot disable admission")
+	}
+	return nil
 }
 
 // SetAdmission 安装准入配置。Mode=AdmissionOff（默认）时完全不启用。
@@ -49,6 +104,14 @@ func (n *RelayNode) SetAdmission(cfg *AdmissionConfig) {
 	n.admission = cfg
 	n.mu.Unlock()
 	n.applyAdmissionHooks()
+}
+
+func (n *RelayNode) SetAdmissionChecked(cfg *AdmissionConfig) error {
+	if err := ValidateAdmissionConfig(cfg, n.idStr()); err != nil {
+		return err
+	}
+	n.SetAdmission(cfg)
+	return nil
 }
 
 func (n *RelayNode) admissionConfig() *AdmissionConfig {
@@ -89,6 +152,9 @@ func (n *RelayNode) verifyPeerCertJSON(certJSON []byte, expectRole admission.Rol
 	if cfg == nil || cfg.Mode == AdmissionOff {
 		return nil, nil // 未启用：放行
 	}
+	if !n.revocationSyncFresh() {
+		return nil, errors.New("admission: revocation state is stale")
+	}
 	if cfg.Verifier == nil {
 		if cfg.Mode == AdmissionEnforce {
 			return nil, errors.New("admission: 已开启 enforce 但未配置验证器")
@@ -104,6 +170,9 @@ func (n *RelayNode) verifyPeerCertJSON(certJSON []byte, expectRole admission.Rol
 	}
 	if err := cfg.Verifier.Verify(&sc, admission.VerifyOptions{ExpectRole: expectRole, ExpectNodeID: expectNodeID}); err != nil {
 		return nil, err
+	}
+	if n.businessScopeDenied(sc.Cert) || n.businessCertificateDenied(&sc) {
+		return nil, errors.New("admission: peer certificate is revoked")
 	}
 	return &sc.Cert, nil
 }

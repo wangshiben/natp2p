@@ -39,6 +39,35 @@ type RelayChangeNotifier interface {
 	RelayChangeSignal() <-chan struct{}
 }
 
+type BusinessAdmissionProvider interface {
+	BuildBusinessAdmissionPayload(targetNodeID, connectionID, legSessionID, entryRelayID string) ([]byte, error)
+}
+
+func refreshBusinessAdmissionPayload(policy RelayDialPolicy, message *network.Message, entryRelayID string) error {
+	if message == nil || message.Header == nil {
+		return errors.New("business admission message header is required")
+	}
+	// ConnectionId 为空的是 NAT->Relay 注册流。注册流即使已被 NatServer
+	// 消费为一条 E2E 会话，Relay 迁移后仍必须用原始注册信封重建目标槽位；
+	// 不能把 RoleServer 注册证书改包成只允许 RoleClient 的业务寻址信封。
+	if message.Header.ConnectionId == "" {
+		return nil
+	}
+	provider, ok := policy.(BusinessAdmissionProvider)
+	if !ok {
+		return nil
+	}
+	payload, err := provider.BuildBusinessAdmissionPayload(
+		message.Header.NodeId, message.Header.ConnectionId, message.Header.LegSessionId, entryRelayID,
+	)
+	if err != nil {
+		return err
+	}
+	message.Payload = payload
+	message.Header.PayLoadLength = uint(len(payload))
+	return nil
+}
+
 // disableKCP 返回是否显式禁用 KCP leg（走纯双 TCP failover）。
 // 场景：家庭 NAT / 运营商限制 UDP，KCP 回程不可靠，relay 优先用 KCP 建桥反而导致
 // 端到端握手在丢包的 KCP leg 上失败。设 BNFS_DISABLE_KCP=1 强制 TCP-only。
@@ -75,12 +104,25 @@ func TryConnectTCPStream(addr, targetNodeId, originalPubkeyHex string) (network.
 
 func TryConnectTCPStreamWithRelayPolicy(policy RelayDialPolicy, targetNodeId, originalPubkeyHex string) (network.Stream, string, error) {
 	connectionId := uuid.New().String()
+	legSessionID := uuid.New().String()
 	header := &network.Header{
 		NodeId:        targetNodeId,
 		NodeIdVersion: 1,
 		ConnectionId:  connectionId,
+		LegSessionId:  legSessionID,
 	}
-	body := &network.Message{Header: header, Payload: []byte(originalPubkeyHex)}
+	payload := []byte(originalPubkeyHex)
+	if provider, ok := policy.(BusinessAdmissionProvider); ok {
+		entry, err := policy.CurrentRelay()
+		if err != nil {
+			return nil, "", err
+		}
+		payload, err = provider.BuildBusinessAdmissionPayload(targetNodeId, connectionId, legSessionID, entry.Address)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	body := &network.Message{Header: header, Payload: payload}
 	stream, err := clientStreamWithRelayPolicy(body, "", targetNodeId, connectionId, true, policy)
 	return stream, connectionId, err
 }
@@ -98,6 +140,7 @@ func TryConnectTCPStreamWithConnID(addr, targetNodeId, originalPubkeyHex, connec
 		NodeIdVersion: 1,
 		PayLoadLength: 0,
 		ConnectionId:  connectionId,
+		LegSessionId:  uuid.New().String(),
 		OriginData:    nil,
 	}
 	body := &network.Message{
@@ -379,6 +422,9 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 		if err := waitForReconnect(ctx, target, "tcp"); err != nil {
 			return nil, err
 		}
+		if buildErr := refreshBusinessAdmissionPayload(relayPolicy, message, target.Address); buildErr != nil {
+			return nil, buildErr
+		}
 		stream, dialErr := tcpClientStreamContext(ctx, message, target.Address, originalNodeId, connectionId, true)
 		relayPolicy.ReportRelayDialResult(target, dialErr)
 		return stream, dialErr
@@ -393,6 +439,9 @@ func clientStreamWithRelayPolicy(FirstMessage *network.Message, tcpAddr, origina
 		}
 		if err := waitForReconnect(ctx, target, "kcp"); err != nil {
 			return nil, err
+		}
+		if buildErr := refreshBusinessAdmissionPayload(relayPolicy, message, target.Address); buildErr != nil {
+			return nil, buildErr
 		}
 		stream, dialErr := kcpStreamContext(ctx, message, target.Address, originalNodeId, connectionId, true)
 		if dialErr == nil {

@@ -63,6 +63,7 @@ type Cert struct {
 	// BillingKeyID / BillingPubKey 标识独立于节点身份密钥的扣费签名密钥。
 	BillingKeyID  string `json:"billing_key_id,omitempty"`
 	BillingPubKey string `json:"billing_public_key,omitempty"`
+	BillingUserID string `json:"billing_user_id,omitempty"`
 }
 
 // SignedCert 是证书主体 + CA 的 ECDSA 签名，即节点随身携带的完整凭证。
@@ -70,6 +71,15 @@ type SignedCert struct {
 	Cert Cert `json:"cert"`
 	// Sig 是 CA 对 canonical(Cert) 的 ECDSA-P256 签名（ASN.1 DER, hex）。
 	Sig string `json:"sig"`
+}
+
+func CertificateID(certificate *SignedCert) (string, error) {
+	encoded, err := json.Marshal(certificate)
+	if err != nil {
+		return "", fmt.Errorf("admission: encode certificate ID: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // canonicalBytes 返回 Cert 的确定性序列化字节，作为签名/验签的输入。

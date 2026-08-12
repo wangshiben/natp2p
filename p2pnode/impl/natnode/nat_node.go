@@ -199,6 +199,9 @@ func (n *NATNode) SetIndexSign(signJSON []byte) {
 		logx.Warnf("[natnode] 无法解析计费准入证书: %v", err)
 		return
 	}
+	if transport, ok := n.transport.(*NATTransport); ok {
+		transport.SetBusinessAdmissionIdentity(n.privKey, &signedCert)
+	}
 	if signedCert.Cert.Role == admission.RoleServer {
 		if err := n.billingMeter.enable(&signedCert); err != nil {
 			logx.Warnf("[natnode] 无法启用双签计费: %v", err)

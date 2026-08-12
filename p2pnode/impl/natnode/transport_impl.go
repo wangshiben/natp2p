@@ -1,11 +1,14 @@
 package natnode
 
 import (
+	"bnfs_p2p/admission"
 	"bnfs_p2p/network"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/p2pnode"
 	"context"
+	"crypto/ecdh"
 	"fmt"
+	"time"
 )
 
 // NATTransport 实现 p2pnode.Transport，委托给 networkFrameWork 的拨号/注册函数。
@@ -16,12 +19,16 @@ type NATTransport struct {
 	signJSON      []byte
 	relayState    *relayFailoverState
 	reconnectGate networkFrameWork.ReconnectGate
+	identityKey   *ecdh.PrivateKey
+	businessCert  *admission.SignedCert
+	knownEpoch    uint64
 }
 
 type fixedRelayDialPolicy struct {
-	address string
-	gate    networkFrameWork.ReconnectGate
-	role    string
+	address  string
+	gate     networkFrameWork.ReconnectGate
+	role     string
+	provider networkFrameWork.BusinessAdmissionProvider
 }
 
 func (policy fixedRelayDialPolicy) CurrentRelay() (networkFrameWork.RelayDialTarget, error) {
@@ -36,6 +43,13 @@ func (policy fixedRelayDialPolicy) ReconnectGate() networkFrameWork.ReconnectGat
 
 func (policy fixedRelayDialPolicy) ReconnectRole() string {
 	return policy.role
+}
+
+func (policy fixedRelayDialPolicy) BuildBusinessAdmissionPayload(targetNodeID, connectionID, legSessionID, entryRelayID string) ([]byte, error) {
+	if policy.provider == nil {
+		return nil, admission.ErrBusinessAdmissionRequired
+	}
+	return policy.provider.BuildBusinessAdmissionPayload(targetNodeID, connectionID, legSessionID, entryRelayID)
 }
 
 // NewNATTransport 创建使用指定公钥 hex 进行 relay 通信的 Transport。
@@ -90,6 +104,30 @@ func (t *NATTransport) SetIndexSign(signJSON []byte) {
 	t.signJSON = signJSON
 }
 
+func (t *NATTransport) SetBusinessAdmissionIdentity(identityKey *ecdh.PrivateKey, certificate *admission.SignedCert) {
+	t.identityKey = identityKey
+	if certificate == nil {
+		t.businessCert = nil
+		return
+	}
+	copyCertificate := *certificate
+	t.businessCert = &copyCertificate
+}
+
+func (t *NATTransport) BuildBusinessAdmissionPayload(targetNodeID, connectionID, legSessionID, entryRelayID string) ([]byte, error) {
+	if t.identityKey == nil || t.businessCert == nil {
+		return []byte(t.pubKeyHex), nil
+	}
+	envelope, err := admission.NewBusinessAdmissionEnvelope(
+		t.identityKey, t.businessCert, targetNodeID, connectionID, legSessionID,
+		entryRelayID, t.knownEpoch, time.Now().UTC(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return envelope.Marshal()
+}
+
 // Register 将本节点注册为 relay 可达目标（dual: KCP + TCP 双 leg）。
 //
 // 恢复 dual 注册以获得 KCP 跨境高吞吐。跨中继桥接侧通过「确定性只桥接 KCP(send-preferred)
@@ -137,10 +175,13 @@ func (t *NATTransport) Dial(ctx context.Context, relayAddr string, targetID p2pn
 	}
 	if t.reconnectGate != nil {
 		return networkFrameWork.TryConnectTCPStreamWithRelayPolicy(
-			fixedRelayDialPolicy{address: relayAddr, gate: t.reconnectGate, role: "natclient"},
+			fixedRelayDialPolicy{address: relayAddr, gate: t.reconnectGate, role: "natclient", provider: t},
 			string(targetID),
 			t.pubKeyHex,
 		)
 	}
-	return networkFrameWork.TryConnectTCPStream(relayAddr, string(targetID), t.pubKeyHex)
+	return networkFrameWork.TryConnectTCPStreamWithRelayPolicy(
+		fixedRelayDialPolicy{address: relayAddr, role: "natclient", provider: t},
+		string(targetID), t.pubKeyHex,
+	)
 }

@@ -3,12 +3,21 @@ package relaynode
 import (
 	"bnfs_p2p/admission"
 	"bnfs_p2p/logx"
+	"bnfs_p2p/network"
+	"bnfs_p2p/networkFrameWork"
 	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 )
+
+const maximumBusinessAdmissionProofs = 8192
+
+type businessAdmissionProof struct {
+	digest    string
+	expiresAt time.Time
+}
 
 // 本文件实现 nat→relay 注册准入（无交互 indexSign）与被托管节点的角色账户。
 //
@@ -20,6 +29,7 @@ import (
 type natAccount struct {
 	NodeID string
 	Role   admission.Role
+	UserID string
 	Cert   *admission.SignedCert
 	Since  time.Time
 	// UplinkBytes 是该节点（作为 serverNode 时）经本 relay 转发给客户端的累计上行净荷
@@ -68,6 +78,7 @@ func (s *accountStore) putCert(nodeID string, cert *admission.SignedCert) {
 	copyCert := *cert
 	acc.Cert = &copyCert
 	acc.Role = cert.Cert.Role
+	acc.UserID = cert.Cert.BillingUserID
 }
 
 func (s *accountStore) cert(nodeID string) *admission.SignedCert {
@@ -182,13 +193,20 @@ func (s *accountStore) snapshot() []natAccount {
 // 返回非 nil 表示拒绝注册。校验绑定 ExpectNodeID=nodeId，确保证书主体正是这个注册者。
 // 校验通过后把证书 Role 落账户表。Mode=Off 时本钩子不会被安装（见 applyAdmissionHooks）。
 func (n *RelayNode) onRegisterVerify(nodeId string, signJSON []byte, remoteAddr string) error {
+	if !n.revocationSyncFresh() {
+		return fmt.Errorf("revocation_sync_stale: new registrations are fail-closed")
+	}
 	cert, err := n.verifyPeerCertJSON(signJSON, "", nodeId) // 角色不限定(nat 可能是 client/server)
 	if !n.gateAdmission(cert, err, "register "+nodeId[:min(16, len(nodeId))]) {
 		return err
 	}
 	if cert != nil {
+		signedCertificate := &admission.SignedCert{Cert: *cert, Sig: signedCertSignature(signJSON)}
+		if n.businessScopeDenied(*cert) || n.businessCertificateDenied(signedCertificate) {
+			return fmt.Errorf("source_authorization_revoked: node %.16s is denied", nodeId)
+		}
 		n.accounts.putRole(nodeId, cert.Role)
-		n.accounts.putCert(nodeId, &admission.SignedCert{Cert: *cert, Sig: signedCertSignature(signJSON)})
+		n.accounts.putCert(nodeId, signedCertificate)
 		logx.Infof("[relaynode] NAT 节点注册准入通过: %.16s role=%s remote=%s", nodeId, cert.Role, remoteAddr)
 	}
 	return nil
@@ -221,12 +239,131 @@ func (n *RelayNode) applyAdmissionHooks() {
 	cover := n.starter.Cover()
 	if n.admissionEnabled() {
 		cover.SetRegisterVerifyHook(n.onRegisterVerify)
+		cover.SetBusinessAdmissionHook(n.onBusinessAdmission)
 		cover.SetBusinessConnectHook(n.onBusinessConnect) // 方案B: 服务边界角色强制
 		n.installSecureBillingPipeline()
 	} else {
 		cover.SetRegisterVerifyHook(nil)
+		cover.SetBusinessAdmissionHook(nil)
 		cover.SetBusinessConnectHook(nil)
 	}
+}
+
+func (n *RelayNode) onBusinessAdmission(targetNodeID string, message *network.Message, remoteAddr string) (*networkFrameWork.BusinessAdmissionDecision, error) {
+	cfg := n.admissionConfig()
+	if cfg == nil || cfg.Mode == AdmissionOff {
+		return nil, nil
+	}
+	if !n.revocationSyncFresh() {
+		return nil, fmt.Errorf("revocation_sync_stale: new business connections are fail-closed")
+	}
+	envelope, err := admission.ParseBusinessAdmissionEnvelope(message.Payload)
+	if err != nil {
+		if cfg.Mode == AdmissionWarn {
+			logx.Warnf("[relaynode] 业务来源缺少 V2 准入证明(warn, 放行): target=%.16s remote=%s err=%v", targetNodeID, remoteAddr, err)
+			return &networkFrameWork.BusinessAdmissionDecision{SourcePublicKey: string(message.Payload)}, nil
+		}
+		return nil, fmt.Errorf("business_admission_v2_required: %w", err)
+	}
+	decision, err := admission.VerifyBusinessAdmissionEnvelope(cfg.Verifier, envelope, targetNodeID, message.Header.ConnectionId, time.Now().UTC())
+	if err != nil {
+		if cfg.Mode == AdmissionWarn {
+			logx.Warnf("[relaynode] 业务 V2 准入证明无效(warn, 放行): target=%.16s remote=%s err=%v", targetNodeID, remoteAddr, err)
+			return &networkFrameWork.BusinessAdmissionDecision{SourcePublicKey: envelope.SourcePublicKey}, nil
+		}
+		return nil, fmt.Errorf("source_certificate_invalid: %w", err)
+	}
+	if envelope.ForwardAttestation == nil {
+		if n.accounts.role(decision.SourceNodeID) != admission.RoleClient {
+			return nil, fmt.Errorf("source_registration_required: source %.16s is not an active client registration", decision.SourceNodeID)
+		}
+		if cfg.SelfCert == nil {
+			return nil, fmt.Errorf("source_certificate_invalid: entry relay certificate is unavailable")
+		}
+		if err := admission.AddRelayForwardAttestation(envelope, n.privKey, cfg.SelfCert, time.Now().UTC()); err != nil {
+			return nil, fmt.Errorf("source_certificate_invalid: add relay forward attestation: %w", err)
+		}
+		encoded, err := envelope.Marshal()
+		if err != nil {
+			return nil, err
+		}
+		message.Payload = encoded
+		message.Header.PayLoadLength = uint(len(encoded))
+	} else {
+		if err := admission.VerifyRelayForwardAttestation(cfg.Verifier, envelope, time.Now().UTC()); err != nil {
+			if cfg.Mode == AdmissionWarn {
+				logx.Warnf("[relaynode] 入口 Relay 转发证明无效(warn, 放行): target=%.16s remote=%s err=%v", targetNodeID, remoteAddr, err)
+			} else {
+				return nil, fmt.Errorf("source_certificate_invalid: relay forward attestation: %w", err)
+			}
+		}
+		if envelope.ForwardAttestation != nil &&
+			(n.businessScopeDenied(envelope.ForwardAttestation.RelayCert.Cert) ||
+				n.businessCertificateDenied(&envelope.ForwardAttestation.RelayCert)) {
+			return nil, fmt.Errorf("source_authorization_revoked: forwarding relay %.16s is denied", envelope.ForwardAttestation.RelayNodeID)
+		}
+	}
+	if n.businessScopeDenied(envelope.SourceCert.Cert) || n.businessCertificateDenied(&envelope.SourceCert) {
+		return nil, fmt.Errorf("source_authorization_revoked: source %.16s is denied", decision.SourceNodeID)
+	}
+	if err := n.rememberBusinessProof(envelope.Nonce, decision.ProofDigest, time.Unix(envelope.ExpiresAt, 0)); err != nil {
+		return nil, err
+	}
+	return &networkFrameWork.BusinessAdmissionDecision{
+		SourceNodeID: decision.SourceNodeID, SourcePublicKey: decision.SourcePublicKey,
+	}, nil
+}
+
+func (n *RelayNode) rememberBusinessProof(nonce, digest string, expiresAt time.Time) error {
+	now := time.Now().UTC()
+	n.businessAdmissionMu.Lock()
+	defer n.businessAdmissionMu.Unlock()
+	for key, proof := range n.businessAdmissionNonces {
+		if !proof.expiresAt.After(now) {
+			delete(n.businessAdmissionNonces, key)
+		}
+	}
+	if existing, ok := n.businessAdmissionNonces[nonce]; ok {
+		if existing.digest != digest {
+			return fmt.Errorf("admission_replay_rejected: nonce reused with different proof")
+		}
+		return nil
+	}
+	if len(n.businessAdmissionNonces) >= maximumBusinessAdmissionProofs {
+		return fmt.Errorf("admission_replay_rejected: proof cache capacity exhausted")
+	}
+	n.businessAdmissionNonces[nonce] = businessAdmissionProof{digest: digest, expiresAt: expiresAt}
+	return nil
+}
+
+func (n *RelayNode) businessScopeDenied(cert admission.Cert) bool {
+	n.businessAdmissionMu.Lock()
+	defer n.businessAdmissionMu.Unlock()
+	for prefix, identifier := range map[string]string{
+		"node:":          cert.SubjectNodeID,
+		"authorization:": cert.AuthorizationID,
+		"billing_key:":   cert.BillingKeyID,
+		"user:":          cert.BillingUserID,
+	} {
+		if identifier == "" {
+			continue
+		}
+		if _, denied := n.businessDeniedScopes[prefix+identifier]; denied {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *RelayNode) businessCertificateDenied(certificate *admission.SignedCert) bool {
+	certificateID, err := admission.CertificateID(certificate)
+	if err != nil {
+		return true
+	}
+	n.businessAdmissionMu.Lock()
+	defer n.businessAdmissionMu.Unlock()
+	_, denied := n.businessDeniedScopes["certificate:"+certificateID]
+	return denied
 }
 
 // 以下常量和 helper 属于已退役的连接保证金实现；当前 onBusinessConnect 不再调用它们，

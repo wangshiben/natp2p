@@ -1196,6 +1196,15 @@ func (pipeline *relayBillingPipeline) submitPending() {
 						payerID, voucher.Body.Sequence, settleErr)
 					continue
 				}
+				if response.DenyDecision != nil {
+					if denyErr := pipeline.node.applyDenyDecision(response.DenyDecision); denyErr != nil {
+						logx.Errorf("[relaynode] CA 返回的永久拒绝未通过本地验签，保留凭证但不写 deny: payer=%.16s seq=%d err=%v",
+							payerID, voucher.Body.Sequence, denyErr)
+					} else {
+						logx.Warnf("[relaynode] CA 签名永久拒绝已应用: payer=%.16s seq=%d code=%s",
+							payerID, voucher.Body.Sequence, response.DenyDecision.ErrorCode)
+					}
+				}
 				if response.Retryable {
 					if response.ErrorCode == admission.VoucherErrorInsufficientFunds {
 						pipeline.node.accounts.setCutoff(payerID, true)
@@ -1342,6 +1351,43 @@ func (pipeline *relayBillingPipeline) blockSession(sessionID billingvoucher.Iden
 		session.blocked = err
 	}
 	session.mu.Unlock()
+}
+
+func (pipeline *relayBillingPipeline) blockPayers(payerIDs []string, err error) {
+	if pipeline == nil || len(payerIDs) == 0 {
+		return
+	}
+	wanted := make(map[billingvoucher.Identifier]struct{}, len(payerIDs))
+	for _, payerID := range payerIDs {
+		identifier, parseErr := billingvoucher.ParseIdentifierHex(payerID)
+		if parseErr == nil {
+			wanted[identifier] = struct{}{}
+		}
+	}
+	pipeline.mu.Lock()
+	sessions := make([]*relayBillingSession, 0, len(wanted))
+	for payerID := range wanted {
+		for _, session := range pipeline.sessions {
+			if session.payerID == payerID {
+				sessions = append(sessions, session)
+			}
+		}
+	}
+	pipeline.mu.Unlock()
+	for _, session := range sessions {
+		pipeline.blockSession(session.sessionID, err)
+	}
+	pipeline.controlMu.Lock()
+	peers := make([]*relayBillingControlPeer, 0, len(wanted))
+	for payerID, peer := range pipeline.controls {
+		if _, ok := wanted[payerID]; ok {
+			peers = append(peers, peer)
+		}
+	}
+	pipeline.controlMu.Unlock()
+	for _, peer := range peers {
+		peer.close()
+	}
 }
 
 func (pipeline *relayBillingPipeline) close() error {

@@ -93,6 +93,18 @@ export function normalPartitionForRelay(relay) {
   return normalRelayPartitions[relay] ?? "";
 }
 
+export function buildMaliciousRelayCommand(recoveryPeer = "") {
+  if (recoveryPeer) assertNormalRelay(recoveryPeer);
+  return [
+    "exec env BNFS_CA_CERT_FILE=/state/certificate.json",
+    "BNFS_REVOCATION_STATE_FILE=/state/mixed-revocations.json",
+    "/opt/bnfs/nodeserver -mode relay -listen :9300 -public malicious-relay:9300",
+    recoveryPeer ? `-peer ${recoveryPeer}:9000` : "",
+    "-key /state/identity.key -billing-queue /state/mixed-wait-submit.queue",
+    "-ca http://ca:9100 -admission enforce > /state/mixed-nodeserver.log 2>&1",
+  ].join(" ");
+}
+
 export function publicTrigger(actor, event) {
   const scenarios = new Set(scenariosByActor[actor] ?? []);
   if (!event || !Number.isSafeInteger(event.sequence) || event.sequence < 1 || !scenarios.has(event.scenario)) return null;
@@ -398,16 +410,10 @@ async function migrateForTrigger(config, state, targetNodeID, trigger, publish) 
 }
 
 async function startMaliciousRelay(config, recoveryPeer = "") {
-  if (recoveryPeer) assertNormalRelay(recoveryPeer);
   await stopProcess(config, "malicious-relay", "nodeserver");
   await fs.rm(path.join(config.privateRoot, "malicious-relay", "mixed-nodeserver.log"), { force: true });
-  await compose(config, ["exec", "-T", "-d", "malicious-relay", "sh", "-lc", [
-    "exec env BNFS_CA_CERT_FILE=/state/certificate.json",
-    "/opt/bnfs/nodeserver -mode relay -listen :9300 -public malicious-relay:9300",
-    recoveryPeer ? `-peer ${recoveryPeer}:9000` : "",
-    "-key /state/identity.key -billing-queue /state/mixed-wait-submit.queue",
-    "-ca http://ca:9100 -admission enforce > /state/mixed-nodeserver.log 2>&1",
-  ].join(" ")]);
+  await compose(config, ["exec", "-T", "-d", "malicious-relay", "sh", "-lc",
+    buildMaliciousRelayCommand(recoveryPeer)]);
   await waitForFilePattern(
     path.join(config.privateRoot, "malicious-relay", "mixed-nodeserver.log"),
     /relay 已就绪/,

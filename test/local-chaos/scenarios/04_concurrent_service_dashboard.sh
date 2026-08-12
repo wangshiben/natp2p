@@ -125,5 +125,15 @@ NODE
   fi
 fi
 
+if stop_nat_process natclient01 tunclient && stop_nat_process natclient02 tunclient; then
+  if wait_file_pattern "$status_file" '"activeSessions":0' 10; then
+    pass 'SDK 客户端优雅退出后 NatServer 在 10 秒内回收全部会话'
+  else
+    fail 'SDK 客户端退出后 NatServer 未及时回收会话'
+  fi
+else
+  fail '无法停止 SDK 客户端以验证会话回收'
+fi
+
 capture_topology_logs "$scenario"
 exit "$failures"

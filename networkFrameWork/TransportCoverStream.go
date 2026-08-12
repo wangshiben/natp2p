@@ -103,6 +103,11 @@ type TransportCover struct {
 	// 二者都在此点一次性完成（每条业务连接首帧触发一次）。
 	onBusinessConnect func(targetNodeId, clientPubKeyHex, connID string) error
 
+	// onBusinessAdmission 是普通业务首帧的来源准入门。它必须在本地查找
+	// StreamGroup、FIND 或跨 Relay 建桥之前运行；返回的来源公钥只用于本地
+	// 投递，跨 Relay 时首帧信封保持原样透传。
+	onBusinessAdmission func(targetNodeID string, message *network.Message, remoteAddr string) (*BusinessAdmissionDecision, error)
+
 	// forwardHookConfig 转发 hook 配置（可选），传递给新创建的 StreamGroup
 	forwardHookConfig *ForwardHookConfig
 
@@ -116,10 +121,21 @@ type TransportCover struct {
 	registrationLifecycle   sync.Mutex
 }
 
+type BusinessAdmissionDecision struct {
+	SourceNodeID    string
+	SourcePublicKey string
+}
+
 // SetBusinessConnectHook 安装「业务连接接入校验」钩子（StreamOn 前调用，返回 error 则拒绝接入）。传 nil 卸载。
 func (t *TransportCover) SetBusinessConnectHook(h func(targetNodeId, clientPubKeyHex, connID string) error) {
 	t.lock.Lock()
 	t.onBusinessConnect = h
+	t.lock.Unlock()
+}
+
+func (t *TransportCover) SetBusinessAdmissionHook(h func(targetNodeID string, message *network.Message, remoteAddr string) (*BusinessAdmissionDecision, error)) {
+	t.lock.Lock()
+	t.onBusinessAdmission = h
 	t.lock.Unlock()
 }
 
@@ -202,6 +218,17 @@ func (t *TransportCover) CloseHostedConnection(nodeId, connID string) error {
 	return group.CloseTargetConnection(connID)
 }
 
+func (t *TransportCover) CloseHostedRegistration(nodeID string) error {
+	t.lock.RLock()
+	group := t.StreamGroup[nodeID]
+	t.lock.RUnlock()
+	if group == nil {
+		return fmt.Errorf("relay: 未托管 nodeId=%.16s, 无法关闭注册流", nodeID)
+	}
+	group.Close()
+	return nil
+}
+
 func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 	localAddr := ""
 	remoteAddr := ""
@@ -252,6 +279,21 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		}
 		logx.Infof("[relay] AcceptTcpStream 成功 (local=%s remote=%s): nodeId=%.16s connId=%s",
 			localAddr, remoteAddr, message.Header.NodeId, message.Header.ConnectionId)
+
+		var businessAdmission *BusinessAdmissionDecision
+		t.lock.RLock()
+		admissionHook := t.onBusinessAdmission
+		t.lock.RUnlock()
+		if admissionHook != nil && isOrdinaryBusinessRoute(message) {
+			businessAdmission, err = admissionHook(message.Header.NodeId, message, remoteAddr)
+			if err != nil {
+				logx.Warnf("[relay] 业务来源准入拒绝: targetNodeId=%.16s connId=%s remote=%s err=%v",
+					message.Header.NodeId, message.Header.ConnectionId, remoteAddr, err)
+				stream.Close()
+				errChan <- err
+				return
+			}
+		}
 
 		// 预判：是否为「需桥接的业务连接且本地无 group」。
 		t.lock.RLock()
@@ -500,7 +542,13 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 			// relayNode 用它拒绝「非 server 角色的节点作为被连接的目标」——即堵死「client 节点
 			// 提供服务却逃计费」的路径。为 nil（默认/准入关闭）时不校验, 行为与旧版一致。
 			if businessConnectHook != nil {
-				if err := businessConnectHook(message.Header.NodeId, string(message.Payload), message.Header.ConnectionId); err != nil {
+				clientPubKeyHex := string(message.Payload)
+				if businessAdmission != nil && businessAdmission.SourcePublicKey != "" {
+					clientPubKeyHex = businessAdmission.SourcePublicKey
+					message.Payload = []byte(clientPubKeyHex)
+					message.Header.PayLoadLength = uint(len(message.Payload))
+				}
+				if err := businessConnectHook(message.Header.NodeId, clientPubKeyHex, message.Header.ConnectionId); err != nil {
 					logx.Errorf("[relay] 业务连接被拒(角色/保证金): targetNodeId=%.16s connId=%s err=%v",
 						message.Header.NodeId, message.Header.ConnectionId, err)
 					stream.Close()
@@ -545,6 +593,18 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 		return errors.New("timeout: connection closed")
 	case err := <-errChan:
 		return err
+	}
+}
+
+func isOrdinaryBusinessRoute(message *network.Message) bool {
+	if message == nil || message.Header == nil || message.Header.ConnectionId == "" {
+		return false
+	}
+	switch message.Header.RouteName {
+	case relayControlRouteHint, relayQueryRouteHint, relayBridgeMuxRouteHint, billingControlRouteHint:
+		return false
+	default:
+		return true
 	}
 }
 

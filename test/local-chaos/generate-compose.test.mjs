@@ -413,6 +413,7 @@ async function assertBillingCredential(compose, privateRoot, serviceName, expect
 function frameworkLogEnvironment(directory) {
   return [
     `BNFS_LOG_DIRECTORY=${directory}`,
+    "BNFS_SECURITY_PROFILE=development",
     "BNFS_LOG_LEVEL=info",
     "BNFS_LOG_MAX_SIZE_MIB=64",
     "BNFS_LOG_ROTATE_INTERVAL=24h",
@@ -421,3 +422,25 @@ function frameworkLogEnvironment(directory) {
     "BNFS_LOG_ERROR_STACK=true",
   ];
 }
+
+test("production Relay services persist revocation state", async (context) => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bnfs-compose-production-runtime-"));
+  context.after(() => fs.rm(runtimeDir, { recursive: true, force: true }));
+  const { stdout } = await execFileAsync(process.execPath, [generator, runtimeDir], {
+    env: {
+      ...process.env,
+      BNFS_CHAOS_ENABLE_CA: "1",
+      BNFS_SECURITY_PROFILE: "production",
+    },
+    maxBuffer: 1024 * 1024,
+  });
+  const compose = JSON.parse(stdout);
+  for (const serviceName of ["index", ...numbered("relay", 7)]) {
+    assert.equal(compose.services[serviceName].environment.includes(
+      "BNFS_REVOCATION_STATE_FILE=/artifacts/.private/revocations.json",
+    ), true);
+  }
+  for (const serviceName of [...numbered("natserver", 13), ...numbered("natclient", 6)]) {
+    assert.equal(JSON.stringify(compose.services[serviceName]).includes("REVOCATION_STATE_FILE"), false);
+  }
+});

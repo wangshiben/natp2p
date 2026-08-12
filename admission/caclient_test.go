@@ -47,3 +47,20 @@ func TestSettleVoucherKeepsClientRejectionTerminal(t *testing.T) {
 		t.Fatalf("terminal response = %+v", response)
 	}
 }
+
+func TestSettleVoucherTreatsRateLimitAsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Retry-After", "3")
+		writer.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(writer).Encode(VoucherSettleResponse{Error: "slow down"})
+	}))
+	defer server.Close()
+
+	response, err := NewCAClient(server.URL).SettleVoucher(context.Background(), VoucherSettleRequest{})
+	if err == nil {
+		t.Fatal("rate-limited voucher was accepted")
+	}
+	if response == nil || !response.Retryable || response.ErrorCode != VoucherErrorRateLimited || response.Frozen {
+		t.Fatalf("rate-limited response = %+v", response)
+	}
+}

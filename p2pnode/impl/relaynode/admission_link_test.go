@@ -2,10 +2,14 @@ package relaynode
 
 import (
 	"bnfs_p2p/admission"
+	"bnfs_p2p/network"
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/p2pnode/impl/natnode"
 	"context"
+	"crypto/ecdh"
 	"crypto/ecdsa"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -405,5 +409,85 @@ func TestConnDeposit_ReserveGatesConnection(t *testing.T) {
 	if cBal != initialClientBalance || sBal != initialServerBalance {
 		t.Fatalf("业务角色门不得扣款: client=%d (want %d), server=%d (want %d)",
 			cBal, initialClientBalance, sBal, initialServerBalance)
+	}
+}
+
+func TestBusinessAdmissionRejectsLegacyBeforeRouting(t *testing.T) {
+	caPrivateKey, _ := admission.GenerateCAKey()
+	relay, err := NewRelayNode(nil, "127.0.0.1:0", "entry:9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	relay.SetAdmission(&AdmissionConfig{
+		Mode: AdmissionEnforce, SelfCert: issueCertFor(t, caPrivateKey, relay, admission.RoleRelay),
+		Verifier: verifierFor(t, caPrivateKey),
+	})
+	message := &network.Message{Header: &network.Header{
+		NodeId: "target", ConnectionId: "connection", LegSessionId: "leg",
+	}, Payload: []byte("legacy-public-key")}
+	if _, err := relay.onBusinessAdmission("target", message, "192.0.2.10:1234"); err == nil {
+		t.Fatal("legacy business hello was accepted in enforce mode")
+	}
+}
+
+func TestBusinessAdmissionTargetVerifiesEntryRelayAttestation(t *testing.T) {
+	caPrivateKey, _ := admission.GenerateCAKey()
+	entry, err := NewRelayNode(nil, "127.0.0.1:0", "entry:9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer entry.Close()
+	target, err := NewRelayNode(nil, "127.0.0.1:0", "target:9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	verifier := verifierFor(t, caPrivateKey)
+	entry.SetAdmission(&AdmissionConfig{
+		Mode: AdmissionEnforce, SelfCert: issueCertFor(t, caPrivateKey, entry, admission.RoleRelay), Verifier: verifier,
+	})
+	target.SetAdmission(&AdmissionConfig{
+		Mode: AdmissionEnforce, SelfCert: issueCertFor(t, caPrivateKey, target, admission.RoleRelay), Verifier: verifier,
+	})
+	clientIdentity, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPublicKey := hex.EncodeToString(clientIdentity.PublicKey().Bytes())
+	clientCertificateJSON := issueCertForPubKey(t, caPrivateKey, clientPublicKey, admission.RoleClient)
+	var clientCertificate admission.SignedCert
+	if err := json.Unmarshal(clientCertificateJSON, &clientCertificate); err != nil {
+		t.Fatal(err)
+	}
+	entry.accounts.putCert(clientCertificate.Cert.SubjectNodeID, &clientCertificate)
+	envelope, err := admission.NewBusinessAdmissionEnvelope(
+		clientIdentity, &clientCertificate, "server-target", "connection", "leg", "entry:9000", 0, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := envelope.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := &network.Message{Header: &network.Header{
+		NodeId: "server-target", ConnectionId: "connection", LegSessionId: "leg",
+	}, Payload: payload}
+	if _, err := entry.onBusinessAdmission("server-target", message, "192.0.2.10:1234"); err != nil {
+		t.Fatalf("entry relay rejected valid client proof: %v", err)
+	}
+	if _, err := target.onBusinessAdmission("server-target", message, "192.0.2.20:1234"); err != nil {
+		t.Fatalf("target relay rejected valid entry attestation: %v", err)
+	}
+	forwarded, err := admission.ParseBusinessAdmissionEnvelope(message.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwarded.ForwardAttestation.Signature = "tampered"
+	tamperedPayload, _ := forwarded.Marshal()
+	message.Payload = tamperedPayload
+	if _, err := target.onBusinessAdmission("server-target", message, "192.0.2.20:1234"); err == nil {
+		t.Fatal("target relay accepted a tampered entry attestation")
 	}
 }

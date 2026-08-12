@@ -148,6 +148,53 @@ func (c *CAClient) Verify(sc *SignedCert, opts VerifyOptions) error {
 	return Verify(pub, sc, opts)
 }
 
+func (c *CAClient) VerifyDenyDecision(decision *DenyDecision, relayID, requestID string) error {
+	c.mu.RLock()
+	publicKey := c.caPub
+	c.mu.RUnlock()
+	return VerifyDenyDecision(publicKey, decision, relayID, requestID, time.Now().UTC())
+}
+
+func (c *CAClient) VerifyStoredDenyDecision(decision *DenyDecision, relayID string) error {
+	if decision == nil {
+		return errors.New("admission: stored deny decision is nil")
+	}
+	c.mu.RLock()
+	publicKey := c.caPub
+	c.mu.RUnlock()
+	return VerifyDenyDecision(publicKey, decision, relayID, "", time.Unix(decision.IssuedAt, 0).UTC())
+}
+
+func (c *CAClient) VerifyRevocationEvent(event RevocationEvent) error {
+	c.mu.RLock()
+	publicKey := c.caPub
+	c.mu.RUnlock()
+	return VerifyRevocationEvent(publicKey, event)
+}
+
+func (c *CAClient) SyncRevocations(ctx context.Context, request RevocationSyncRequest) (*RevocationSyncResponse, error) {
+	var response RevocationSyncResponse
+	status, err := c.postJSONStatus(ctx, PathControlSync, request, &response)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("admission: CA revocation sync returned %d", status)
+	}
+	c.mu.RLock()
+	publicKey := c.caPub
+	c.mu.RUnlock()
+	if err := VerifyRevocationSyncResponse(publicKey, response, request.RelayID, request.Nonce); err != nil {
+		return nil, err
+	}
+	for _, event := range response.Events {
+		if err := VerifyRevocationEvent(publicKey, event); err != nil {
+			return nil, err
+		}
+	}
+	return &response, nil
+}
+
 // Issue 向 CA 申请一张证书（便于测试/自动化；生产中申请多为离线人工流程）。
 func (c *CAClient) Issue(ctx context.Context, reqBody IssueRequest) (*SignedCert, error) {
 	payload, err := json.Marshal(reqBody)
@@ -229,6 +276,14 @@ func (c *CAClient) SettleVoucher(ctx context.Context, req VoucherSettleRequest) 
 			}, fmt.Errorf("admission: CA 双签凭证结算暂时失败: %w", err)
 		}
 		return nil, err
+	}
+	if status == http.StatusTooManyRequests {
+		out.Retryable = true
+		out.ErrorCode = VoucherErrorRateLimited
+		if out.Error == "" {
+			out.Error = "CA 结算限流，请按 Retry-After 退避后重试"
+		}
+		return &out, fmt.Errorf("admission: CA 双签凭证结算被限流")
 	}
 	if status >= http.StatusInternalServerError {
 		out.Retryable = true

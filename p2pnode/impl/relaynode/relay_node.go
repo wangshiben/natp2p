@@ -150,6 +150,12 @@ type RelayNode struct {
 	// reservedPairs 是已退役连接保证金实现的遗留内存状态；当前业务角色门和双签结算均不读取。
 	reservedPairs sync.Map // map[string]*depositReservation
 
+	businessAdmissionMu     sync.Mutex
+	businessAdmissionNonces map[string]businessAdmissionProof
+	businessDeniedScopes    map[string]struct{}
+	businessDenyDecisions   map[string]admission.DenyDecision
+	revocationControl       *relayRevocationControl
+
 	// indexAddr 是本 relay 注册到的 index 地址（RegisterToIndex 设置, 可空）。
 	// onIndexRegistered 在与该 index 完成 HELLO、自动获知其真实 NodeID 后回调一次,
 	// 供上层（如 cmd）打印「已注册到 index: id=… addr=…」确认。
@@ -254,6 +260,9 @@ func NewRelayNode(privKey *ecdh.PrivateKey, listenAddr, publicAddr string) (*Rel
 		ctx:                     ctx,
 		cancel:                  cancel,
 		startedAt:               time.Now(),
+		businessAdmissionNonces: make(map[string]businessAdmissionProof),
+		businessDeniedScopes:    make(map[string]struct{}),
+		businessDenyDecisions:   make(map[string]admission.DenyDecision),
 	}
 	n.hostRouteBroadcastSend = func(ctx context.Context, link *peerLink, message *controlMessage) error {
 		return link.sendContext(ctx, message)
@@ -1468,6 +1477,29 @@ func (n *RelayNode) closePeerLinks() {
 	for _, link := range links {
 		link.close()
 	}
+}
+
+func (n *RelayNode) closeAllPeerLinks() {
+	n.closePeerLinks()
+}
+
+func (n *RelayNode) closePeerLinksForDeny(decision admission.DenyDecision) int {
+	n.mu.RLock()
+	candidates := make([]*peerLink, 0, len(n.peerLinks)+len(n.inboundLinks))
+	for _, link := range n.peerLinks {
+		candidates = append(candidates, link)
+	}
+	candidates = append(candidates, n.inboundLinks...)
+	n.mu.RUnlock()
+	closed := make(map[*peerLink]struct{})
+	for _, link := range candidates {
+		if _, duplicate := closed[link]; duplicate || !link.matchesDeny(decision) {
+			continue
+		}
+		closed[link] = struct{}{}
+		link.close()
+	}
+	return len(closed)
 }
 
 // 确保 RelayNode 实现 p2pnode.Node 接口。

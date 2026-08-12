@@ -6,6 +6,7 @@ import (
 	"bnfs_p2p/networkFrameWork"
 	"bnfs_p2p/networkFrameWork/client"
 	"context"
+	"encoding/json"
 	"net"
 	"sync"
 	"time"
@@ -40,6 +41,7 @@ type peerLink struct {
 	sc        *client.StreamClient
 	peerID    string // 对端 relay NodeId（HELLO 后获知）
 	peerAddr  string // 对端 relay 公网业务地址（HELLO 后获知）
+	peerCert  *admission.SignedCert
 	countedUp bool
 	// observedRemoteIP 是对端实际连入/被连的 IP（accept 侧从底层连接的 RemoteAddr 取得）。
 	// HELLO 里对端自报的 Addr 可能是 ":9000" 这类不可路由的占位（relay 不知道自己的公网 IP），
@@ -229,11 +231,18 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 	case ctrlHello:
 		// 无交互准入：校验对端 HELLO 携带的准入证书(indexSign)。绑定到对端自报 NodeId,
 		// 要求角色为 relay。enforce 下校验失败即关闭链路; warn/off 放行。未启用时直接放行。
+		var verifiedCertificate *admission.SignedCert
 		if pl.owner.admissionEnabled() {
 			cert, verr := pl.owner.verifyPeerCertJSON(cm.IndexSign, admission.RoleRelay, cm.NodeId)
 			if !pl.owner.gateAdmission(cert, verr, "control-hello "+cm.NodeId[:min(16, len(cm.NodeId))]) {
 				pl.clearStream(sc) // 关闭该 leg; outbound 由 manage 退避重连, inbound 直接废弃
 				return
+			}
+			if cert != nil {
+				var signed admission.SignedCert
+				if err := json.Unmarshal(cm.IndexSign, &signed); err == nil {
+					verifiedCertificate = &signed
+				}
 			}
 		}
 		pl.mu.Lock()
@@ -258,6 +267,7 @@ func (pl *peerLink) dispatch(sc *client.StreamClient, cm *controlMessage) {
 		}
 		pl.peerID = cm.NodeId
 		pl.peerAddr = cm.Addr
+		pl.peerCert = verifiedCertificate
 		if !wasCounted {
 			// 在 pl.mu 内完成 owner 计数上升，保证并发 close 不会先 down 后 up。
 			pl.owner.relayLinkUp(cm.NodeId)
@@ -380,6 +390,13 @@ func (pl *peerLink) close() {
 	if sc != nil {
 		sc.Close()
 	}
+}
+
+func (pl *peerLink) matchesDeny(decision admission.DenyDecision) bool {
+	pl.mu.Lock()
+	certificate := pl.peerCert
+	pl.mu.Unlock()
+	return certificateMatchesDeny(certificate, "", decision)
 }
 
 func nextBackoff(cur time.Duration) time.Duration {

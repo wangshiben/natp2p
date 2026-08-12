@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import {
+  buildMaliciousRelayCommand,
   buildSignedNodeAuthorization,
   createSerialHeartbeatPublisher,
   generateEphemeralServerIdentity,
@@ -108,6 +109,14 @@ test("normal Relay attachments map only to real control partitions", () => {
   assert.equal(normalPartitionForRelay("relay07"), "control_partition_b");
   assert.equal(normalPartitionForRelay("relay01"), "");
   assert.equal(normalPartitionForRelay("malicious-relay"), "");
+});
+
+test("dynamic production Relay persists an isolated revocation state", () => {
+  const command = buildMaliciousRelayCommand("relay04");
+  assert.match(command, /BNFS_CA_CERT_FILE=\/state\/certificate\.json/);
+  assert.match(command, /BNFS_REVOCATION_STATE_FILE=\/state\/mixed-revocations\.json/);
+  assert.match(command, /-peer relay04:9000/);
+  assert.throws(() => buildMaliciousRelayCommand("malicious-relay"), /mixed_path_relay_invalid/);
 });
 
 test("mixed path trigger rejects untrusted fields and scenarios", () => {

@@ -23,10 +23,20 @@ import (
 
 const (
 	issueTokenFileEnv          = "BNFS_CA_ISSUE_TOKEN_FILE"
+	securityProfileEnv         = "BNFS_SECURITY_PROFILE"
 	certificateFileEnv         = "BNFS_CA_CERT_FILE"
 	billingKeyFileEnv          = "BNFS_BILLING_KEY_FILE"
+	revocationStateFileEnv     = "BNFS_REVOCATION_STATE_FILE"
 	maximumCertificateFileSize = 64 << 10
 )
+
+func configuredSecurityProfile() (relaynode.SecurityProfile, error) {
+	value := os.Getenv(securityProfileEnv)
+	if value == "" {
+		value = string(relaynode.SecurityProfileProduction)
+	}
+	return relaynode.ParseSecurityProfile(value)
+}
 
 type billingPrivateKeyJWK struct {
 	KeyType     string   `json:"kty"`
@@ -273,7 +283,14 @@ func validateCertificateBillingBinding(
 // SetupRelay 为 relay/index 节点配置准入：拉公钥 + 申请 relay 证书 + SetAdmission。
 // caURL 为空则不启用（直接返回 nil）。
 func SetupRelay(rn *relaynode.RelayNode, caURL, modeStr string) error {
+	profile, err := configuredSecurityProfile()
+	if err != nil {
+		return err
+	}
 	if caURL == "" {
+		if profile == relaynode.SecurityProfileProduction {
+			return fmt.Errorf("生产安全档要求配置 CA URL；本地开发请显式设置 %s=development", securityProfileEnv)
+		}
 		return nil
 	}
 	cc, err := newClient(caURL)
@@ -283,6 +300,13 @@ func SetupRelay(rn *relaynode.RelayNode, caURL, modeStr string) error {
 	billingPrivateKey, independentBilling, err := configuredBillingPrivateKey()
 	if err != nil {
 		return err
+	}
+	if profile == relaynode.SecurityProfileProduction && !independentBilling {
+		return fmt.Errorf("生产安全档要求通过 %s 配置独立扣费私钥", billingKeyFileEnv)
+	}
+	revocationStatePath := os.Getenv(revocationStateFileEnv)
+	if profile == relaynode.SecurityProfileProduction && revocationStatePath == "" {
+		return fmt.Errorf("生产安全档要求通过 %s 配置持久撤销状态文件", revocationStateFileEnv)
 	}
 	var cert *admission.SignedCert
 	if independentBilling {
@@ -307,11 +331,17 @@ func SetupRelay(rn *relaynode.RelayNode, caURL, modeStr string) error {
 	if err != nil {
 		return err
 	}
-	rn.SetAdmission(&relaynode.AdmissionConfig{
-		Mode:     ParseMode(modeStr, true),
-		SelfCert: cert,
-		Verifier: cc,
-	})
+	if err := rn.SetAdmissionChecked(&relaynode.AdmissionConfig{
+		Mode: ParseMode(modeStr, true), Profile: profile, SelfCert: cert, Verifier: cc,
+		RevocationStatePath: revocationStatePath,
+	}); err != nil {
+		return err
+	}
+	if revocationStatePath != "" {
+		if err := rn.ConfigureRevocationControl(cc, cert, revocationStatePath); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("已启用网络准入: CA=%s mode=%s role=relay certificate=%s\n", caURL, modeStr, certificateSource())
 	return nil
 }
@@ -319,7 +349,14 @@ func SetupRelay(rn *relaynode.RelayNode, caURL, modeStr string) error {
 // SetupNat 为 NAT 节点申请角色证书(indexSign)并注入。caURL 为空则不启用。
 // role 用 admission.RoleServer / admission.RoleClient。
 func SetupNat(node *natnode.NATNode, caURL string, role admission.Role) error {
+	profile, err := configuredSecurityProfile()
+	if err != nil {
+		return err
+	}
 	if caURL == "" {
+		if profile == relaynode.SecurityProfileProduction {
+			return fmt.Errorf("生产安全档要求配置 CA URL；本地开发请显式设置 %s=development", securityProfileEnv)
+		}
 		return nil
 	}
 	cc, err := newClient(caURL)
@@ -329,6 +366,9 @@ func SetupNat(node *natnode.NATNode, caURL string, role admission.Role) error {
 	billingPrivateKey, independentBilling, err := configuredBillingPrivateKey()
 	if err != nil {
 		return err
+	}
+	if profile == relaynode.SecurityProfileProduction && !independentBilling {
+		return fmt.Errorf("生产安全档要求通过 %s 配置独立扣费私钥", billingKeyFileEnv)
 	}
 	var cert *admission.SignedCert
 	if independentBilling {

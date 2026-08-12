@@ -107,22 +107,24 @@ type VoucherSettleRequest struct {
 // leaves the voucher and every accounting watermark untouched, so the exact
 // same voucher can be submitted again after the reported condition is fixed.
 type VoucherSettleResponse struct {
-	VoucherID   string `json:"voucher_id,omitempty"`
-	Delta       int64  `json:"delta"`
-	Balance     int64  `json:"balance"`
-	RelayCredit int64  `json:"relay_credit"`
-	Allow       bool   `json:"allow"`
-	Replayed    bool   `json:"replayed,omitempty"`
-	Stale       bool   `json:"stale,omitempty"`
-	Frozen      bool   `json:"frozen,omitempty"`
-	ErrorCode   string `json:"error_code,omitempty"`
-	Retryable   bool   `json:"retryable,omitempty"`
-	Error       string `json:"error,omitempty"`
+	VoucherID    string        `json:"voucher_id,omitempty"`
+	Delta        int64         `json:"delta"`
+	Balance      int64         `json:"balance"`
+	RelayCredit  int64         `json:"relay_credit"`
+	Allow        bool          `json:"allow"`
+	Replayed     bool          `json:"replayed,omitempty"`
+	Stale        bool          `json:"stale,omitempty"`
+	Frozen       bool          `json:"frozen,omitempty"`
+	ErrorCode    string        `json:"error_code,omitempty"`
+	Retryable    bool          `json:"retryable,omitempty"`
+	Error        string        `json:"error,omitempty"`
+	DenyDecision *DenyDecision `json:"deny_decision,omitempty"`
 }
 
 const (
 	VoucherErrorInsufficientFunds      = "insufficient_funds"
 	VoucherErrorTemporarilyUnavailable = "temporarily_unavailable"
+	VoucherErrorRateLimited            = "rate_limited"
 )
 
 // ReserveRequest 是 relay 在【建立一条业务连接时】向 CA 请求「连接保证金」双扣的请求。
@@ -176,4 +178,5 @@ const (
 	PathReserve       = "/reserve"
 	PathVoucherSettle = "/v1/channel/voucher"
 	PathAuthorizeNode = "/v1/node/authorize"
+	PathControlSync   = "/v1/control/sync"
 )

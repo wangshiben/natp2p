@@ -21,6 +21,10 @@ const adversarySeed = process.env.BNFS_CHAOS_ADVERSARY_SEED ?? "bnfs-container-a
 const ipFamilyPlanFile = process.env.BNFS_CHAOS_IP_FAMILY_PLAN_FILE ?? "";
 const reconnectGateURL = process.env.BNFS_CHAOS_RECONNECT_GATE_URL ?? "";
 const reconnectGateToken = process.env.BNFS_CHAOS_RECONNECT_GATE_TOKEN ?? "";
+const securityProfile = process.env.BNFS_SECURITY_PROFILE ?? "development";
+if (!["development", "staging", "production"].includes(securityProfile)) {
+  throw new Error("BNFS_SECURITY_PROFILE must be development, staging, or production");
+}
 const caClientRoleServices = parseCAClientRoleServices(
   process.env.BNFS_CHAOS_CA_CLIENT_ROLE_SERVICES ?? "",
 );
@@ -363,11 +367,15 @@ function caWebService() {
 }
 
 function nodeService(name, command, attachedNetworks) {
+  const environment = frameworkLogEnvironment("/artifacts/.private/logs");
+  if (securityProfile === "production") {
+    environment.push("BNFS_REVOCATION_STATE_FILE=/artifacts/.private/revocations.json");
+  }
   const service = {
     ...commonService(name),
     command,
     networks: attachedNetworks,
-    environment: frameworkLogEnvironment("/artifacts/.private/logs"),
+    environment,
     healthcheck: {
       test: ["CMD-SHELL", "kill -0 1"],
       interval: "2s",
@@ -464,6 +472,7 @@ function adversaryService(name, role, peerURL, attachedNetworks) {
 function frameworkLogEnvironment(directory) {
   return [
     `BNFS_LOG_DIRECTORY=${directory}`,
+    `BNFS_SECURITY_PROFILE=${securityProfile}`,
     "BNFS_LOG_LEVEL=info",
     "BNFS_LOG_MAX_SIZE_MIB=64",
     "BNFS_LOG_ROTATE_INTERVAL=24h",
