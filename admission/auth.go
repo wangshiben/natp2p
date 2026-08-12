@@ -9,8 +9,7 @@ import (
 
 const minimumBearerTokenLength = 32
 
-// LoadBearerTokenFile reads a test/deployment bearer credential without ever
-// placing the credential itself in process arguments or logs.
+// LoadBearerTokenFile 从文件读取测试或部署用 Bearer 凭据，避免凭据出现在进程参数或日志中。
 func LoadBearerTokenFile(filename string) (string, error) {
 	if filename == "" {
 		return "", errors.New("admission: bearer token file is empty")
@@ -29,8 +28,8 @@ func LoadBearerTokenFile(filename string) (string, error) {
 	return token, nil
 }
 
-// ValidateBearerToken accepts the RFC 6750 bearer alphabet and rejects short
-// credentials. The local harness provisions 256-bit random tokens.
+// ValidateBearerToken 按 RFC 6750 字符集校验 Bearer Token，并拒绝长度不足的凭据。
+// 本地测试环境默认生成 256 位随机 Token。
 func ValidateBearerToken(token string) error {
 	if len(token) < minimumBearerTokenLength {
 		return fmt.Errorf("admission: bearer token must contain at least %d characters", minimumBearerTokenLength)

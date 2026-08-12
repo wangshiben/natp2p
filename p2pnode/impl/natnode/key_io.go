@@ -63,9 +63,8 @@ func LoadPrivateKeyFromFile(path string) (*ecdh.PrivateKey, error) {
 	return LoadPrivateKeyFromHex(string(data))
 }
 
-// LoadOrCreatePrivateKeyFile loads a stable node identity or creates it once.
-// Creation publishes a fully synced temporary file with an atomic hard link;
-// concurrent creators load the winner and never overwrite an existing key.
+// LoadOrCreatePrivateKeyFile 加载稳定节点身份，不存在时只创建一次。
+// 创建时先完整同步临时文件，再通过原子硬链接发布；并发创建者读取胜出文件且绝不覆盖旧密钥。
 func LoadOrCreatePrivateKeyFile(path string) (*ecdh.PrivateKey, error) {
 	if path == "" {
 		return nil, fmt.Errorf("natnode: identity key path is empty")

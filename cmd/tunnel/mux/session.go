@@ -1,12 +1,10 @@
-// Package mux multiplexes many logical byte streams over a single
-// p2pnode.Connection. Each P2P Message carries exactly one frame:
+// Package mux 在单条 p2pnode.Connection 上复用多条逻辑字节流。
+// 每条 P2P Message 只携带一个帧：
 //
-//	[1 byte type][4 bytes streamID big-endian][payload...]
+//	[1 byte type][4 bytes streamID big-endian][payload...]（字段长度均为字节）
 //
-// Frame types: OPEN (client announces a new stream), DATA (stream bytes),
-// CLOSE (stream finished), and SESSION_CLOSE (the tunnel is shutting down).
-// The side that dials local TCP connections opens streams; the peer accepts
-// them via the Accept channel.
+// 帧类型包括 OPEN（客户端声明新流）、DATA（流数据）、CLOSE（流结束）和
+// SESSION_CLOSE（隧道关闭）。拨打本地 TCP 连接的一侧打开流，对端通过 Accept 通道接收。
 package mux
 
 import (
@@ -86,10 +84,10 @@ const (
 	headerSeq  = 13 // type + streamID + seq(8)
 )
 
-// ErrSessionClosed is returned once the underlying connection is gone.
+// ErrSessionClosed 表示底层连接已经断开。
 var ErrSessionClosed = errors.New("mux: session closed")
 
-// Session multiplexes streams over one p2pnode.Connection.
+// Session 在一条 p2pnode.Connection 上复用多条流。
 type Session struct {
 	conn   p2pnode.Connection
 	ctx    context.Context
@@ -112,9 +110,8 @@ type Session struct {
 	closed   bool
 }
 
-// NewSession wraps conn. If isClient is true, OpenStream allocates odd IDs;
-// the server side allocates nothing and only accepts. Using a client flag
-// avoids ID collisions if both sides ever open (here only client opens).
+// NewSession 包装 conn。isClient 为 true 时 OpenStream 分配奇数 ID；
+// 服务端只接收而不分配。客户端标志可在双方都可能开流时避免 ID 冲突，本实现仅客户端开流。
 func NewSession(ctx context.Context, conn p2pnode.Connection, isClient bool) *Session {
 	cctx, cancel := context.WithCancel(ctx)
 	s := &Session{
@@ -133,8 +130,7 @@ func NewSession(ctx context.Context, conn p2pnode.Connection, isClient bool) *Se
 	return s
 }
 
-// Accept returns the next stream opened by the peer. Blocks until one arrives
-// or the session closes (then returns nil, ErrSessionClosed).
+// Accept 返回对端打开的下一条流；它会阻塞到流到达或会话关闭，关闭时返回 ErrSessionClosed。
 func (s *Session) Accept() (*Stream, error) {
 	s.mu.Lock()
 	closed := s.closed
@@ -157,7 +153,7 @@ func (s *Session) Accept() (*Stream, error) {
 	}
 }
 
-// OpenStream allocates a new stream ID and sends an OPEN frame to the peer.
+// OpenStream 分配新流 ID，并向对端发送 OPEN 帧。
 func (s *Session) OpenStream() (*Stream, error) {
 	return s.OpenStreamContext(s.ctx)
 }
@@ -181,7 +177,7 @@ func (s *Session) OpenStreamContext(ctx context.Context) (*Stream, error) {
 	return st, nil
 }
 
-// Close tears down the session and all streams.
+// Close 拆除会话及其全部逻辑流。
 func (s *Session) Close() error {
 	return s.shutdown(true)
 }

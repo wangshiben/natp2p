@@ -287,7 +287,7 @@ func newFrameRouteEntry(dest FrameRelayEndpoint) *frameRouteEntry {
 //
 // 返回 (Header, true) 表示这是一条业务首帧，relay 可以基于 Header.ConnectionId 决定路由；
 // 返回 (nil, false) 的几种情况：
-//   - frame == nil
+//   - frame == nil（帧指针为空）
 //   - SeqId != 0：非首帧，relay 应该按已有映射跟随转发，无需再解析
 //   - Payload 长度不足以容纳 Header
 //   - Header 解析失败

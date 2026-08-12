@@ -15,12 +15,10 @@ type Stream interface {
 	SetCryptoSuite(suite EncrypSuite)
 }
 
-// InitialWriteStream exposes the point at which a message's initial frame batch
-// has been accepted by the transport. The callback runs at most once, after the
-// initial write succeeds but before the method waits for the final ACK.
+// InitialWriteStream 暴露消息首批帧被传输层接收的时点。
+// 回调最多执行一次，发生在首次写入成功之后、等待最终 ACK 之前。
 //
-// Callers use this narrow ordering boundary to preserve a global application
-// sequence without serializing the full end-to-end ACK wait.
+// 调用方可利用这一窄顺序边界保持应用全局序列，无需串行等待完整端到端 ACK。
 type InitialWriteStream interface {
 	SendMessageWithInitialWrite(ctx context.Context, message *Message, onInitialWrite func()) error
 }

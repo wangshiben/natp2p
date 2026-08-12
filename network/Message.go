@@ -53,7 +53,9 @@ const (
 var MagicHeaderBytes = []byte(MagicHeader)
 
 // ParseHeader 解析头部
-// new:  [MagicHeader(9 bytes)]+ [NodeId version 1 bytes] + [node ID (64 bytes)]+[RouteNameLength(8 bytes, LittleEndian)] + [RouteName] + [PayloadLength(8 bytes, LittleEndian)]+[ConnectionId(36)] + [Padding zeros]
+// 新格式： [MagicHeader(9 bytes)] + [NodeId version 1 byte] + [node ID (64 bytes)]
+// + [RouteNameLength(8 bytes, LittleEndian)] + [RouteName]
+// + [PayloadLength(8 bytes, LittleEndian)] + [ConnectionId(36)] + [Padding zeros]
 func ParseHeader(headerBytes []byte) (*Header, error) {
 	index := 0
 

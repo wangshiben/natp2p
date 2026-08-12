@@ -7,7 +7,7 @@ import (
 	"bnfs_p2p/p2pnode"
 )
 
-// readLoop pulls frames off the P2P connection and dispatches them.
+// readLoop 从 P2P 连接读取帧并完成分派。
 func (s *Session) readLoop() {
 	defer s.shutdown(false)
 	for {
@@ -56,7 +56,7 @@ func (s *Session) readLoop() {
 	}
 }
 
-// handleOpen registers a peer-opened stream and queues it for Accept.
+// handleOpen 登记对端打开的流，并放入 Accept 队列。
 func (s *Session) handleOpen(id uint32) {
 	s.inboundStream(id)
 }
@@ -82,7 +82,7 @@ func (s *Session) inboundStream(id uint32) *Stream {
 	return st
 }
 
-// sendOpen sends an OPEN frame (no seq, no window — control frame, must precede DATA).
+// sendOpen 发送 OPEN 控制帧；它没有序号和窗口，且必须先于 DATA。
 func (s *Session) sendOpen(ctx context.Context, id uint32) error {
 	buf := make([]byte, headerBase)
 	buf[0] = frameOpen
@@ -92,7 +92,7 @@ func (s *Session) sendOpen(ctx context.Context, id uint32) error {
 	})
 }
 
-// sendData sends one DATA frame carrying a per-stream sequence number.
+// sendData 发送一帧 DATA，并携带流内序号。
 // 同时占用本流和 carrier 发送窗口各一个槽；conn.Send 阻塞到端到端 ACK 才返回。
 // 两级窗口既允许多个业务流并行，又对总 ACK tracker 和缓冲内存设置硬上限。
 func (s *Session) sendData(id uint32, seq uint64, data []byte, streamWindow chan struct{}) error {
@@ -117,7 +117,7 @@ func (s *Session) sendData(id uint32, seq uint64, data []byte, streamWindow chan
 	return s.conn.Send(s.ctx, &p2pnode.Message{Type: p2pnode.MsgAppData, Payload: buf})
 }
 
-// sendClose sends a CLOSE frame carrying finalSeq (= total DATA frames sent on this stream).
+// sendClose 发送 CLOSE 帧，其中 finalSeq 等于本流已发送的 DATA 帧总数。
 // 不占窗口：调用方(Stream.Close)已等齐本流所有 DATA 发送完成，CLOSE 之后再无在途 DATA。
 func (s *Session) sendClose(ctx context.Context, id uint32, finalSeq uint64) error {
 	buf := make([]byte, headerSeq)
@@ -152,14 +152,14 @@ func (s *Session) stream(id uint32) *Stream {
 	return s.streams[id]
 }
 
-// removeStream drops a stream from the table.
+// removeStream 从会话表中移除逻辑流。
 func (s *Session) removeStream(id uint32) {
 	s.mu.Lock()
 	delete(s.streams, id)
 	s.mu.Unlock()
 }
 
-// Context exposes the session context for callers.
+// Context 向调用方暴露会话上下文。
 func (s *Session) Context() context.Context {
 	return s.ctx
 }

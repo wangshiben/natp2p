@@ -12,9 +12,8 @@ const (
 	currentPolicyShareDenominator = uint64(100)
 )
 
-// CurrentPolicyDigest identifies the immutable billing policy used by the CA.
-// The digest binds the unique-byte unit, the hard unsigned window and the
-// cumulative 95/5 Relay/CA split including its rounding rule.
+// CurrentPolicyDigest 标识 CA 使用的不可变计费策略。
+// 摘要绑定唯一字节计量单位、硬性未签名窗口以及包含舍入规则的 Relay/CA 累计 95/5 分成。
 func CurrentPolicyDigest() Digest {
 	artifact := make([]byte, 0, len(currentPolicyDomain)+3*8+1)
 	artifact = append(artifact, currentPolicyDomain...)
@@ -29,9 +28,8 @@ func CurrentPolicyDigest() Digest {
 	return sha256.Sum256(artifact)
 }
 
-// CurrentPolicyCumulativeTotals evaluates the fixed policy from the channel's
-// cumulative unique-byte watermark. Taking differences between two totals
-// makes settlement independent of voucher batching and retry boundaries.
+// CurrentPolicyCumulativeTotals 根据通道累计唯一字节水位计算固定策略总额。
+// 通过两个累计值求差，使结算结果不受凭证批次和重试边界影响。
 func CurrentPolicyCumulativeTotals(cumulative uint64) (relay, ca uint64, err error) {
 	if cumulative > MaxBillableBytes {
 		return 0, 0, fmt.Errorf("billingvoucher: cumulative policy input exceeds %d", MaxBillableBytes)

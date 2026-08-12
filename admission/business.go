@@ -31,9 +31,8 @@ var (
 	ErrBusinessAdmissionReplay   = errors.New("business admission proof replay rejected")
 )
 
-// BusinessAdmissionEnvelopeV2 is the signed source proof carried in an
-// ordinary business routing hello. It is deliberately independent of the
-// transport framing so the same bytes survive TCP/KCP and relay bridging.
+// BusinessAdmissionEnvelopeV2 是普通业务路由握手携带的来源签名证明。
+// 它与传输层帧格式解耦，因此同一份证明可跨 TCP、KCP 和 Relay 桥接保持不变。
 type BusinessAdmissionEnvelopeV2 struct {
 	Version              int                        `json:"version"`
 	SourceNodeID         string                     `json:"source_node_id"`

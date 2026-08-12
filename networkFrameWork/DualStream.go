@@ -274,9 +274,8 @@ func (d *DualStream) Close() error {
 	return nil
 }
 
-// IsClosed reports whether the logical stream has stopped or no usable carrier
-// remains. Relay registration cleanup uses this instead of treating receive
-// silence as proof that a still-connected TCP backup is dead.
+// IsClosed 判断逻辑流是否已停止或不存在可用载体。
+// Relay 注册清理使用该状态，而不会把接收静默误当成已连接 TCP 备用路径死亡。
 func (d *DualStream) IsClosed() bool {
 	select {
 	case <-d.ctx.Done():
@@ -1568,12 +1567,9 @@ func (d *DualStream) startKeepAlive() {
 	}()
 }
 
-// preferTCPBackupAfterKCPHeartbeatTimeout handles the one failure mode that the
-// generic SendMessage path intentionally cannot classify: its caller deadline
-// expired while a KCP send was waiting for ACK. Application deadlines must not
-// evict a carrier, but a dedicated heartbeat deadline is a transport-quality
-// signal. Keep the KCP leg available for later recovery and move subsequent
-// traffic to an already-connected TCP backup.
+// preferTCPBackupAfterKCPHeartbeatTimeout 处理通用 SendMessage 路径无法判断的一种故障：
+// KCP 发送等待 ACK 时调用方截止时间到期。应用截止时间不能淘汰载体，
+// 但专用心跳超时属于传输质量信号；因此保留 KCP leg 供后续恢复，并把新流量切到已连接的 TCP 备用路径。
 func (d *DualStream) preferTCPBackupAfterKCPHeartbeatTimeout() bool {
 	primaryID, primary, backupID, backup := d.sendOrder()
 	if primary == nil || backup == nil ||

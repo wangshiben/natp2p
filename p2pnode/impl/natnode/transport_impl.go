@@ -151,9 +151,8 @@ func (t *NATTransport) Register(ctx context.Context, relayAddr string, publicKey
 	return networkFrameWork.TryRegisterRelayStreamWithSign(publicKeyHex, relayAddr, t.signJSON)
 }
 
-// RegisterAtRelay bypasses the single-active Relay failover policy and registers
-// at exactly relayAddr. Persistent service listeners use this path so multiple
-// independent carriers cannot accidentally converge on CurrentRelay().
+// RegisterAtRelay 绕过单活 Relay 故障转移策略，精确注册到 relayAddr。
+// 持久服务监听使用此路径，避免多个独立载体意外汇聚到 CurrentRelay()。
 func (t *NATTransport) RegisterAtRelay(ctx context.Context, relayAddr string, publicKeyHex string) (network.Stream, error) {
 	select {
 	case <-ctx.Done():

@@ -273,9 +273,8 @@ func LegTransport(s network.Stream) string {
 	return "tcp"
 }
 
-// ActiveLegCount reports the currently attached physical legs of a stream.
-// Service health snapshots use it to distinguish a reconnecting carrier from
-// one that still has an actual TCP/KCP path.
+// ActiveLegCount 返回流当前挂接的物理 leg 数量。
+// 服务健康快照据此区分正在重连的载体与仍有真实 TCP/KCP 路径的载体。
 func ActiveLegCount(stream network.Stream) int {
 	if stream == nil {
 		return 0

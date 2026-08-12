@@ -90,8 +90,8 @@ type SettleResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// VoucherSettleRequest submits one canonical, mutually signed cumulative usage
-// voucher. []byte is represented as standard base64 by encoding/json.
+// VoucherSettleRequest 提交一份规范化、双方签名的累计用量凭证。
+// encoding/json 会把 []byte 编码为标准 Base64。
 type VoucherSettleRequest struct {
 	CanonicalVoucher   []byte      `json:"canonical_voucher"`
 	PayerPublicKey     string      `json:"payer_public_key"`
@@ -102,10 +102,8 @@ type VoucherSettleRequest struct {
 	RelayCert          *SignedCert `json:"relay_cert"`
 }
 
-// VoucherSettleResponse reports the authoritative accounting decision. Delta
-// and RelayCredit are zero when no new mutation occurred. A retryable response
-// leaves the voucher and every accounting watermark untouched, so the exact
-// same voucher can be submitted again after the reported condition is fixed.
+// VoucherSettleResponse 返回权威计费裁决；没有产生新变更时 Delta 和 RelayCredit 均为零。
+// 可重试响应不会修改凭证或任何计费水位，相关条件恢复后可原样重交同一凭证。
 type VoucherSettleResponse struct {
 	VoucherID    string        `json:"voucher_id,omitempty"`
 	Delta        int64         `json:"delta"`

@@ -605,8 +605,7 @@ func (t *TcpStream) keepLive() {
 				break
 			}
 			if !probeQueued {
-				// The probe never left this logical stream (usually local mux
-				// backpressure). It is not evidence that the peer is dead.
+				// 探测未离开当前逻辑流，通常是本地 MUX 背压，不能据此判定对端死亡。
 				if backoff < 32*time.Second {
 					backoff *= 2
 				}
@@ -631,9 +630,9 @@ func (t *TcpStream) keepLive() {
 	}
 }
 
-// StartKeepAlive starts logical-stream liveness detection once. Relay carrier
-// streams intentionally do not call this because DualStream owns their leg
-// lifecycle; persistent service sessions call it after the Noise handshake.
+// StartKeepAlive 只启动一次逻辑流存活检测。
+// Relay 载体流由 DualStream 管理 leg 生命周期，因此不会调用本方法；
+// 持久服务会话则在 Noise 握手后调用。
 func (t *TcpStream) StartKeepAlive() {
 	t.keepAliveOnce.Do(func() {
 		go t.keepLive()
@@ -977,7 +976,7 @@ func (t *TcpStream) observeRTT(sample time.Duration) {
 		t.srttMicros.Store(us)
 		return
 	}
-	// srtt = 7/8*srtt + 1/8*sample
+	// 平滑往返时间更新：srtt = 7/8*srtt + 1/8*sample。
 	t.srttMicros.Store((prev*7 + us) / 8)
 }
 
@@ -1123,9 +1122,8 @@ func (t *TcpStream) writeBytesLockedContext(ctx context.Context, buf []byte) err
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		// SetWriteDeadline(time.Now) is how caller cancellation interrupts a
-		// blocked net.Conn.Write. That timeout belongs to this operation, not to
-		// the transport lifetime, so it must not poison the shared logical leg.
+		// SetWriteDeadline(time.Now) 用于在调用方取消时中断阻塞的 net.Conn.Write。
+		// 该超时只属于本次操作而非传输生命周期，不能污染共享逻辑 leg。
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}

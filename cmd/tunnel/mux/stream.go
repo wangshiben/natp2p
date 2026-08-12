@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 )
 
-// Stream is one logical byte stream over the session. It implements
-// io.ReadWriteCloser so it can be piped to/from a net.Conn with io.Copy.
+// Stream 是会话中的一条逻辑字节流，实现 io.ReadWriteCloser，
+// 因此可以通过 io.Copy 与 net.Conn 双向传输。
 type Stream struct {
 	sess *Session
 	id   uint32
@@ -115,8 +115,7 @@ func (st *Stream) signalData() {
 	}
 }
 
-// Read implements io.Reader. Blocks until data is available or the stream
-// closes (then returns io.EOF once the buffer drains).
+// Read 实现 io.Reader；它阻塞到数据可用或流关闭，缓冲区排空后返回 io.EOF。
 func (st *Stream) Read(p []byte) (int, error) {
 	for {
 		st.mu.Lock()
@@ -178,7 +177,7 @@ func (st *Stream) Write(p []byte) (int, error) {
 	return total, nil
 }
 
-// Close sends a CLOSE frame (carrying finalSeq = total DATA frames sent) to the peer
+// Close 向对端发送携带最终 DATA 帧总数 finalSeq 的 CLOSE 帧。
 // and tears down the local stream. 调用前所有 DATA 已在 Write 中等齐发送完成，
 // 故 CLOSE 之后对端不会再收到本流的 DATA(finalSeq 即收端排空目标)。
 func (st *Stream) Close() error {
@@ -205,8 +204,7 @@ func (st *Stream) Close() error {
 	return nil
 }
 
-// closeLocal marks the stream closed without sending a frame (used when the
-// peer initiated the close or the session died).
+// closeLocal 仅在本地标记流关闭而不发送帧，用于对端主动关闭或会话失效的情况。
 func (st *Stream) closeLocal() {
 	st.once.Do(func() {
 		st.mu.Lock()

@@ -27,17 +27,15 @@ const (
 	serviceConnectionTombstoneLimit = 4096
 )
 
-// ServiceOptions configures a persistent NatServer service registration.
-// The registration carrier remains active while each client receives a separate
-// connectionID-scoped logical session.
+// ServiceOptions 配置 NatServer 持久服务注册。
+// 注册载体持续存活，每个客户端获得按 connectionID 隔离的逻辑会话。
 type ServiceOptions struct {
 	MaxSessions      int
 	AcceptQueue      int
 	HandshakeTimeout time.Duration
 }
 
-// ServiceListener accepts independent inbound service sessions from a persistent
-// NatServer-to-Relay carrier.
+// ServiceListener 从持久的 NatServer 到 Relay 载体接收独立入站服务会话。
 type ServiceListener struct {
 	node   *NATNode
 	addr   string
@@ -105,14 +103,14 @@ type ServiceListenerSnapshot struct {
 	Sessions          []ServiceSessionSnapshot `json:"sessions"`
 }
 
-// ListenService registers this node as a persistent service endpoint. Unlike
-// Listen, a client session never consumes or changes the registration carrier.
+// ListenService 将本节点注册为持久服务端点。
+// 与 Listen 不同，客户端会话不会消耗或改变注册载体。
 func (n *NATNode) ListenService(ctx context.Context, addr string, options ServiceOptions) (*ServiceListener, error) {
 	return n.listenServiceRelays(ctx, []string{addr}, options, false)
 }
 
-// ListenServiceRelays registers one persistent carrier at each requested Relay.
-// All carriers share one Accept queue and one global session limit.
+// ListenServiceRelays 在每个指定 Relay 注册一条持久载体。
+// 所有载体共享一个 Accept 队列和一个全局会话上限。
 func (n *NATNode) ListenServiceRelays(ctx context.Context, relays []string, options ServiceOptions) (*ServiceListener, error) {
 	return n.listenServiceRelays(ctx, relays, options, true)
 }
@@ -206,7 +204,7 @@ func normalizeServiceOptions(options ServiceOptions) ServiceOptions {
 	return options
 }
 
-// Accept waits for one independently authenticated client service session.
+// Accept 等待一条已独立认证的客户端服务会话。
 func (listener *ServiceListener) Accept(ctx context.Context) (p2pnode.Connection, error) {
 	select {
 	case <-listener.ctx.Done():
@@ -288,8 +286,7 @@ func (listener *ServiceListener) Snapshot() ServiceListenerSnapshot {
 	}
 }
 
-// Close stops new sessions, closes the carrier, and tears down all active
-// service connections without changing the generic NATNode P2P lifecycle.
+// Close 停止新会话、关闭载体并拆除全部活动服务连接，不改变通用 NATNode P2P 生命周期。
 func (listener *ServiceListener) Close() error {
 	listener.closeOnce.Do(func() {
 		listener.cancel()
@@ -770,8 +767,7 @@ func (n *NATNode) registerServiceCarrier(addr string, exact bool) (*relayEntry, 
 	return entry, nil
 }
 
-// DialService creates a fresh Client/Server session and intentionally does not
-// reuse NATNode's peer-to-peer connection cache.
+// DialService 创建新的 Client/Server 会话，并有意不复用 NATNode 的 P2P 连接缓存。
 func (n *NATNode) DialService(ctx context.Context, target p2pnode.NodeID) (p2pnode.Connection, error) {
 	targetRelay, err := n.relayFailover.currentTarget()
 	if err != nil {

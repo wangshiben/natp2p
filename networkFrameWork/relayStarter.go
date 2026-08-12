@@ -78,8 +78,8 @@ func (r *RelayStarter) startListen() {
 		return
 	}
 	// 1. 通过密码和盐生成密钥
-	//key := pbkdf2.Key([]byte("wangshibenbens"), []byte("your_salt"), 1024, 32, sha1.New)
-	//crypt, err := kcp.NewAESBlockCrypt(key)
+	// 旧版加密示例：key := pbkdf2.Key([]byte("wangshibenbens"), []byte("your_salt"), 1024, 32, sha1.New)
+	// 旧版加密示例：crypt, err := kcp.NewAESBlockCrypt(key)
 	//if err != nil {
 	//	panic(err)
 	//	return
@@ -176,17 +176,17 @@ func (r *RelayStarter) setStartError(err error) {
 	r.lifecycleMu.Unlock()
 }
 
-// Ready closes after both TCP and KCP listeners have bound successfully.
+// Ready 在 TCP 和 KCP 监听器都成功绑定后关闭。
 func (r *RelayStarter) Ready() <-chan struct{} {
 	return r.ready
 }
 
-// Done closes after startup fails or all listeners have been released.
+// Done 在启动失败或全部监听器释放后关闭。
 func (r *RelayStarter) Done() <-chan struct{} {
 	return r.done
 }
 
-// StartError reports why startup failed. It is stable after Done closes before Ready.
+// StartError 返回启动失败原因；若 Done 先于 Ready 关闭，此值随后保持稳定。
 func (r *RelayStarter) StartError() error {
 	r.lifecycleMu.RLock()
 	defer r.lifecycleMu.RUnlock()

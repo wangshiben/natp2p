@@ -148,8 +148,7 @@ func (n *NATNode) relayActivated(address string) {
 	logx.Infof("[natnode] 注册到 relay: %s", address)
 }
 
-// RelayCandidates returns the current quality-ranked Relay candidates without
-// changing the single-active failover cursor.
+// RelayCandidates 返回当前按质量排序的 Relay 候选，不修改单活故障转移游标。
 func (n *NATNode) RelayCandidates(limit int) []string {
 	if n.relayFailover == nil || limit <= 0 {
 		return nil
@@ -209,9 +208,8 @@ func (n *NATNode) SetIndexSign(signJSON []byte) {
 	}
 }
 
-// SetBillingPrivateSnapshotPath enables a local, redacted billing-meter JSON
-// snapshot. The parent directory must be private (0700); snapshots are
-// atomically replaced with mode 0600. An empty path leaves this feature off.
+// SetBillingPrivateSnapshotPath 启用本地脱敏计费仪表 JSON 快照。
+// 父目录权限必须为 0700，快照以 0600 权限原子替换；空路径表示关闭该功能。
 func (n *NATNode) SetBillingPrivateSnapshotPath(path string) error {
 	return n.billingMeter.setPrivateSnapshotPath(path)
 }

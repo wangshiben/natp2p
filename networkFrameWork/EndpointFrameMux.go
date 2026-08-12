@@ -135,8 +135,7 @@ func (m *EndpointFrameMux) writeLoop() {
 
 func (m *EndpointFrameMux) nextOutboundFrame() (*network.Frame, bool) {
 	var frame *network.Frame
-	// Keep control traffic ahead of bulk data, but force a data turn after a
-	// bounded burst so a busy ACK stream cannot starve the payload queue.
+	// 控制流量优先于批量数据，但在有界突发后强制轮到数据，避免密集 ACK 饿死负载队列。
 	if m.controlBurst < endpointMuxMaxControlBurst {
 		select {
 		case frame = <-m.controlCh:

@@ -33,8 +33,7 @@ type CAClient struct {
 	adminToken string
 }
 
-// SetIssueBearerToken configures the role-scoped credential used only for
-// certificate enrollment. It is never attached to settlement requests.
+// SetIssueBearerToken 配置仅用于证书登记的角色级凭据，不会附加到结算请求。
 func (c *CAClient) SetIssueBearerToken(token string) error {
 	if err := ValidateBearerToken(token); err != nil {
 		return err
@@ -45,8 +44,7 @@ func (c *CAClient) SetIssueBearerToken(token string) error {
 	return nil
 }
 
-// SetIssueBearerTokenFile loads the enrollment credential from a private
-// file, keeping it out of command lines and generated Compose documents.
+// SetIssueBearerTokenFile 从私有文件加载登记凭据，避免它出现在命令行和生成的 Compose 文档中。
 func (c *CAClient) SetIssueBearerTokenFile(filename string) error {
 	token, err := LoadBearerTokenFile(filename)
 	if err != nil {
@@ -55,8 +53,7 @@ func (c *CAClient) SetIssueBearerTokenFile(filename string) error {
 	return c.SetIssueBearerToken(token)
 }
 
-// SetAdminBearerToken configures the credential for explicit administrative
-// mutations such as /credit.
+// SetAdminBearerToken 配置用于 /credit 等显式管理变更的凭据。
 func (c *CAClient) SetAdminBearerToken(token string) error {
 	if err := ValidateBearerToken(token); err != nil {
 		return err
@@ -67,7 +64,7 @@ func (c *CAClient) SetAdminBearerToken(token string) error {
 	return nil
 }
 
-// SetAdminBearerTokenFile loads the administrative credential from disk.
+// SetAdminBearerTokenFile 从磁盘加载管理凭据。
 func (c *CAClient) SetAdminBearerTokenFile(filename string) error {
 	token, err := LoadBearerTokenFile(filename)
 	if err != nil {
@@ -266,9 +263,8 @@ func (c *CAClient) Settle(ctx context.Context, req SettleRequest) (*SettleRespon
 	return &out, nil
 }
 
-// SettleVoucher submits a canonical double-signed cumulative voucher to the
-// CA. When the CA rejects it, the response is returned together with the error
-// so callers can distinguish retryable conditions from terminal rejections.
+// SettleVoucher 向 CA 提交规范化的双签累计凭证。
+// CA 拒绝时同时返回响应和错误，便于调用方区分可重试条件与永久拒绝。
 func (c *CAClient) SettleVoucher(ctx context.Context, req VoucherSettleRequest) (*VoucherSettleResponse, error) {
 	var out VoucherSettleResponse
 	status, err := c.postJSONStatus(ctx, PathVoucherSettle, req, &out)

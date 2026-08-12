@@ -80,9 +80,8 @@ func disableKCP() bool {
 	return false
 }
 
-// singleTCPMode forces a single TCP leg for capacity and constrained-network
-// validation. It implies BNFS_DISABLE_KCP and deliberately skips the extra
-// TCP backup leg; normal deployments keep the dual/failover behavior.
+// singleTCPMode 强制只建立一条 TCP leg，用于容量和受限网络验证。
+// 它隐含 BNFS_DISABLE_KCP，并跳过额外 TCP 备用 leg；正常部署仍保留双路故障转移。
 func singleTCPMode() bool {
 	switch os.Getenv("BNFS_SINGLE_TCP") {
 	case "1", "true", "TRUE", "yes":

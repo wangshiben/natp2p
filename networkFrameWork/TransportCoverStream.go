@@ -694,11 +694,9 @@ func (t *TransportCover) runIdleSweeper(period time.Duration) {
 			if lastReceive.IsZero() || lastReceive.After(time.Now().Add(-timeout)) {
 				continue
 			}
-			// Receive silence is a congestion/quality signal, not proof of death.
-			// In particular a busy KCP scheduler can starve the preferred leg while
-			// a connected TCP backup remains immediately usable. The endpoint
-			// heartbeat now promotes that backup; only reap after all carriers have
-			// actually closed so a valid long-idle registration is never destroyed.
+			// 接收静默只是拥塞或质量信号，并不能证明连接死亡。
+			// 繁忙的 KCP 调度器可能饿死首选 leg，而已连接的 TCP 备用路径仍可立即使用。
+			// 端点心跳会提升备用路径；只有全部载体真正关闭后才回收，避免误删长期空闲的有效注册。
 			if group.relayCarrierStale(timeout) {
 				logx.Warnf("[relay] 回收收帧已停止的注册 StreamGroup: nodeId=%.16s idle=%s timeout=%s",
 					nodeID, time.Since(lastReceive).Round(time.Second), timeout)

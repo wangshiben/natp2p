@@ -58,7 +58,7 @@ const (
 //
 // 线布局: [Magic(8)][MessageId(8)][SeqId(4)][TotalFrames(4)][AckId(8)][FrameType(1)]
 //
-//	[ConnIdLen(2)][PayloadLen(4)] | [ConnectionId(ConnIdLen)][Payload(PayloadLen)]
+//	帧格式：[ConnIdLen(2)][PayloadLen(4)] | [ConnectionId(ConnIdLen)][Payload(PayloadLen)]
 const FrameHeaderLength = frameMagicLength + frameMessageIdLength + frameSeqIdLength +
 	frameTotalFramesLength + frameAckIdLength + frameTypeLength + frameConnIdLenLength + framePayloadLenLength
 
@@ -116,7 +116,7 @@ func (f *Frame) AppendTo(dst []byte) ([]byte, error) {
 //
 // 结构: [Magic(8)] [MessageId(8 LE)] [SeqId(4 LE)] [TotalFrames(4 LE)]
 //
-//	[AckId(8 LE)] [FrameType(1)] [ConnIdLen(2 LE)] [PayloadLen(4 LE)]
+//	确认帧：[AckId(8 LE)] [FrameType(1)] [ConnIdLen(2 LE)] [PayloadLen(4 LE)]
 //	[ConnectionId(ConnIdLen)] [Payload(PayloadLen)]
 func (f *Frame) ParseToBytes() ([]byte, error) {
 	return f.AppendTo(nil)

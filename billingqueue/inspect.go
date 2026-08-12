@@ -18,7 +18,7 @@ const (
 	LegacyInspectionSchema = "billingqueue-legacy/v2"
 )
 
-// Inspection is a redacted aggregate view of a persistent waitSubmit queue.
+// Inspection 是持久化 waitSubmit 队列脱敏后的聚合视图。
 type Inspection struct {
 	Schema          string `json:"schema"`
 	Depth           uint64 `json:"depth"`
@@ -29,10 +29,9 @@ type Inspection struct {
 	SessionCount    uint64 `json:"session_count"`
 }
 
-// InspectionOptions selects one payer/Relay pair and supplies the public
-// identities needed to verify every selected mutual voucher. RelayPublicKey is
-// required for a targeted inspection. PayerPublicKey is optional when every
-// selected settlement envelope contains the payer public identity.
+// InspectionOptions 选择一组付款方与 Relay，并提供验证所选双签凭证需要的公开身份。
+// 定向检查必须提供 RelayPublicKey；如果每个结算信封都包含付款方公开身份，
+// 则 PayerPublicKey 可以省略。
 type InspectionOptions struct {
 	PayerID               billingvoucher.Identifier
 	RelayID               billingvoucher.Identifier
@@ -42,16 +41,14 @@ type InspectionOptions struct {
 	RelayBillingPublicKey *ecdh.PublicKey
 }
 
-// Inspect reads and validates an existing persistent queue without modifying it.
+// Inspect 只读检查并验证现有持久化队列，不修改其中内容。
 func Inspect(path string, limits Limits) (Inspection, error) {
 	return InspectWithOptions(path, limits, InspectionOptions{})
 }
 
-// InspectWithOptions reads and validates an existing persistent queue without
-// modifying it. A targeted inspection additionally verifies both signatures
-// and requires each selected live channel to contain a complete sequence-1 to
-// head chain. AuthorizedBytes is then the exact aggregate settlement delta
-// authorized by those live chains.
+// InspectWithOptions 只读检查并验证现有持久化队列。
+// 定向检查还会验证双方签名，并要求每个选中活动通道都具备从序号 1 到当前队首的完整链。
+// AuthorizedBytes 是这些活动链授权的精确结算增量总和。
 func InspectWithOptions(path string, limits Limits, options InspectionOptions) (Inspection, error) {
 	maximumFileSize, err := validateLimits(limits)
 	if err != nil {

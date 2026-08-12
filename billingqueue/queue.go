@@ -69,8 +69,7 @@ type Queue struct {
 	poisoned     error
 }
 
-// Envelope contains every payer-controlled artifact required to submit a
-// durable voucher after both the Relay and NAT have restarted.
+// Envelope 保存 Relay 与 NAT 重启后继续提交持久化凭证所需的全部付款方控制材料。
 type Envelope struct {
 	Voucher               billingvoucher.MutualVoucher
 	PayerPublicKey        string
@@ -280,9 +279,8 @@ func (queue *Queue) PeekEnvelope() (Envelope, error) {
 	return cloneEnvelope(queue.items[0].envelope), nil
 }
 
-// ChannelHeads returns the oldest live voucher for every independent channel.
-// The result preserves global enqueue order while allowing one blocked payer to
-// be skipped without violating that channel's predecessor chain.
+// ChannelHeads 返回每个独立通道中最早的活动凭证。
+// 结果保持全局入队顺序，同时允许跳过被阻断的付款方且不破坏通道前驱链。
 func (queue *Queue) ChannelHeads() ([]Envelope, error) {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()
@@ -343,8 +341,8 @@ func (queue *Queue) Remove(expectedID billingvoucher.Identifier) error {
 	return queue.removeIndexLocked(0)
 }
 
-// RemoveChannelHead durably removes a voucher only when it is the oldest live
-// item in its channel. Older items belonging to other channels may remain.
+// RemoveChannelHead 仅当凭证是所属通道最早的活动项时才持久删除；
+// 其他通道中更早的项目可以继续保留。
 func (queue *Queue) RemoveChannelHead(expectedID billingvoucher.Identifier) error {
 	queue.mu.Lock()
 	defer queue.mu.Unlock()

@@ -22,13 +22,13 @@ type routeTree struct {
 
 // routeNode 是前缀树的一个节点。
 type routeNode struct {
-	pattern       string            // 当前段模式："user" / ":id" / "*path"
-	isParam       bool              // 是否参数节点（:id）
-	isWildcard    bool              // 是否通配符（*path）
-	handler       Handler           // 叶子节点的处理器
+	pattern       string                // 当前段模式："user" / ":id" / "*path"
+	isParam       bool                  // 是否参数节点（:id）
+	isWildcard    bool                  // 是否通配符（*path）
+	handler       Handler               // 叶子节点的处理器
 	children      map[string]*routeNode // 静态子节点
-	paramChild    *routeNode        // 参数子节点（只能有一个）
-	wildcardChild *routeNode        // 通配符子节点（只能有一个）
+	paramChild    *routeNode            // 参数子节点（只能有一个）
+	wildcardChild *routeNode            // 通配符子节点（只能有一个）
 }
 
 // newRouteTree 创建一个空路由树。
@@ -162,7 +162,7 @@ func (t *routeTree) searchNode(node *routeNode, segments []string, index int, pa
 }
 
 // splitPath 将路径拆分为段，过滤空段。
-// "/user//profile/" -> ["user", "profile"]
+// 例如："/user//profile/" -> ["user", "profile"]。
 func splitPath(path string) []string {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	result := make([]string, 0, len(parts))
