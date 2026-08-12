@@ -134,6 +134,7 @@ func (t *TransportCover) SetBusinessConnectHook(h func(targetNodeId, clientPubKe
 }
 
 func (t *TransportCover) SetBusinessAdmissionHook(h func(targetNodeID string, message *network.Message, remoteAddr string) (*BusinessAdmissionDecision, error)) {
+	// 安装或卸载普通业务首帧的来源准入钩子。
 	t.lock.Lock()
 	t.onBusinessAdmission = h
 	t.lock.Unlock()
@@ -219,6 +220,7 @@ func (t *TransportCover) CloseHostedConnection(nodeId, connID string) error {
 }
 
 func (t *TransportCover) CloseHostedRegistration(nodeID string) error {
+	// 关闭指定托管节点的注册组，使撤销事件立即阻断后续重连。
 	t.lock.RLock()
 	group := t.StreamGroup[nodeID]
 	t.lock.RUnlock()
@@ -597,6 +599,7 @@ func (t *TransportCover) ListenTCPConnection(connection net.Conn) error {
 }
 
 func isOrdinaryBusinessRoute(message *network.Message) bool {
+	// 排除控制、查询、桥接和计费路由，只对普通业务连接执行来源准入。
 	if message == nil || message.Header == nil || message.Header.ConnectionId == "" {
 		return false
 	}

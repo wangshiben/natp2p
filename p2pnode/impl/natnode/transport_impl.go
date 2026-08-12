@@ -46,6 +46,7 @@ func (policy fixedRelayDialPolicy) ReconnectRole() string {
 }
 
 func (policy fixedRelayDialPolicy) BuildBusinessAdmissionPayload(targetNodeID, connectionID, legSessionID, entryRelayID string) ([]byte, error) {
+	// 将固定 Relay 策略转发给 NAT 自身的业务准入载荷提供器。
 	if policy.provider == nil {
 		return nil, admission.ErrBusinessAdmissionRequired
 	}
@@ -105,6 +106,7 @@ func (t *NATTransport) SetIndexSign(signJSON []byte) {
 }
 
 func (t *NATTransport) SetBusinessAdmissionIdentity(identityKey *ecdh.PrivateKey, certificate *admission.SignedCert) {
+	// 设置与节点私钥分离的业务扣费身份和 CA 证书。
 	t.identityKey = identityKey
 	if certificate == nil {
 		t.businessCert = nil
@@ -115,6 +117,7 @@ func (t *NATTransport) SetBusinessAdmissionIdentity(identityKey *ecdh.PrivateKey
 }
 
 func (t *NATTransport) BuildBusinessAdmissionPayload(targetNodeID, connectionID, legSessionID, entryRelayID string) ([]byte, error) {
+	// 为每条业务连接生成短时、绑定会话的准入证明；未配置时兼容旧公钥载荷。
 	if t.identityKey == nil || t.businessCert == nil {
 		return []byte(t.pubKeyHex), nil
 	}

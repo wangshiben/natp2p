@@ -13,6 +13,7 @@ var permanentDenyCodes = map[string]struct{}{
 }
 
 func (n *RelayNode) applyDenyDecision(decision *admission.DenyDecision) error {
+	// 校验 CA 签名阻断决定并在本地持久化后执行处置。
 	if decision == nil {
 		return fmt.Errorf("relaynode: missing deny decision")
 	}
@@ -48,6 +49,7 @@ func (n *RelayNode) applyDenyDecision(decision *admission.DenyDecision) error {
 }
 
 func (n *RelayNode) applyRevocationEvent(event admission.RevocationEvent) error {
+	// 将 CA 撤销事件转换为 Relay 本地的永久阻断动作。
 	if _, ok := permanentDenyCodes[event.ErrorCode]; !ok {
 		return fmt.Errorf("relaynode: revocation event is not permanent: %s", event.ErrorCode)
 	}
@@ -65,6 +67,7 @@ func (n *RelayNode) applyVerifiedDeny(
 	effectiveAt int64,
 	decision *admission.DenyDecision,
 ) error {
+	// 幂等记录阻断作用域，并关闭受影响注册流、业务链路和计费入口。
 	key := scopeType + ":" + scopeID
 	n.businessAdmissionMu.Lock()
 	if _, exists := n.businessDeniedScopes[key]; exists {
@@ -105,6 +108,7 @@ func (n *RelayNode) applyVerifiedDeny(
 }
 
 func (s *accountStore) nodesForDeny(decision admission.DenyDecision) []string {
+	// 根据节点、授权、扣费密钥或用户作用域找出需要断开的托管节点。
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]string, 0)
@@ -117,6 +121,7 @@ func (s *accountStore) nodesForDeny(decision admission.DenyDecision) []string {
 }
 
 func certificateMatchesDeny(certificate *admission.SignedCert, userID string, decision admission.DenyDecision) bool {
+	// 判断一张节点证书是否命中指定的 CA 阻断作用域。
 	if certificate == nil {
 		return false
 	}

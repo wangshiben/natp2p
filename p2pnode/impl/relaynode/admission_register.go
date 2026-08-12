@@ -213,6 +213,7 @@ func (n *RelayNode) onRegisterVerify(nodeId string, signJSON []byte, remoteAddr 
 }
 
 func signedCertSignature(signJSON []byte) string {
+	// 从注册载荷中提取证书签名，供后续撤销作用域校验和转发使用。
 	var signed admission.SignedCert
 	if json.Unmarshal(signJSON, &signed) != nil {
 		return ""
@@ -250,6 +251,7 @@ func (n *RelayNode) applyAdmissionHooks() {
 }
 
 func (n *RelayNode) onBusinessAdmission(targetNodeID string, message *network.Message, remoteAddr string) (*networkFrameWork.BusinessAdmissionDecision, error) {
+	// 在本地寻址或跨 Relay 建桥前验证业务来源证明，并记录一次性重放状态。
 	cfg := n.admissionConfig()
 	if cfg == nil || cfg.Mode == AdmissionOff {
 		return nil, nil
@@ -315,6 +317,7 @@ func (n *RelayNode) onBusinessAdmission(targetNodeID string, message *network.Me
 }
 
 func (n *RelayNode) rememberBusinessProof(nonce, digest string, expiresAt time.Time) error {
+	// 在有界缓存中记录业务证明，清理过期项并拒绝 nonce 重用篡改。
 	now := time.Now().UTC()
 	n.businessAdmissionMu.Lock()
 	defer n.businessAdmissionMu.Unlock()
@@ -337,6 +340,7 @@ func (n *RelayNode) rememberBusinessProof(nonce, digest string, expiresAt time.T
 }
 
 func (n *RelayNode) businessScopeDenied(cert admission.Cert) bool {
+	// 检查节点证书关联的节点、授权、扣费密钥和用户作用域是否已撤销。
 	n.businessAdmissionMu.Lock()
 	defer n.businessAdmissionMu.Unlock()
 	for prefix, identifier := range map[string]string{
@@ -356,6 +360,7 @@ func (n *RelayNode) businessScopeDenied(cert admission.Cert) bool {
 }
 
 func (n *RelayNode) businessCertificateDenied(certificate *admission.SignedCert) bool {
+	// 检查证书指纹是否命中 CA 下发的证书级阻断列表。
 	certificateID, err := admission.CertificateID(certificate)
 	if err != nil {
 		return true

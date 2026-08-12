@@ -1480,10 +1480,12 @@ func (n *RelayNode) closePeerLinks() {
 }
 
 func (n *RelayNode) closeAllPeerLinks() {
+	// 关闭当前 Relay 的所有对等链路，用于撤销状态长期失联时 fail-closed。
 	n.closePeerLinks()
 }
 
 func (n *RelayNode) closePeerLinksForDeny(decision admission.DenyDecision) int {
+	// 只关闭匹配阻断作用域的入站和出站 Relay 链路，并返回关闭数量。
 	n.mu.RLock()
 	candidates := make([]*peerLink, 0, len(n.peerLinks)+len(n.inboundLinks))
 	for _, link := range n.peerLinks {

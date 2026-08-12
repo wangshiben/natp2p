@@ -27,6 +27,7 @@ type DenyDecision struct {
 }
 
 func (decision DenyDecision) canonicalBytes() ([]byte, error) {
+	// 清空签名字段后生成阻断决定的规范载荷，保证签名可复现。
 	decision.Signature = ""
 	payload, err := json.Marshal(decision)
 	if err != nil {
@@ -36,6 +37,7 @@ func (decision DenyDecision) canonicalBytes() ([]byte, error) {
 }
 
 func SignDenyDecision(privateKey *ecdsa.PrivateKey, decision DenyDecision) (*DenyDecision, error) {
+	// 使用 CA 私钥签发带时间和作用域的阻断决定。
 	if privateKey == nil || decision.ErrorCode == "" || decision.ScopeType == "" || decision.ScopeID == "" || decision.RequestID == "" {
 		return nil, errors.New("admission: incomplete deny decision")
 	}
@@ -63,6 +65,7 @@ func SignDenyDecision(privateKey *ecdsa.PrivateKey, decision DenyDecision) (*Den
 }
 
 func VerifyDenyDecision(publicKey *ecdsa.PublicKey, decision *DenyDecision, relayID, requestID string, now time.Time) error {
+	// 在 Relay 应用阻断前校验决定的绑定关系、时间窗口和 CA 签名。
 	if publicKey == nil || decision == nil || decision.DecisionID == "" || decision.ErrorCode == "" || decision.ScopeType == "" || decision.ScopeID == "" {
 		return errors.New("admission: incomplete deny decision")
 	}

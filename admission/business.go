@@ -75,6 +75,7 @@ type BusinessAdmissionDecision struct {
 }
 
 func (envelope *BusinessAdmissionEnvelopeV2) signingBytes() ([]byte, error) {
+	// 生成稳定的签名输入，确保不同传输层看到的证明字节完全一致。
 	if envelope == nil {
 		return nil, ErrBusinessAdmissionInvalid
 	}
@@ -113,6 +114,7 @@ func (envelope *BusinessAdmissionEnvelopeV2) signingBytes() ([]byte, error) {
 }
 
 func (envelope *BusinessAdmissionEnvelopeV2) digest() ([]byte, error) {
+	// 对规范化证明做摘要，供源节点和 Relay 分别签名及校验。
 	bytes, err := envelope.signingBytes()
 	if err != nil {
 		return nil, err
@@ -122,6 +124,7 @@ func (envelope *BusinessAdmissionEnvelopeV2) digest() ([]byte, error) {
 }
 
 func NewBusinessAdmissionEnvelope(identityPrivateKey *ecdh.PrivateKey, cert *SignedCert, targetNodeID, connectionID, legSessionID, entryRelayID string, knownEpoch uint64, now time.Time) (*BusinessAdmissionEnvelopeV2, error) {
+	// 创建绑定源节点、目标节点和会话生命周期的业务准入证明。
 	if identityPrivateKey == nil || cert == nil {
 		return nil, ErrBusinessAdmissionInvalid
 	}
@@ -166,6 +169,7 @@ func NewBusinessAdmissionEnvelope(identityPrivateKey *ecdh.PrivateKey, cert *Sig
 }
 
 func (envelope *BusinessAdmissionEnvelopeV2) Marshal() ([]byte, error) {
+	// 序列化业务准入证明，并在发送前执行版本和大小限制检查。
 	if envelope == nil || envelope.Version != BusinessAdmissionVersion {
 		return nil, ErrBusinessAdmissionInvalid
 	}
@@ -185,6 +189,7 @@ func AddRelayForwardAttestation(
 	relayCertificate *SignedCert,
 	now time.Time,
 ) error {
+	// Relay 在验证源证明后追加转发见证，避免跨 Relay 转发时丢失信任链。
 	if envelope == nil || relayPrivateKey == nil || relayCertificate == nil || relayCertificate.Cert.Role != RoleRelay {
 		return ErrBusinessAdmissionInvalid
 	}
@@ -230,6 +235,7 @@ func AddRelayForwardAttestation(
 }
 
 func VerifyRelayForwardAttestation(verifier CertVerifier, envelope *BusinessAdmissionEnvelopeV2, now time.Time) error {
+	// 校验转发见证的绑定字段、Relay 证书、有效期和签名。
 	if verifier == nil || envelope == nil || envelope.ForwardAttestation == nil {
 		return fmt.Errorf("%w: relay forward attestation required", ErrBusinessAdmissionInvalid)
 	}
@@ -284,6 +290,7 @@ func VerifyRelayForwardAttestation(verifier CertVerifier, envelope *BusinessAdmi
 }
 
 func (attestation *RelayForwardAttestationV1) signingBytes() ([]byte, error) {
+	// 生成不包含自身签名的转发见证规范字节。
 	if attestation == nil {
 		return nil, ErrBusinessAdmissionInvalid
 	}
@@ -297,6 +304,7 @@ func (attestation *RelayForwardAttestationV1) signingBytes() ([]byte, error) {
 }
 
 func (envelope *BusinessAdmissionEnvelopeV2) proofDigest() (string, error) {
+	// 计算包含随机数的证明指纹，用于重放检测和见证绑定。
 	digest, err := envelope.digest()
 	if err != nil {
 		return "", err
@@ -306,6 +314,7 @@ func (envelope *BusinessAdmissionEnvelopeV2) proofDigest() (string, error) {
 }
 
 func minInt64(first, second int64) int64 {
+	// 返回两个过期时间中的较早值，限制见证不得延长源证明生命周期。
 	if first < second {
 		return first
 	}
@@ -313,6 +322,7 @@ func minInt64(first, second int64) int64 {
 }
 
 func ParseBusinessAdmissionEnvelope(payload []byte) (*BusinessAdmissionEnvelopeV2, error) {
+	// 解析并严格拒绝未知字段，防止准入载荷被悄然降级或扩展绕过。
 	if len(payload) == 0 {
 		return nil, ErrBusinessAdmissionRequired
 	}
@@ -335,6 +345,7 @@ func ParseBusinessAdmissionEnvelope(payload []byte) (*BusinessAdmissionEnvelopeV
 }
 
 func VerifyBusinessAdmissionEnvelope(verifier CertVerifier, envelope *BusinessAdmissionEnvelopeV2, targetNodeID, connectionID string, now time.Time) (*BusinessAdmissionDecision, error) {
+	// 在业务连接建立前验证身份、证书绑定、时间窗口和源节点签名。
 	if verifier == nil || envelope == nil || envelope.Version != BusinessAdmissionVersion {
 		return nil, ErrBusinessAdmissionInvalid
 	}
@@ -385,6 +396,7 @@ func VerifyBusinessAdmissionEnvelope(verifier CertVerifier, envelope *BusinessAd
 }
 
 func ecdhToECDSA(privateKey *ecdh.PrivateKey) (*ecdsa.PrivateKey, error) {
+	// 将 P-256 ECDH 私钥转换为签名校验使用的 ECDSA 私钥。
 	publicKey, err := ecdhPublicToECDSA(privateKey.PublicKey())
 	if err != nil {
 		return nil, err
@@ -397,6 +409,7 @@ func ecdhToECDSA(privateKey *ecdh.PrivateKey) (*ecdsa.PrivateKey, error) {
 }
 
 func ecdhPublicToECDSA(publicKey *ecdh.PublicKey) (*ecdsa.PublicKey, error) {
+	// 将 P-256 ECDH 公钥转换为 ECDSA 公钥并验证曲线点有效性。
 	if publicKey == nil {
 		return nil, ErrBusinessAdmissionInvalid
 	}

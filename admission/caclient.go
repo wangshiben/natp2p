@@ -149,6 +149,7 @@ func (c *CAClient) Verify(sc *SignedCert, opts VerifyOptions) error {
 }
 
 func (c *CAClient) VerifyDenyDecision(decision *DenyDecision, relayID, requestID string) error {
+	// 使用缓存的 CA 公钥校验单次阻断决定，避免重复拉取 CA 公钥。
 	c.mu.RLock()
 	publicKey := c.caPub
 	c.mu.RUnlock()
@@ -156,6 +157,7 @@ func (c *CAClient) VerifyDenyDecision(decision *DenyDecision, relayID, requestID
 }
 
 func (c *CAClient) VerifyStoredDenyDecision(decision *DenyDecision, relayID string) error {
+	// 校验落盘后恢复的阻断决定，使用决定签发时间避免人为延长窗口。
 	if decision == nil {
 		return errors.New("admission: stored deny decision is nil")
 	}
@@ -166,6 +168,7 @@ func (c *CAClient) VerifyStoredDenyDecision(decision *DenyDecision, relayID stri
 }
 
 func (c *CAClient) VerifyRevocationEvent(event RevocationEvent) error {
+	// 校验 CA 下发的单条撤销事件。
 	c.mu.RLock()
 	publicKey := c.caPub
 	c.mu.RUnlock()
@@ -173,6 +176,7 @@ func (c *CAClient) VerifyRevocationEvent(event RevocationEvent) error {
 }
 
 func (c *CAClient) SyncRevocations(ctx context.Context, request RevocationSyncRequest) (*RevocationSyncResponse, error) {
+	// 请求撤销增量并验证响应及其中每条事件的 CA 签名。
 	var response RevocationSyncResponse
 	status, err := c.postJSONStatus(ctx, PathControlSync, request, &response)
 	if err != nil {
@@ -278,6 +282,7 @@ func (c *CAClient) SettleVoucher(ctx context.Context, req VoucherSettleRequest) 
 		return nil, err
 	}
 	if status == http.StatusTooManyRequests {
+		// CA 明确限流时返回可退避错误，调用方不得把它当作永久故障。
 		out.Retryable = true
 		out.ErrorCode = VoucherErrorRateLimited
 		if out.Error == "" {

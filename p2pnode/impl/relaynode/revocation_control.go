@@ -44,6 +44,7 @@ type relayRevocationControl struct {
 }
 
 func (n *RelayNode) ConfigureRevocationControl(client *admission.CAClient, certificate *admission.SignedCert, path string) error {
+	// 初始化撤销控制面，恢复本地状态后先追平 CA 再启动后台同步。
 	if client == nil || certificate == nil || path == "" {
 		return errors.New("relaynode: revocation control requires CA client, relay certificate and state path")
 	}
@@ -84,6 +85,7 @@ func (n *RelayNode) ConfigureRevocationControl(client *admission.CAClient, certi
 }
 
 func (control *relayRevocationControl) syncUntilCurrent(ctx context.Context) error {
+	// 在 Relay 对外提供生产准入前循环拉取撤销增量直到 epoch 收敛。
 	for {
 		if err := control.syncOnce(ctx, 0); err != nil {
 			return err
@@ -98,6 +100,7 @@ func (control *relayRevocationControl) syncUntilCurrent(ctx context.Context) err
 }
 
 func (control *relayRevocationControl) run() {
+	// 以长轮询和指数退避持续同步撤销状态，避免 CA 故障造成重连风暴。
 	backoff := time.Second
 	for control.node.ctx.Err() == nil {
 		ctx, cancel := context.WithTimeout(control.node.ctx, 8*time.Second)
@@ -128,6 +131,7 @@ func (control *relayRevocationControl) run() {
 }
 
 func (control *relayRevocationControl) syncOnce(ctx context.Context, waitSeconds int) error {
+	// 执行一次带签名校验、连续 epoch 检查和原子落盘的撤销同步。
 	control.mu.RLock()
 	afterEpoch := control.state.AppliedEpoch
 	control.mu.RUnlock()
@@ -184,6 +188,7 @@ func (control *relayRevocationControl) syncOnce(ctx context.Context, waitSeconds
 }
 
 func (control *relayRevocationControl) persistDecision(decision admission.DenyDecision) error {
+	// 幂等保存实时收到的阻断决定，保证进程重启后仍能恢复处置。
 	control.mu.Lock()
 	defer control.mu.Unlock()
 	for _, existing := range control.state.Decisions {
@@ -203,6 +208,7 @@ func (control *relayRevocationControl) persistDecision(decision admission.DenyDe
 }
 
 func (control *relayRevocationControl) isFresh() bool {
+	// 判断最近一次成功同步是否仍在生产准入允许的时间窗口内。
 	control.mu.RLock()
 	lastSuccessful := control.lastSuccessful
 	control.mu.RUnlock()
@@ -210,6 +216,7 @@ func (control *relayRevocationControl) isFresh() bool {
 }
 
 func (control *relayRevocationControl) offlineDuration() time.Duration {
+	// 计算撤销控制面连续离线时长，用于触发 fail-closed。
 	control.mu.RLock()
 	lastSuccessful := control.lastSuccessful
 	control.mu.RUnlock()
@@ -220,6 +227,7 @@ func (control *relayRevocationControl) offlineDuration() time.Duration {
 }
 
 func (control *relayRevocationControl) failClosedForStaleness() {
+	// 控制面长时间不可用时关闭新注册和现有 Relay 链路，防止撤销失效。
 	control.mu.Lock()
 	if control.hardClosed {
 		control.mu.Unlock()
@@ -235,6 +243,7 @@ func (control *relayRevocationControl) failClosedForStaleness() {
 }
 
 func (control *relayRevocationControl) loadState() (persistedRevocationState, error) {
+	// 以私有权限读取并验证撤销状态文件，拒绝截断、越权或非连续事件。
 	state := persistedRevocationState{Version: revocationStateVersion, RelayID: control.node.idStr(), Events: make([]admission.RevocationEvent, 0), Decisions: make([]admission.DenyDecision, 0)}
 	file, err := os.Open(control.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -281,6 +290,7 @@ func (control *relayRevocationControl) loadState() (persistedRevocationState, er
 }
 
 func (control *relayRevocationControl) writeState(state persistedRevocationState) error {
+	// 通过临时文件、fsync 和原子重命名持久化撤销状态，避免崩溃留下半文件。
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -335,6 +345,7 @@ func (control *relayRevocationControl) writeState(state persistedRevocationState
 }
 
 func (n *RelayNode) revocationSyncFresh() bool {
+	// 返回当前 Relay 是否具备足够新鲜的撤销快照以继续接受连接。
 	cfg := n.admissionConfig()
 	if cfg == nil || cfg.Profile != SecurityProfileProduction {
 		return true

@@ -58,6 +58,7 @@ type RevocationSyncResponse struct {
 }
 
 func (event RevocationEvent) canonicalBytes() ([]byte, error) {
+	// 生成撤销事件的签名载荷，签名字段本身不参与摘要。
 	event.Signature = ""
 	encoded, err := json.Marshal(event)
 	if err != nil {
@@ -67,6 +68,7 @@ func (event RevocationEvent) canonicalBytes() ([]byte, error) {
 }
 
 func SignRevocationEvent(privateKey *ecdsa.PrivateKey, event RevocationEvent) (RevocationEvent, error) {
+	// 为撤销事件补齐版本并使用 CA 私钥签名。
 	if privateKey == nil || event.Epoch == 0 || event.EventID == "" || event.ScopeType == "" || event.ScopeID == "" || event.ErrorCode == "" {
 		return RevocationEvent{}, errors.New("admission: incomplete revocation event")
 	}
@@ -87,6 +89,7 @@ func SignRevocationEvent(privateKey *ecdsa.PrivateKey, event RevocationEvent) (R
 }
 
 func VerifyRevocationEvent(publicKey *ecdsa.PublicKey, event RevocationEvent) error {
+	// 校验单条撤销事件的格式、版本和 CA 签名。
 	if publicKey == nil || event.Version != RevocationSyncVersion || event.Epoch == 0 || event.EventID == "" || event.ScopeType == "" || event.ScopeID == "" || event.ErrorCode == "" {
 		return errors.New("admission: incomplete revocation event")
 	}
@@ -103,6 +106,7 @@ func VerifyRevocationEvent(publicKey *ecdsa.PublicKey, event RevocationEvent) er
 }
 
 func NewRevocationSyncRequest(identity *ecdh.PrivateKey, certificate *SignedCert, afterEpoch, ackEpoch uint64, waitSeconds int, now time.Time) (RevocationSyncRequest, error) {
+	// 创建 Relay 到 CA 的撤销增量同步请求，并绑定 Relay 身份。
 	if identity == nil || certificate == nil || certificate.Cert.Role != RoleRelay {
 		return RevocationSyncRequest{}, errors.New("admission: relay identity and certificate are required")
 	}
@@ -140,6 +144,7 @@ func NewRevocationSyncRequest(identity *ecdh.PrivateKey, certificate *SignedCert
 }
 
 func VerifyRevocationSyncRequest(request RevocationSyncRequest, now time.Time) error {
+	// 校验 Relay 同步请求的时间、epoch 范围和自签名身份。
 	if request.Version != RevocationSyncVersion || request.RelayID == "" || request.RelayPublicKey == "" || request.Nonce == "" || request.Signature == "" {
 		return errors.New("admission: incomplete relay revocation sync request")
 	}
@@ -176,6 +181,7 @@ func VerifyRevocationSyncRequest(request RevocationSyncRequest, now time.Time) e
 }
 
 func (request RevocationSyncRequest) canonicalBytes() ([]byte, error) {
+	// 生成不含签名字段的撤销同步请求规范载荷。
 	request.Signature = ""
 	encoded, err := json.Marshal(request)
 	if err != nil {
@@ -185,6 +191,7 @@ func (request RevocationSyncRequest) canonicalBytes() ([]byte, error) {
 }
 
 func SignRevocationSyncResponse(privateKey *ecdsa.PrivateKey, response RevocationSyncResponse) (RevocationSyncResponse, error) {
+	// 使用 CA 私钥签发撤销同步响应，供 Relay 验证来源。
 	if privateKey == nil || response.Version != RevocationSyncVersion || response.RelayID == "" || response.RequestNonce == "" {
 		return RevocationSyncResponse{}, errors.New("admission: incomplete revocation sync response")
 	}
@@ -202,6 +209,7 @@ func SignRevocationSyncResponse(privateKey *ecdsa.PrivateKey, response Revocatio
 }
 
 func VerifyRevocationSyncResponse(publicKey *ecdsa.PublicKey, response RevocationSyncResponse, relayID, requestNonce string) error {
+	// 校验同步响应是否对应当前 Relay 请求并验证 CA 签名。
 	if publicKey == nil || response.Version != RevocationSyncVersion || response.RelayID != relayID || response.RequestNonce != requestNonce || response.Signature == "" {
 		return errors.New("admission: revocation sync response binding invalid")
 	}
@@ -221,6 +229,7 @@ func VerifyRevocationSyncResponse(publicKey *ecdsa.PublicKey, response Revocatio
 }
 
 func (response RevocationSyncResponse) canonicalBytes() ([]byte, error) {
+	// 生成不包含签名字段的同步响应规范载荷。
 	response.Signature = ""
 	encoded, err := json.Marshal(response)
 	if err != nil {

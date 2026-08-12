@@ -17,6 +17,7 @@ const (
 )
 
 func ParseSecurityProfile(value string) (SecurityProfile, error) {
+	// 将部署环境字符串解析为受约束的安全配置档位。
 	switch SecurityProfile(value) {
 	case SecurityProfileDevelopment, SecurityProfileStaging, SecurityProfileProduction:
 		return SecurityProfile(value), nil
@@ -62,6 +63,7 @@ type AdmissionConfig struct {
 }
 
 func ValidateAdmissionConfig(cfg *AdmissionConfig, verifierNodeID string) error {
+	// 在 Relay 启动前检查生产环境证书、验证器和撤销状态路径是否完整。
 	if cfg == nil {
 		return errors.New("relaynode: admission configuration is required")
 	}
@@ -107,6 +109,7 @@ func (n *RelayNode) SetAdmission(cfg *AdmissionConfig) {
 }
 
 func (n *RelayNode) SetAdmissionChecked(cfg *AdmissionConfig) error {
+	// 校验准入配置后再安装钩子，避免运行中进入半配置状态。
 	if err := ValidateAdmissionConfig(cfg, n.idStr()); err != nil {
 		return err
 	}

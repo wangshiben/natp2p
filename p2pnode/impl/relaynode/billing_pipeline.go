@@ -1354,6 +1354,7 @@ func (pipeline *relayBillingPipeline) blockSession(sessionID billingvoucher.Iden
 }
 
 func (pipeline *relayBillingPipeline) blockPayers(payerIDs []string, err error) {
+	// 按 payer 批量关闭计费会话和控制通道，响应 CA 的永久拒绝事件。
 	if pipeline == nil || len(payerIDs) == 0 {
 		return
 	}

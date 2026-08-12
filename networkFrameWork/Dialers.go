@@ -44,6 +44,7 @@ type BusinessAdmissionProvider interface {
 }
 
 func refreshBusinessAdmissionPayload(policy RelayDialPolicy, message *network.Message, entryRelayID string) error {
+	// Relay 迁移或双 leg 重拨时重建业务准入载荷，注册流则保留原始证书。
 	if message == nil || message.Header == nil {
 		return errors.New("business admission message header is required")
 	}
