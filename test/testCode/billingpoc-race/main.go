@@ -178,7 +178,7 @@ func main() {
 // CA /reserve 往返(持占位 reservedPairs)期间 Load 到未过期占位，就命中 free-pass 分支被免费放行。
 //
 // 为何稠密并发比"错峰"稳：relay(index) 对 CA 的 /reserve 走 loopback，占位窗口只有数 ms，
-// 手工错峰无法对准。但 caserver 的 ledger.reserve 全程持一把【全局互斥锁】且每次都 persistLocked
+// 手工错峰无法对准。但旧版最小 CA 的 ledger.reserve 全程持一把【全局互斥锁】且每次都 persistLocked
 // (写临时文件 + rename fsync)，高并发下这些 /reserve 在 CA 侧串行化 → 先行者持占位的时间被
 // 显著拉宽，而稠密到达又保证此刻正有大量 worker 在 Load。两者叠加把命中率从"手调时序"变成"堆并发"。
 // 任一 Connect 返回成功（follower 免费建连）即用其连接，并发出停止信号。

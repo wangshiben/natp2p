@@ -9,7 +9,7 @@ const image = process.env.BNFS_CHAOS_IMAGE ?? "bnfs-local-chaos:latest";
 const enableCA = process.env.BNFS_CHAOS_ENABLE_CA === "1";
 const enableAdversaries = enableCA && process.env.BNFS_CHAOS_ENABLE_ADVERSARIES === "1";
 const caHostPort = process.env.BNFS_CHAOS_CA_HOST_PORT ?? "19100";
-const caWebHostPort = process.env.BNFS_CHAOS_CA_WEB_HOST_PORT ?? "8088";
+const caWebHostPort = process.env.BNFS_CHAOS_CA_WEB_HOST_PORT ?? "18088";
 const caBackendImage = process.env.BNFS_CHAOS_CA_BACKEND_IMAGE ?? "bnfs-ca-web-backend:latest";
 const caFrontendImage = process.env.BNFS_CHAOS_CA_FRONTEND_IMAGE ?? "bnfs-ca-web-frontend:latest";
 const caTLSHosts = process.env.BNFS_CHAOS_CA_TLS_HOSTS ?? "localhost,127.0.0.1,::1,192.168.1.12";

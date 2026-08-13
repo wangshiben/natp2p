@@ -69,7 +69,6 @@ func TestReviewedCommandTerminationCallsDoNotChange(t *testing.T) {
 		"test/testCode/billingpoc/main.go#main":              3,
 		"test/testCode/billingpoc/main.go#must":              1,
 		"test/testCode/billingqueue-inspect/main.go#main":    1,
-		"test/testCode/caserver/main.go#main":                4,
 		"test/testCode/client_a/main.go#main":                3,
 		"test/testCode/client_b/main.go#main":                5,
 		"test/testCode/hooktest/main.go#main":                1,

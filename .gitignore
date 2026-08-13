@@ -32,6 +32,7 @@ BUG_*.md
 /test/runtimeScript/results_*/
 /test/runtimeScript/local-chaos/.runtime/
 /test/runtimeScript/local-chaos/.soak/
+/test/runtimeScript/local-chaos/.test-ca-web/
 # 兼容迁移前遗留的本地证据目录，待人工归档后可删除。
 /test/local-chaos/.runtime/
 /test/local-chaos/.soak/

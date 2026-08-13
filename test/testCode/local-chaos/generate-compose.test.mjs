@@ -69,7 +69,7 @@ test("every Compose service overlays an isolated private artifact directory", as
   ]);
   assert.equal(compose.services.ca.image, "bnfs-ca-web-backend:latest");
   assert.equal(compose.services["ca-web"].image, "bnfs-ca-web-frontend:latest");
-  assert.deepEqual(compose.services["ca-web"].ports, ["8088:8088"]);
+  assert.deepEqual(compose.services["ca-web"].ports, ["18088:8088"]);
   assert.equal(compose.services["ca-web"].environment.BACKEND_URL, "http://ca:9100");
   assert.deepEqual(compose.services["ca-postgres"].networks, ["ca_database"]);
   assert.ok(compose.services.ca.networks.includes("ca_database"));

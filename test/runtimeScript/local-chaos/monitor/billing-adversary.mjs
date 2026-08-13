@@ -66,7 +66,7 @@ try {
   validateConfiguration();
   lockHandle = await acquireLock();
   await ensureEventLog();
-  const client = createAPIClient(baseURL, 3000, await loadCACredentials());
+  const client = createAPIClient(baseURL);
   componentProbe = createBillingComponentProbe({
     binaryPath: componentProbeBinary,
     stateDir: componentProbeStateDir,
@@ -126,24 +126,6 @@ try {
   }
 }
 
-async function loadCACredentials() {
-  const files = {
-    server: process.env.CA_SERVER_ENROLLMENT_TOKEN_FILE ?? "",
-    relay: process.env.CA_RELAY_ENROLLMENT_TOKEN_FILE ?? "",
-    admin: process.env.CA_ADMIN_TOKEN_FILE ?? "",
-  };
-  if (Object.values(files).every((filename) => filename === "")) return {};
-  if (Object.values(files).some((filename) => filename === "")) {
-    throw Object.assign(new Error("incomplete CA credentials"), { code: "ca_credentials_incomplete" });
-  }
-  const [server, relay, admin] = await Promise.all([
-    readCredential(files.server),
-    readCredential(files.relay),
-    readCredential(files.admin),
-  ]);
-  return { enrollmentTokens: { server, relay }, adminToken: admin };
-}
-
 async function loadBillingFixture() {
   const filenames = Object.values(billingFixtureFiles);
   if (filenames.every((filename) => filename === "")) return null;
@@ -172,18 +154,6 @@ async function readPrivateJSON(filename) {
   } catch {
     throw Object.assign(new Error("invalid billing fixture JSON"), { code: "billing_fixture_json_invalid" });
   }
-}
-
-async function readCredential(filename) {
-  const resolved = path.resolve(filename);
-  if (resolved !== runDir && !resolved.startsWith(`${runDir}${path.sep}`)) {
-    throw Object.assign(new Error("CA credential outside run directory"), { code: "ca_credential_path_invalid" });
-  }
-  const token = (await fs.readFile(resolved, "utf8")).trim();
-  if (token.length < 32 || token.length > 4096 || !/^[A-Za-z0-9._~+/-]+={0,2}$/.test(token)) {
-    throw Object.assign(new Error("invalid CA credential"), { code: "ca_credential_invalid" });
-  }
-  return token;
 }
 
 function emptySnapshot() {

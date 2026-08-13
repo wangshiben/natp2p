@@ -22,16 +22,7 @@ start_billing_adversary() {
   local component_probe_bin=${COMPONENT_PROBE_BIN:-$run_dir/build-runtime/build/billing-adversary-probe}
   local component_probe_state_dir=${COMPONENT_PROBE_STATE_DIR:-$run_dir/billing-component-probe}
   local private_root=${PRIVATE_RUNTIME_DIR:-$run_dir/runtime/.private}
-  local credential_root=$private_root/ca
-  local credential_environment=() billing_fixture_environment=()
-  if [[ -f $credential_root/enroll-server.token && -f $credential_root/enroll-relay.token \
-    && -f $credential_root/admin.token ]]; then
-    credential_environment=(
-      "CA_SERVER_ENROLLMENT_TOKEN_FILE=$credential_root/enroll-server.token"
-      "CA_RELAY_ENROLLMENT_TOKEN_FILE=$credential_root/enroll-relay.token"
-      "CA_ADMIN_TOKEN_FILE=$credential_root/admin.token"
-    )
-  fi
+  local billing_fixture_environment=()
   if [[ -f $private_root/malicious-natserver/billing-key.json \
     && -f $private_root/malicious-relay/billing-key.json ]]; then
     billing_fixture_environment=(
@@ -46,7 +37,6 @@ start_billing_adversary() {
     COMPONENT_PROBE_BIN="$component_probe_bin" COMPONENT_PROBE_STATE_DIR="$component_probe_state_dir" \
     CONTAINER_ADVERSARY_STATE_ROOT="${PRIVATE_RUNTIME_DIR:-$run_dir/runtime/.private}" \
     CONTAINER_PROBE_MODE="$container_probe_mode" \
-    "${credential_environment[@]}" \
     "${billing_fixture_environment[@]}" \
     node "$ROOT_DIR/test/runtimeScript/local-chaos/monitor/billing-adversary.mjs" \
     > "$run_dir/billing-adversary.log" 2>&1 < /dev/null &

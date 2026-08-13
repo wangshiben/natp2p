@@ -50,6 +50,23 @@ The soak runner starts CA Web, Index, all seven Relays and the NAT containers
 once, fixes one randomly selected fault profile for the whole run, and keeps
 the same core container identities alive until completion:
 
+CA Web is always built from the independent `ca_web` Git checkout (`dev` for
+test automation or `main` for release verification). The harness enables Mock
+users only through `CA_ENABLE_MOCK_USERS=true`, logs the CA Web branch/commit in
+`ca-web-source.env`, and uses an administrator framework Session to register
+test-generated public billing keys and credit accounts. The private keys remain
+in per-node test directories. There is no built-in fallback CA service.
+The test UI listens on `18088` by default so it never replaces the release CA
+Web instance on `8088`.
+
+An independently managed test CA Web can be kept online between runs with:
+
+```bash
+bash test/runtimeScript/test-ca-web.sh start
+bash test/runtimeScript/test-ca-web.sh status
+bash test/runtimeScript/test-ca-web.sh stop
+```
+
 ```bash
 bash scripts/local-chaos-stability.sh run
 ```
@@ -484,7 +501,8 @@ node --test test/testCode/local-chaos/monitor/billing-container-probe.test.mjs
 node --test test/testCode/local-chaos/provision-adversaries.test.mjs
 go test -race ./test/testCode/local-chaos/billingadversary ./test/testCode/billing-adversary-probe
 go test ./test/testCode/billing-adversary-node
-node --test test/testCode/local-chaos/ca-ledger-inspect.test.mjs
+node --test test/testCode/local-chaos/ca-web-accounting.test.mjs
+bash test/testCode/local-chaos/ca-boundary.test.sh
 node --test test/testCode/local-chaos/nat-billing-private-inspect.test.mjs
 node --test test/testCode/local-chaos/generate-compose.test.mjs
 bash test/testCode/local-chaos/billing-adversary-gate.test.sh

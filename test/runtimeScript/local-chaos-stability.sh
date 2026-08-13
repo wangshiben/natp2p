@@ -26,7 +26,7 @@ DEFAULT_MAX_INFLIGHT=1
 DEFAULT_DASHBOARD_HOST=0.0.0.0
 DEFAULT_DASHBOARD_PORT=8911
 DEFAULT_CA_PORT=19100
-DEFAULT_CA_WEB_PORT=8088
+DEFAULT_CA_WEB_PORT=18088
 DEFAULT_RECONNECT_GATE_PORT=18912
 DEFAULT_SOAK_CREDIT_BYTES=2199023255552
 DEFAULT_WORKLOAD_LIMIT_MIBPS=5
@@ -114,7 +114,7 @@ run/start options:
   --dashboard-host HOST         dashboard bind host (default: 0.0.0.0)
   --dashboard-port PORT         dashboard port (default: 8911)
   --ca-port PORT                loopback CA port (default: 19100)
-  --ca-web-port PORT            HTTPS CA Web port (default: 8088)
+  --ca-web-port PORT            HTTPS test CA Web port (default: 18088)
   --billing-adversary MODE      enforce|report|off (default: enforce)
   --validation-mode MODE        smoke|full validation (default: full)
   --ip-family-coverage MODE     off|random IPv4/IPv6/dual-stack coverage (default: off)

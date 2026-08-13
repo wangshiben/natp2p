@@ -70,6 +70,46 @@ if [[ ${BNFS_CHAOS_ENABLE_CA:-0} == 1 && -z ${BNFS_CHAOS_AUTO_CREDIT_BYTES:-} ]]
   export BNFS_CHAOS_AUTO_CREDIT_BYTES=2199023255552
 fi
 
+record_ca_web_source() {
+  local source_record=$RUNTIME_DIR/ca-web-source.env branch commit dirty
+  mkdir -p "$RUNTIME_DIR"
+  if [[ ! -d $BNFS_CA_WEB_ROOT/.git \
+      || ! -f $BNFS_CA_WEB_ROOT/backend/Dockerfile \
+      || ! -f $BNFS_CA_WEB_ROOT/frontend/Dockerfile ]]; then
+    printf '[local-chaos] 必须提供独立 CA Web Git 仓库: %s\n' "$BNFS_CA_WEB_ROOT" >&2
+    return 1
+  fi
+  branch=$(git -C "$BNFS_CA_WEB_ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
+    printf '[local-chaos] CA Web 必须检出可追溯分支\n' >&2
+    return 1
+  }
+  commit=$(git -C "$BNFS_CA_WEB_ROOT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  [[ $branch == dev || $branch == main ]] || {
+    printf '[local-chaos] CA Web 仅允许 dev/main 分支，当前为 %s\n' "$branch" >&2
+    return 1
+  }
+  dirty=0
+  if ! git -C "$BNFS_CA_WEB_ROOT" diff --quiet \
+    || ! git -C "$BNFS_CA_WEB_ROOT" diff --cached --quiet \
+    || [[ -n $(git -C "$BNFS_CA_WEB_ROOT" ls-files --others --exclude-standard) ]]; then
+    dirty=1
+  fi
+  {
+    printf 'repository=%s\n' "$BNFS_CA_WEB_ROOT"
+    printf 'branch=%s\n' "$branch"
+    printf 'commit=%s\n' "$commit"
+    printf 'dirty=%s\n' "$dirty"
+    printf 'mock_users=true\n'
+    printf 'admin_automation=session\n'
+  } > "$source_record"
+  chmod 600 "$source_record"
+  printf '[local-chaos] CA Web 测试源: branch=%s commit=%s dirty=%s\n' "$branch" "$commit" "$dirty"
+}
+
+if [[ ${BNFS_CHAOS_ENABLE_CA:-0} == 1 ]]; then
+  record_ca_web_source || exit 1
+fi
+
 select_topology_network_octets || exit 1
 mkdir -p "$RUNTIME_DIR"
 if ! node "$CHAOS_RUNTIME_ROOT/generate-compose.mjs" "$RUNTIME_DIR" > "$COMPOSE_FILE"; then
@@ -102,7 +142,6 @@ if (( build == 1 )); then
   fi
   printf '[local-chaos] 在宿主机构建静态测试二进制\n'
   if ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/nodeserver" "$ROOT_DIR/test/testCode/tunnel/nodeserver" \
-    || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/caserver" "$ROOT_DIR/test/testCode/caserver" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billingqueue-inspect" "$ROOT_DIR/test/testCode/billingqueue-inspect" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billing-adversary-probe" "$ROOT_DIR/test/testCode/billing-adversary-probe" \
     || ! GOCACHE=${GOCACHE:-/tmp/bnfs-go-cache} CGO_ENABLED=0 go build -o "$build_dir/billing-adversary-node" "$ROOT_DIR/test/testCode/billing-adversary-node" \
@@ -124,10 +163,6 @@ if (( build == 1 )); then
     exit 1
   fi
   if [[ ${BNFS_CHAOS_ENABLE_CA:-0} == 1 ]]; then
-    if [[ ! -f $BNFS_CA_WEB_ROOT/backend/Dockerfile || ! -f $BNFS_CA_WEB_ROOT/frontend/Dockerfile ]]; then
-      printf '[local-chaos] CA Web 源码目录无效: %s\n' "$BNFS_CA_WEB_ROOT" >&2
-      exit 1
-    fi
     printf '[local-chaos] 构建 CA Web 后端镜像 %s\n' "$BNFS_CHAOS_CA_BACKEND_IMAGE"
     if ! docker build --pull=false --tag "$BNFS_CHAOS_CA_BACKEND_IMAGE" "$BNFS_CA_WEB_ROOT/backend"; then
       printf '[local-chaos] CA Web 后端镜像构建失败\n' >&2

@@ -18,25 +18,17 @@ const targetCreditBytes = boundedInteger(
   Number.MAX_SAFE_INTEGER,
 );
 const requestTimeoutMs = boundedInteger(process.env.CA_BOOTSTRAP_TIMEOUT_MS, 10000, 1000, 120000);
-const mockCredentials = Object.freeze({
-  demo_user: "Demo@2026!",
-  developer: "Dev@2026!",
-  observer: "View@2026!",
-});
+const mockUsers = new Set(["demo_user", "developer", "observer"]);
 
 try {
   validateConfiguration();
   const manifest = await readPrivateJSON(manifestFile);
   validateManifest(manifest);
-  const adminSession = targetCreditBytes > 0
-    ? await adminLogin(await readToken(adminTokenFile))
-    : "";
+  const adminSession = await adminLogin(await readToken(adminTokenFile));
   const activations = [];
   for (const user of manifest.users) {
-    const session = await login(user.username, mockCredentials[user.username]);
-    if (session.body.user?.id !== user.user_id) throw codedError("mock_user_identity_mismatch");
-    await ensureRegisteredKey(session.cookie, user);
-    if (targetCreditBytes > 0) await ensureUserCredit(session.cookie, adminSession, user.user_id);
+    await ensureRegisteredKey(adminSession, user);
+    if (targetCreditBytes > 0) await ensureUserCredit(adminSession, user.user_id);
     activations.push(...user.services.map((service) => ({ service, keyID: user.key_id })));
   }
   for (const activation of activations) await activateBundle(activation.service, activation.keyID);
@@ -80,7 +72,7 @@ function validateManifest(manifest) {
   const keyIDs = new Set();
   const services = new Set();
   for (const user of manifest.users) {
-    if (!Object.hasOwn(mockCredentials, user.username)
+    if (!mockUsers.has(user.username)
       || !/^usr_mock_[a-z_]+$/.test(String(user.user_id ?? ""))
       || !/^[0-9a-f]{64}$/.test(String(user.key_id ?? ""))
       || !/^04[0-9a-f]{128}$/.test(String(user.public_key_hex ?? ""))
@@ -103,19 +95,6 @@ function validateManifest(manifest) {
   }
 }
 
-async function login(username, password) {
-  const response = await requestJSON("POST", "/api/v1/auth/login", {
-    username,
-    password,
-  });
-  const cookie = parseFrameworkSessionCookie(response, false);
-  if (response.status !== 200 || response.body?.token || !response.body?.authenticated
-    || response.body?.role !== "user" || !cookie) {
-    throw codedError("mock_user_login_rejected");
-  }
-  return { body: response.body, cookie };
-}
-
 async function adminLogin(token) {
   const response = await requestJSON("POST", "/api/v1/auth/admin-login", {
     token,
@@ -127,33 +106,32 @@ async function adminLogin(token) {
   return cookie;
 }
 
-async function ensureRegisteredKey(cookie, expected) {
-  let response = await requestJSON("GET", "/api/v1/user/billing-keys", null, cookie);
-  if (response.status !== 200 || !Array.isArray(response.body?.items)) {
-    throw codedError("billing_key_list_rejected");
-  }
-  let registered = response.body.items.find((item) => item?.id === expected.key_id);
-  if (!registered) {
-    response = await requestJSON("POST", "/api/v1/user/billing-keys", {
-      label: expected.label,
-      public_key: expected.public_key_hex,
-    }, cookie);
-    if (response.status !== 201 || response.body?.id !== expected.key_id) {
-      throw codedError("billing_key_registration_rejected");
-    }
-    registered = response.body;
+async function ensureRegisteredKey(adminCookie, expected) {
+  const response = await requestJSON("POST", "/api/v1/admin/test/billing-keys", {
+    user_id: expected.user_id,
+    label: expected.label,
+    public_key: expected.public_key_hex,
+  }, adminCookie);
+  const registered = response.body?.billing_key;
+  if (![200, 201].includes(response.status) || typeof response.body?.created !== "boolean") {
+    throw codedError("billing_key_registration_rejected");
   }
   if (registered.status !== "active" || registered.user_id !== expected.user_id
-    || registered.public_key !== expected.public_key_hex) {
+    || registered.id !== expected.key_id || registered.public_key !== expected.public_key_hex) {
     throw codedError("billing_key_registration_mismatch");
   }
 }
 
-async function ensureUserCredit(userCookie, adminCookie, userID) {
-  const account = await requestJSON("GET", "/api/v1/user/account", null, userCookie);
-  const balance = Number(account.body?.balance_bytes);
-  if (account.status !== 200 || account.body?.user_id !== userID
-    || !Number.isSafeInteger(balance) || balance < 0) {
+async function ensureUserCredit(adminCookie, userID) {
+  const users = await requestJSON("POST", "/api/v1/admin/users/query", {
+    limit: 10,
+    search: userID,
+  }, adminCookie);
+  const account = Array.isArray(users.body?.items)
+    ? users.body.items.find((item) => item?.id === userID)
+    : null;
+  const balance = Number(account?.balance_bytes);
+  if (users.status !== 200 || !account || !Number.isSafeInteger(balance) || balance < 0) {
     throw codedError("user_account_invalid");
   }
   if (balance >= targetCreditBytes) return;
